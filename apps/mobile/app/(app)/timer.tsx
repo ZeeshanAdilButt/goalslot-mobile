@@ -1,0 +1,515 @@
+// Time Tracker tab: start/pause/resume/stop a timer against a task or goal,
+// then log it as a TimeEntry, plus a feed of recently logged entries.
+//
+// The running-timer state itself lives in src/lib/timer-store.ts (a
+// persisted zustand store) rather than here — this screen just renders that
+// state and ticks a local re-render every second while running. See that
+// file's header comment for why the ticking interval lives here and not
+// inside the store.
+
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
+import { FlashList } from "@shopify/flash-list";
+
+import {
+  createTimeEntrySchema,
+  formatDuration,
+  getLocalDateString,
+  type Goal,
+  type Task,
+  type TimeEntry,
+} from "@goalslot/shared";
+
+import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { apiClient } from "@/lib/api-client";
+import { hapticCompletion, hapticLight } from "@/lib/haptics";
+import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
+import { getElapsedMs, useTimerStore } from "@/lib/timer-store";
+import { useAnalytics } from "@/providers/growth-provider";
+
+const RECENT_SKELETON_ROWS = 4;
+
+/**
+ * mm:ss or h:mm:ss for the big live clock. Deliberately not
+ * `formatDuration` from packages/shared/src/scheduling/time.ts — that
+ * formats whole minutes for summaries ("1h 20m"), not a seconds-precision
+ * ticking display, so it's the wrong tool for this specific job. Past
+ * entries in the recent list below do use `formatDuration`.
+ */
+function formatClock(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = String(minutes).padStart(2, "0");
+  const ss = String(seconds).padStart(2, "0");
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+export default function TimerScreen() {
+  const analytics = useAnalytics();
+
+  const status = useTimerStore((s) => s.status);
+  const startedAt = useTimerStore((s) => s.startedAt);
+  const pausedElapsedMs = useTimerStore((s) => s.pausedElapsedMs);
+  const timerTaskId = useTimerStore((s) => s.taskId);
+  const timerGoalId = useTimerStore((s) => s.goalId);
+  const start = useTimerStore((s) => s.start);
+  const pause = useTimerStore((s) => s.pause);
+  const resume = useTimerStore((s) => s.resume);
+  const stop = useTimerStore((s) => s.stop);
+
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // What the *next* run will be tracked against, chosen before pressing
+  // Start. Once running, the store's own taskId/goalId (set by `start`) is
+  // the source of truth instead — this only matters pre-start.
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
+
+  const tasksQuery = useQuery(taskQueries.list());
+  const goalsQuery = useQuery(goalQueries.list());
+  const recentQuery = useQuery(timeEntryQueries.recent());
+
+  useFocusEffect(
+    useCallback(() => {
+      analytics.track({ name: "screenViewed", payload: { screenName: "timer" } });
+    }, [analytics]),
+  );
+
+  // Forces a re-render every second while running, so the clock below
+  // (computed fresh each render via `getElapsedMs`) actually appears to
+  // tick. No elapsed value is stored here — see timer-store.ts.
+  const [, forceTick] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (status !== "running") return;
+    const id = setInterval(forceTick, 1000);
+    return () => clearInterval(id);
+  }, [status]);
+
+  const elapsedMs = getElapsedMs({ status, startedAt, pausedElapsedMs });
+
+  // What's actually being tracked right now — resolved from the store's
+  // persisted ids against the loaded task/goal lists, so this is correct
+  // even right after an app restart (before this screen ever set local
+  // picker state). Falls back to the pre-start local selection while idle.
+  const activeTask = useMemo(
+    () => tasksQuery.data?.find((t) => t.id === timerTaskId) ?? (status === "idle" ? selectedTask : null),
+    [tasksQuery.data, timerTaskId, status, selectedTask],
+  );
+  const activeGoal = useMemo(
+    () => goalsQuery.data?.find((g) => g.id === timerGoalId) ?? (status === "idle" ? selectedGoal : null),
+    [goalsQuery.data, timerGoalId, status, selectedGoal],
+  );
+  const activeLabel = activeTask?.title ?? activeGoal?.title ?? null;
+
+  const handlePickTask = useCallback((task: Task) => {
+    setSelectedTask(task);
+    setSelectedGoal(null);
+    setPickerOpen(false);
+  }, []);
+
+  const handlePickGoal = useCallback((goal: Goal) => {
+    setSelectedGoal(goal);
+    setSelectedTask(null);
+    setPickerOpen(false);
+  }, []);
+
+  const handleStart = useCallback(() => {
+    if (!selectedTask && !selectedGoal) return;
+    start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
+    hapticLight();
+    analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
+  }, [analytics, selectedGoal, selectedTask, start]);
+
+  const handlePause = useCallback(() => {
+    pause();
+    hapticLight();
+    analytics.track({ name: "timerPaused", payload: { taskId: timerTaskId ?? undefined } });
+  }, [analytics, pause, timerTaskId]);
+
+  const handleResume = useCallback(() => {
+    resume();
+    hapticLight();
+  }, [resume]);
+
+  const handleStop = useCallback(async () => {
+    // Capture what was actually running before `stop()` resets the store
+    // back to idle (which clears taskId/goalId).
+    const stoppedTaskId = timerTaskId ?? undefined;
+    const stoppedGoalId = activeTask?.goalId ?? timerGoalId ?? undefined;
+    const label = activeLabel ?? "Untitled session";
+
+    const elapsed = stop();
+    const elapsedSeconds = Math.round(elapsed / 1000);
+    // The API requires at least 1 minute (see validation/time-entry.ts) —
+    // round to the nearest minute but never log a zero-minute entry for a
+    // timer that genuinely ran.
+    const durationMinutes = Math.max(1, Math.round(elapsed / 60000));
+
+    try {
+      const payload = createTimeEntrySchema.parse({
+        taskName: label,
+        taskId: stoppedTaskId,
+        taskTitle: stoppedTaskId ? label : undefined,
+        goalId: stoppedGoalId,
+        duration: durationMinutes,
+        date: getLocalDateString(),
+      });
+      await apiClient.timeEntries.create(payload);
+      hapticCompletion();
+      analytics.track({
+        name: "timerStopped",
+        payload: { taskId: stoppedTaskId, durationSeconds: elapsedSeconds },
+      });
+      setSelectedTask(null);
+      setSelectedGoal(null);
+      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+    } catch {
+      Alert.alert("Couldn't save time entry", "Your timer was stopped, but saving the entry failed. Please try again.");
+    }
+  }, [activeLabel, activeTask, stop, timerGoalId, timerTaskId]);
+
+  const canStart = status === "idle" && (selectedTask !== null || selectedGoal !== null);
+
+  return (
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <Text style={styles.header}>Time Tracker</Text>
+
+      <View style={styles.timerCard}>
+        <Text style={styles.trackingLabel}>{activeLabel ?? "Nothing selected"}</Text>
+        <Text style={styles.clock}>{formatClock(elapsedMs)}</Text>
+
+        {status === "idle" ? (
+          <>
+            <Pressable style={styles.pickerButton} onPress={() => setPickerOpen(true)}>
+              <Text style={styles.pickerButtonText}>
+                {activeLabel ? "Change task or goal" : "Choose task or goal"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, !canStart && styles.buttonDisabled]}
+              onPress={handleStart}
+              disabled={!canStart}
+            >
+              <Text style={styles.primaryButtonText}>Start</Text>
+            </Pressable>
+          </>
+        ) : (
+          <View style={styles.controlRow}>
+            {status === "running" ? (
+              <Pressable style={styles.secondaryButton} onPress={handlePause}>
+                <Text style={styles.secondaryButtonText}>Pause</Text>
+              </Pressable>
+            ) : (
+              <Pressable style={styles.secondaryButton} onPress={handleResume}>
+                <Text style={styles.secondaryButtonText}>Resume</Text>
+              </Pressable>
+            )}
+            <Pressable style={styles.stopButton} onPress={() => void handleStop()}>
+              <Text style={styles.stopButtonText}>Stop</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+
+      <Text style={styles.sectionTitle}>Recent entries</Text>
+      <View style={styles.listArea}>
+        {recentQuery.isPending ? (
+          <View>
+            {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
+              <SkeletonListItem key={index} showLeading={false} />
+            ))}
+          </View>
+        ) : recentQuery.isError ? (
+          <ErrorState message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
+        ) : !recentQuery.data || recentQuery.data.length === 0 ? (
+          <EmptyState message="No time logged yet" />
+        ) : (
+          <FlashList
+            data={recentQuery.data}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => <RecentEntryRow entry={item} />}
+            refreshing={recentQuery.isFetching}
+            onRefresh={() => void recentQuery.refetch()}
+            contentContainerStyle={styles.listContent}
+          />
+        )}
+      </View>
+
+      <PickerModal
+        visible={pickerOpen}
+        tasks={tasksQuery.data ?? []}
+        goals={goalsQuery.data ?? []}
+        onPickTask={handlePickTask}
+        onPickGoal={handlePickGoal}
+        onClose={() => setPickerOpen(false)}
+      />
+    </SafeAreaView>
+  );
+}
+
+interface RecentEntryRowProps {
+  entry: TimeEntry;
+}
+
+function RecentEntryRow({ entry }: RecentEntryRowProps) {
+  const when = new Date(entry.date).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowBody}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {entry.taskTitle || entry.taskName}
+        </Text>
+        <Text style={styles.rowSubtitle} numberOfLines={1}>
+          {when}
+          {entry.goal?.title ? ` · ${entry.goal.title}` : ""}
+        </Text>
+      </View>
+      <Text style={styles.rowDuration}>{formatDuration(entry.duration)}</Text>
+    </View>
+  );
+}
+
+interface PickerModalProps {
+  visible: boolean;
+  tasks: Task[];
+  goals: Goal[];
+  onPickTask: (task: Task) => void;
+  onPickGoal: (goal: Goal) => void;
+  onClose: () => void;
+}
+
+// Deliberately not a searchable combobox — a plain modal with two chip
+// rows, one tap to pick. Good enough for the list sizes this app deals
+// with; a real search box is a v2 concern if lists grow large.
+function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }: PickerModalProps) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+          <Text style={styles.modalTitle}>What are you tracking?</Text>
+
+          <Text style={styles.modalSectionLabel}>Tasks</Text>
+          <View style={styles.chipWrap}>
+            {tasks.length === 0 ? (
+              <Text style={styles.modalEmpty}>No tasks yet</Text>
+            ) : (
+              tasks.map((task) => (
+                <Pressable key={task.id} style={styles.chip} onPress={() => onPickTask(task)}>
+                  <Text style={styles.chipText} numberOfLines={1}>
+                    {task.title}
+                  </Text>
+                </Pressable>
+              ))
+            )}
+          </View>
+
+          <Text style={styles.modalSectionLabel}>Goals</Text>
+          <View style={styles.chipWrap}>
+            {goals.length === 0 ? (
+              <Text style={styles.modalEmpty}>No goals yet</Text>
+            ) : (
+              goals.map((goal) => (
+                <Pressable key={goal.id} style={styles.chip} onPress={() => onPickGoal(goal)}>
+                  <Text style={styles.chipText} numberOfLines={1}>
+                    {goal.title}
+                  </Text>
+                </Pressable>
+              ))
+            )}
+          </View>
+
+          <Pressable style={styles.modalCloseButton} onPress={onClose}>
+            <Text style={styles.modalCloseText}>Cancel</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  header: {
+    fontSize: 22,
+    fontWeight: "700",
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  timerCard: {
+    margin: 20,
+    padding: 20,
+    borderRadius: 16,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    gap: 12,
+  },
+  trackingLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#334155",
+  },
+  clock: {
+    fontSize: 48,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    color: "#0F172A",
+  },
+  pickerButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#94A3B8",
+  },
+  pickerButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#334155",
+  },
+  primaryButton: {
+    marginTop: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 48,
+    borderRadius: 12,
+    backgroundColor: "#1F2933",
+  },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  controlRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 4,
+  },
+  secondaryButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    backgroundColor: "#334155",
+  },
+  secondaryButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  stopButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    backgroundColor: "#B3261E",
+  },
+  stopButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    opacity: 0.5,
+    paddingHorizontal: 20,
+    marginBottom: 4,
+  },
+  listArea: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E2E8F0",
+  },
+  rowBody: {
+    flex: 1,
+    gap: 2,
+  },
+  rowTitle: {
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  rowSubtitle: {
+    fontSize: 13,
+    opacity: 0.6,
+  },
+  rowDuration: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#334155",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.4)",
+    justifyContent: "flex-end",
+  },
+  modalSheet: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "70%",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 12,
+  },
+  modalSectionLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    opacity: 0.5,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  modalEmpty: {
+    fontSize: 13,
+    opacity: 0.6,
+  },
+  chipWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chip: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "#F1F5F9",
+    maxWidth: "100%",
+  },
+  chipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#334155",
+  },
+  modalCloseButton: {
+    marginTop: 16,
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  modalCloseText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#64748B",
+  },
+});

@@ -12,6 +12,7 @@ import {
   createGoalQueries,
   createScheduleQueries,
   createTaskQueries,
+  createTimeEntryQueries,
 } from "@goalslot/shared";
 
 import { apiClient } from "./api-client";
@@ -20,3 +21,4 @@ export const goalQueries = createGoalQueries(apiClient.goals);
 export const taskQueries = createTaskQueries(apiClient.tasks);
 export const scheduleQueries = createScheduleQueries(apiClient.schedule);
 export const categoryQueries = createCategoryQueries(apiClient.categories);
+export const timeEntryQueries = createTimeEntryQueries(apiClient.timeEntries);

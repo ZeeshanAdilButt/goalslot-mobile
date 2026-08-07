@@ -1,4 +1,4 @@
-import { Redirect, Stack } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 
 import { useAuth } from "@/providers/auth-provider";
 
@@ -13,5 +13,16 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  // The five v1 tabs. Today is the landing tab (index) per the product
+  // brief. Each screen owns its own data-fetching/skeleton/empty states —
+  // this layout is routing only.
+  return (
+    <Tabs screenOptions={{ headerShown: false }}>
+      <Tabs.Screen name="index" options={{ title: "Today" }} />
+      <Tabs.Screen name="schedule" options={{ title: "Schedule" }} />
+      <Tabs.Screen name="goals" options={{ title: "Goals" }} />
+      <Tabs.Screen name="tasks" options={{ title: "Tasks" }} />
+      <Tabs.Screen name="timer" options={{ title: "Timer" }} />
+    </Tabs>
+  );
 }
