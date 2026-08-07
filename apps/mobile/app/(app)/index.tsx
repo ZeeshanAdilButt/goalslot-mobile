@@ -328,12 +328,24 @@ function QuickAddFab({
     <View style={styles.fabContainer} pointerEvents="box-none">
       {open
         ? ADD_KINDS.map(({ kind, label }) => (
-            <TouchableOpacity key={kind} style={styles.fabOption} onPress={() => onPick(kind)}>
+            <TouchableOpacity
+              key={kind}
+              style={styles.fabOption}
+              onPress={() => onPick(kind)}
+              accessibilityRole="button"
+              accessibilityLabel={`Add ${label.toLowerCase()}`}
+            >
               <Text style={styles.fabOptionText}>{label}</Text>
             </TouchableOpacity>
           ))
         : null}
-      <TouchableOpacity style={styles.fab} onPress={onToggle}>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={onToggle}
+        accessibilityRole="button"
+        accessibilityLabel={open ? "Close quick add menu" : "Quick add"}
+        accessibilityState={{ expanded: open }}
+      >
         <Text style={styles.fabIcon}>{open ? "×" : "+"}</Text>
       </TouchableOpacity>
     </View>

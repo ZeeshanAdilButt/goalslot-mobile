@@ -152,6 +152,9 @@ export default function GoalsScreen() {
             key={t.value}
             style={[styles.tabButton, tab === t.value && styles.tabButtonActive]}
             onPress={() => setTab(t.value)}
+            accessibilityRole="tab"
+            accessibilityLabel={t.label}
+            accessibilityState={{ selected: tab === t.value }}
           >
             <Text style={[styles.tabLabel, tab === t.value && styles.tabLabelActive]}>{t.label}</Text>
           </Pressable>
@@ -160,7 +163,13 @@ export default function GoalsScreen() {
 
       <View style={styles.listArea}>{content}</View>
 
-      <Pressable style={styles.fab} onPress={() => quickAddRef.current?.present()} hitSlop={8}>
+      <Pressable
+        style={styles.fab}
+        onPress={() => quickAddRef.current?.present()}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Add goal"
+      >
         <Text style={styles.fabIcon}>+</Text>
       </Pressable>
 
@@ -201,7 +210,13 @@ function GoalRow({ goal, onComplete, onDelete }: GoalRowProps) {
 
       <View style={styles.actions}>
         {goal.status === "ACTIVE" ? (
-          <Pressable style={styles.completeButton} onPress={() => onComplete(goal)} hitSlop={8}>
+          <Pressable
+            style={styles.completeButton}
+            onPress={() => onComplete(goal)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Mark "${goal.title}" complete`}
+          >
             <Text style={styles.completeButtonText}>Done</Text>
           </Pressable>
         ) : (
@@ -209,7 +224,13 @@ function GoalRow({ goal, onComplete, onDelete }: GoalRowProps) {
             <Text style={styles.statusBadgeText}>Completed</Text>
           </View>
         )}
-        <Pressable style={styles.deleteButton} onPress={() => onDelete(goal)} hitSlop={8}>
+        <Pressable
+          style={styles.deleteButton}
+          onPress={() => onDelete(goal)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete "${goal.title}"`}
+        >
           <Text style={styles.deleteButtonText}>Delete</Text>
         </Pressable>
       </View>

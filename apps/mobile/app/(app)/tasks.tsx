@@ -5,20 +5,20 @@
 // touch) instead of factored into a shared hook.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { BottomSheetModal, BottomSheetView } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
 import { useFocusEffect } from "expo-router";
 
-import type { CompleteTaskInput, Task, UpdateTaskInput } from "@goalslot/shared";
+import { getLocalDateString, type CompleteTaskInput, type Task, type UpdateTaskInput } from "@goalslot/shared";
 
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { SkeletonListItem } from "@/components/Skeleton";
-import { apiClient, notify } from "@/lib/api-client";
+import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { taskQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -30,13 +30,6 @@ const SWIPE_ACTION_WIDTH = 92;
 /** Incomplete tasks first, DONE tasks sink to the bottom; stable otherwise. */
 function sortTasks(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => Number(a.status === "DONE") - Number(b.status === "DONE"));
-}
-
-function toDateOnly(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 function addDays(date: Date, days: number): Date {
@@ -120,7 +113,7 @@ export default function TasksScreen() {
         analytics.track({ name: "taskCompleted", payload: { taskId: task.id } });
       } catch {
         restoreSnapshot(previous);
-        notify("Couldn't complete that task. Please try again.");
+        Alert.alert("Couldn't complete task", "Please try again.");
       }
     },
     [analytics, patchTask, restoreSnapshot],
@@ -136,7 +129,7 @@ export default function TasksScreen() {
         analytics.track({ name: "taskDeleted", payload: { taskId: task.id } });
       } catch {
         restoreSnapshot(previous);
-        notify("Couldn't delete that task. Please try again.");
+        Alert.alert("Couldn't delete task", "Please try again.");
       }
     },
     [analytics, removeTask, restoreSnapshot],
@@ -152,7 +145,7 @@ export default function TasksScreen() {
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
       } catch {
         restoreSnapshot(previous);
-        notify("Couldn't reschedule that task. Please try again.");
+        Alert.alert("Couldn't reschedule task", "Please try again.");
       }
     },
     [patchTask, restoreSnapshot],
@@ -166,7 +159,7 @@ export default function TasksScreen() {
   const pickRescheduleDate = useCallback(
     (daysFromToday: number) => {
       if (!rescheduleTarget) return;
-      void handleReschedule(rescheduleTarget, toDateOnly(addDays(new Date(), daysFromToday)));
+      void handleReschedule(rescheduleTarget, getLocalDateString(addDays(new Date(), daysFromToday)));
       rescheduleSheetRef.current?.dismiss();
       setRescheduleTarget(null);
     },
@@ -217,7 +210,12 @@ export default function TasksScreen() {
         />
       )}
 
-      <TouchableOpacity style={styles.fab} onPress={openQuickAdd} accessibilityLabel="Add task">
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={openQuickAdd}
+        accessibilityRole="button"
+        accessibilityLabel="Add task"
+      >
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
 
@@ -231,6 +229,8 @@ export default function TasksScreen() {
               key={option.label}
               style={styles.rescheduleOption}
               onPress={() => pickRescheduleDate(option.daysFromToday)}
+              accessibilityRole="button"
+              accessibilityLabel={`Reschedule to ${option.label}`}
             >
               <Text style={styles.rescheduleOptionText}>{option.label}</Text>
             </TouchableOpacity>
@@ -263,6 +263,8 @@ function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
           swipeableRef.current?.close();
           onComplete(task);
         }}
+        accessibilityRole="button"
+        accessibilityLabel={`Complete "${task.title}"`}
       >
         <Text style={styles.swipeActionText}>Complete</Text>
       </TouchableOpacity>
@@ -278,6 +280,8 @@ function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
             swipeableRef.current?.close();
             onReschedule(task);
           }}
+          accessibilityRole="button"
+          accessibilityLabel={`Reschedule "${task.title}"`}
         >
           <Text style={styles.swipeActionText}>Reschedule</Text>
         </TouchableOpacity>
@@ -287,6 +291,8 @@ function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
             swipeableRef.current?.close();
             onDelete(task);
           }}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete "${task.title}"`}
         >
           <Text style={styles.swipeActionText}>Delete</Text>
         </TouchableOpacity>

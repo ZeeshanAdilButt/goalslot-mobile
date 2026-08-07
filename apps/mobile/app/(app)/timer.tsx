@@ -185,7 +185,12 @@ export default function TimerScreen() {
 
         {status === "idle" ? (
           <>
-            <Pressable style={styles.pickerButton} onPress={() => setPickerOpen(true)}>
+            <Pressable
+              style={styles.pickerButton}
+              onPress={() => setPickerOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={activeLabel ? "Change task or goal" : "Choose task or goal"}
+            >
               <Text style={styles.pickerButtonText}>
                 {activeLabel ? "Change task or goal" : "Choose task or goal"}
               </Text>
@@ -194,6 +199,9 @@ export default function TimerScreen() {
               style={[styles.primaryButton, !canStart && styles.buttonDisabled]}
               onPress={handleStart}
               disabled={!canStart}
+              accessibilityRole="button"
+              accessibilityLabel="Start timer"
+              accessibilityState={{ disabled: !canStart }}
             >
               <Text style={styles.primaryButtonText}>Start</Text>
             </Pressable>
@@ -201,15 +209,30 @@ export default function TimerScreen() {
         ) : (
           <View style={styles.controlRow}>
             {status === "running" ? (
-              <Pressable style={styles.secondaryButton} onPress={handlePause}>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={handlePause}
+                accessibilityRole="button"
+                accessibilityLabel="Pause timer"
+              >
                 <Text style={styles.secondaryButtonText}>Pause</Text>
               </Pressable>
             ) : (
-              <Pressable style={styles.secondaryButton} onPress={handleResume}>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={handleResume}
+                accessibilityRole="button"
+                accessibilityLabel="Resume timer"
+              >
                 <Text style={styles.secondaryButtonText}>Resume</Text>
               </Pressable>
             )}
-            <Pressable style={styles.stopButton} onPress={() => void handleStop()}>
+            <Pressable
+              style={styles.stopButton}
+              onPress={() => void handleStop()}
+              accessibilityRole="button"
+              accessibilityLabel="Stop timer and log entry"
+            >
               <Text style={styles.stopButtonText}>Stop</Text>
             </Pressable>
           </View>
@@ -299,7 +322,13 @@ function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }:
               <Text style={styles.modalEmpty}>No tasks yet</Text>
             ) : (
               tasks.map((task) => (
-                <Pressable key={task.id} style={styles.chip} onPress={() => onPickTask(task)}>
+                <Pressable
+                  key={task.id}
+                  style={styles.chip}
+                  onPress={() => onPickTask(task)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Track task "${task.title}"`}
+                >
                   <Text style={styles.chipText} numberOfLines={1}>
                     {task.title}
                   </Text>
@@ -314,7 +343,13 @@ function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }:
               <Text style={styles.modalEmpty}>No goals yet</Text>
             ) : (
               goals.map((goal) => (
-                <Pressable key={goal.id} style={styles.chip} onPress={() => onPickGoal(goal)}>
+                <Pressable
+                  key={goal.id}
+                  style={styles.chip}
+                  onPress={() => onPickGoal(goal)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Track goal "${goal.title}"`}
+                >
                   <Text style={styles.chipText} numberOfLines={1}>
                     {goal.title}
                   </Text>
@@ -323,7 +358,12 @@ function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }:
             )}
           </View>
 
-          <Pressable style={styles.modalCloseButton} onPress={onClose}>
+          <Pressable
+            style={styles.modalCloseButton}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
+          >
             <Text style={styles.modalCloseText}>Cancel</Text>
           </Pressable>
         </Pressable>
