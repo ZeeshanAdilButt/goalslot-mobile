@@ -1,10 +1,21 @@
 import NetInfo from "@react-native-community/netinfo";
 
-import { createOfflineSync, createOperationRegistry, createOutbox } from "@goalslot/shared";
+import {
+  createOfflineSync,
+  createOperationRegistry,
+  createOutbox,
+  type CreateGoalInput,
+  type CreateScheduleBlockInput,
+  type CreateTaskInput,
+  type Goal,
+  type ScheduleBlock,
+  type Task,
+} from "@goalslot/shared";
 
+import { apiClient, notify } from "./api-client";
 import { asyncStorageAdapter } from "./async-storage-adapter";
-import { notify } from "./api-client";
 import { deriveOnline } from "./derive-online";
+import { goalQueries, scheduleQueries, taskQueries } from "./queries";
 import { queryClient } from "./query-client";
 
 // NetInfo has no synchronous "give me the current state" accessor, so we
@@ -34,11 +45,30 @@ function subscribeOnline(callback: (online: boolean) => void): () => void {
 
 export const outbox = createOutbox(asyncStorageAdapter);
 
-// Empty for now — no per-entity operations (goal/task/schedule mutations)
-// exist yet. That's Phase 4. Registering it here just proves the seam is
-// wired end to end: the sync engine will look up operations by `kind` and
-// find nothing until Phase 4 registers them.
 export const operationRegistry = createOperationRegistry();
+
+// Quick-add (src/hooks/useQuickAdd.ts) is the first caller of these: it
+// enqueues a create here when the live `apiClient.<domain>.create()` call
+// fails without a server response (offline/timeout, per `hasResponse` in
+// that hook), and the sync engine replays it by `kind` once connectivity
+// returns. `invalidateKeys` points at each domain's whole-collection key
+// (not a single filtered list variant) so a replayed create refreshes every
+// view of that domain, not just the one quick-add happened to patch
+// optimistically.
+operationRegistry.registerOperation<CreateGoalInput, Goal>("goal-create", {
+  execute: async (payload) => (await apiClient.goals.create(payload)).data,
+  invalidateKeys: [goalQueries.goalQueries.all],
+});
+
+operationRegistry.registerOperation<CreateTaskInput, Task>("task-create", {
+  execute: async (payload) => (await apiClient.tasks.create(payload)).data,
+  invalidateKeys: [taskQueries.taskQueries.all],
+});
+
+operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("schedule-block-create", {
+  execute: async (payload) => (await apiClient.schedule.create(payload)).data,
+  invalidateKeys: [scheduleQueries.scheduleQueries.root()],
+});
 
 export const offlineSync = createOfflineSync({
   outbox,
