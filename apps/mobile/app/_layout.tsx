@@ -7,9 +7,14 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { LoadingState } from "@/components/LoadingState";
 import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
+import { initSentry } from "@/lib/sentry";
 import { CapabilitiesProvider } from "@/providers/capabilities-provider";
 import { GrowthProvider } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
+
+// Runs once at module load, before the first render — a no-op today since
+// the DSN is still a placeholder (see src/lib/sentry.ts).
+initSentry();
 
 function AppGate() {
   const { status, loadUser } = useAuth();

@@ -29,3 +29,22 @@ jobs:
       - run: pnpm test
 
       - run: pnpm build
+
+      # Uploads mobile JS source maps to Sentry so crash stack traces resolve
+      # to real source instead of minified/hermes-compiled JS. Inert on this
+      # repo today: no real Sentry project exists yet (see the `@sentry/react-native`
+      # entry in apps/mobile/app.json and apps/mobile/src/lib/sentry.ts for the
+      # matching placeholder-DSN guard), so SENTRY_AUTH_TOKEN is never set and
+      # this step is skipped rather than failing the build. Once a human sets
+      # up the real Sentry project, add SENTRY_AUTH_TOKEN (and SENTRY_ORG /
+      # SENTRY_PROJECT) as repo secrets and this starts running for real.
+      - name: Upload Sentry source maps (mobile)
+        if: ${{ github.event_name == 'push' && secrets.SENTRY_AUTH_TOKEN != '' }}
+        working-directory: apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          npx expo export --source-maps
+          npx sentry-expo-upload-sourcemaps dist

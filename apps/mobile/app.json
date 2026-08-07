@@ -9,12 +9,16 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "jsEngine": "hermes",
+    "description": "GoalSlot turns your goals into a schedule you actually follow — plan your day, track tasks, and time your focus sessions, online or off.",
+    "primaryColor": "#E6F4FE",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "io.goalslot.mobile"
+      "bundleIdentifier": "io.goalslot.mobile",
+      "buildNumber": "1"
     },
     "android": {
       "package": "io.goalslot.mobile",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -35,6 +39,21 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png"
+        }
+      ],
+      [
+        "@sentry/react-native",
+        {
+          "_comment": "NON-FUNCTIONAL PLACEHOLDER. No `organization`/`project` set — no real Sentry project exists yet (out of scope for this change, same rule as `eas init`/EAS Updates below). Without them the plugin falls back to SENTRY_ORG/SENTRY_PROJECT env vars at native-build time, which also aren't set, so this stays inert. It only affects native source-map upload config, not JS runtime behavior — see src/lib/sentry.ts for the runtime guard."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#E6F4FE"
         }
       ]
     ],
