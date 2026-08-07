@@ -10,11 +10,6 @@ export function createScheduleQueries(scheduleApi: ScheduleApi) {
     root: () => ['schedule'] as const,
 
     weeklyKey: () => [...scheduleQueries.root(), 'weekly'] as const,
-    mutation: {
-      update: () => [...scheduleQueries.root(), 'update'] as const,
-      create: () => [...scheduleQueries.root(), 'create'] as const,
-      delete: () => [...scheduleQueries.root(), 'delete'] as const,
-    },
   }
 
   const fetchWeeklySchedule = async (): Promise<WeekSchedule> => {

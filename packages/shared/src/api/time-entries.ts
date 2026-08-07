@@ -8,8 +8,6 @@ import type { CreateTimeEntryInput, UpdateTimeEntryInput } from '../validation/t
 export function createTimeEntriesApi(api: AxiosInstance) {
   return {
     getByWeek: (weekStart: string) => api.get<TimeEntry[]>('/time-entries/week', { params: { weekStart } }),
-    getByRange: (startDate: string, endDate: string) =>
-      api.get<TimeEntry[]>('/time-entries/range', { params: { startDate, endDate } }),
     getByDateRange: (startDate: string, endDate: string) =>
       api.get<TimeEntry[]>('/time-entries/range', { params: { startDate, endDate } }),
     getToday: () => api.get<TimeEntry[]>('/time-entries/today'),
