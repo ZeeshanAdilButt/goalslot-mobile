@@ -1,4 +1,5 @@
 export * from './goals'
+export * from './notes'
 export * from './tasks'
 export * from './schedule'
 export * from './time-entries'
