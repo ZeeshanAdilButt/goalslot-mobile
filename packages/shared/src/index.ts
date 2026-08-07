@@ -1,0 +1,9 @@
+export const SHARED_PACKAGE_NAME = '@goalslot/shared'
+
+export * from './types'
+export * from './validation'
+export * from './scheduling'
+export * from './api'
+export * from './offline'
+export * from './queries'
+export * from './capabilities'

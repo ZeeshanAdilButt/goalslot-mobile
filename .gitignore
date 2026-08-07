@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.expo/
+.turbo/
+*.log
+.env
+.env.local
+coverage/
+android/
+ios/
+.DS_Store
