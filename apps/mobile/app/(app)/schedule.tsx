@@ -7,6 +7,7 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
@@ -97,7 +98,11 @@ export default function ScheduleScreen() {
   );
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Schedule</Text>
+      </View>
+
       <DaySelector selectedDay={selectedDay} onSelectDay={setSelectedDay} />
 
       <View style={styles.listContainer}>
@@ -136,7 +141,7 @@ export default function ScheduleScreen() {
       </Pressable>
 
       <QuickAddSheet ref={quickAddRef} kind="slot" />
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -160,7 +165,9 @@ function DaySelector({ selectedDay, onSelectDay }: DaySelectorProps) {
             accessibilityLabel={DAYS_OF_WEEK_FULL[index]}
             accessibilityState={{ selected: isSelected }}
           >
-            <Text style={[styles.dayPillText, isSelected && styles.dayPillTextSelected]}>{label}</Text>
+            <Text style={[styles.dayPillText, isSelected && styles.dayPillTextSelected]} numberOfLines={1}>
+              {label}
+            </Text>
             {isToday ? <View style={[styles.todayDot, isSelected && styles.todayDotSelected]} /> : null}
           </Pressable>
         );
@@ -190,7 +197,7 @@ function BlockRow({ block, onDelete }: BlockRowProps) {
   return (
     <Swipeable ref={swipeableRef} renderRightActions={renderRightActions} overshootRight={false} rightThreshold={40}>
       <View style={styles.row}>
-        <View style={[styles.colorDot, { backgroundColor: block.color }]} />
+        <View style={[styles.colorBar, { backgroundColor: block.color }]} />
         <View style={styles.rowText}>
           <Text style={styles.rowTitle} numberOfLines={1}>
             {block.title}
@@ -220,27 +227,37 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  header: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
+  },
+  headerTitle: {
+    ...typography.h1,
+    color: colors.foreground,
+  },
   dayRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
     paddingBottom: spacing.sm,
-    gap: spacing.xs,
+    gap: spacing.xxs,
   },
   dayPill: {
     flex: 1,
     alignItems: "center",
     minHeight: 44,
     justifyContent: "center",
+    paddingHorizontal: spacing.xxs,
     borderRadius: radii.full,
     backgroundColor: colors.secondary,
     borderWidth: 1,
     borderColor: colors.border,
   },
   dayPillSelected: {
-    backgroundColor: colors.foreground,
-    borderColor: colors.foreground,
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+    ...shadows.card,
   },
   dayPillText: {
     fontSize: 13,
@@ -248,7 +265,7 @@ const styles = StyleSheet.create({
     color: colors.foreground,
   },
   dayPillTextSelected: {
-    color: colors.white,
+    color: colors.primaryForeground,
   },
   todayDot: {
     marginTop: spacing.xxs,
@@ -258,7 +275,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   todayDotSelected: {
-    backgroundColor: colors.primary,
+    backgroundColor: colors.primaryForeground,
   },
   listContainer: {
     flex: 1,
@@ -279,10 +296,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     ...shadows.card,
   },
-  colorDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+  colorBar: {
+    width: 4,
+    alignSelf: "stretch",
+    borderRadius: radii.sm,
   },
   rowText: {
     flex: 1,
