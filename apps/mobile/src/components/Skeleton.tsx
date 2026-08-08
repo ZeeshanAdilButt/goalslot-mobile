@@ -18,6 +18,8 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
+import { colors, spacing } from "@/theme/tokens";
+
 export interface SkeletonProps {
   width?: DimensionValue;
   height?: DimensionValue;
@@ -86,20 +88,20 @@ export function SkeletonListItem({ showLeading = true }: SkeletonListItemProps) 
 
 const styles = StyleSheet.create({
   base: {
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
   },
   rowText: {
     flex: 1,
-    gap: 6,
+    gap: spacing.xs,
   },
   rowSubtitle: {
-    marginTop: 2,
+    marginTop: spacing.xxs,
   },
 });

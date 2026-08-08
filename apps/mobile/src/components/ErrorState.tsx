@@ -1,5 +1,7 @@
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
+import { colors, radii, spacing, typography } from "@/theme/tokens";
+
 export interface ErrorStateProps {
   message: string;
   onRetry?: () => void;
@@ -22,23 +24,26 @@ const styles = StyleSheet.create({
   container: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
-    padding: 24,
+    gap: spacing.md,
+    padding: spacing.xxl,
   },
   message: {
-    fontSize: 14,
-    color: "#B3261E",
+    ...typography.bodySmall,
+    fontWeight: "500",
+    color: colors.destructive,
     textAlign: "center",
   },
   retryButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#B3261E",
+    minHeight: 44,
+    justifyContent: "center",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.destructive,
   },
   retryText: {
-    color: "#B3261E",
-    fontWeight: "600",
+    color: colors.destructive,
+    fontWeight: "700",
   },
 });

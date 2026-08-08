@@ -26,6 +26,7 @@ import { hapticCompletion } from "@/lib/haptics";
 import { taskQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const SKELETON_ROW_COUNT = 6;
 const SWIPE_ACTION_WIDTH = 92;
@@ -341,28 +342,34 @@ function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowPr
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
   },
   listContent: {
-    paddingVertical: 8,
+    paddingVertical: spacing.sm,
   },
   row: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: "#FFFFFF",
-    gap: 4,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    minHeight: 44,
+    justifyContent: "center",
+    backgroundColor: colors.card,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    gap: spacing.xxs,
   },
   rowTitle: {
-    fontSize: 15,
+    ...typography.body,
     fontWeight: "600",
-    color: "#1F2933",
+    color: colors.foreground,
   },
   rowTitleDone: {
     textDecorationLine: "line-through",
     opacity: 0.5,
   },
   rowSubtitle: {
-    fontSize: 12,
-    opacity: 0.6,
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
   },
   swipeActionsRow: {
     flexDirection: "row",
@@ -373,59 +380,56 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   completeAction: {
-    backgroundColor: "#15803D",
+    backgroundColor: colors.success,
   },
   rescheduleAction: {
-    backgroundColor: "#334155",
+    backgroundColor: colors.foreground,
   },
   deleteAction: {
-    backgroundColor: "#B3261E",
+    backgroundColor: colors.destructive,
   },
   swipeActionText: {
-    color: "#FFFFFF",
+    color: colors.white,
     fontWeight: "600",
     fontSize: 13,
   },
   fab: {
     position: "absolute",
-    right: 20,
-    bottom: 24,
+    right: spacing.xl,
+    bottom: spacing.xxl,
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
+    ...shadows.fab,
   },
   fabText: {
-    color: "#FFFFFF",
+    color: colors.primaryForeground,
     fontSize: 28,
     lineHeight: 30,
   },
   rescheduleContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    gap: 12,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    gap: spacing.md,
   },
   rescheduleTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 4,
+    ...typography.h2,
+    color: colors.foreground,
+    marginBottom: spacing.xs,
   },
   rescheduleOption: {
-    paddingVertical: 14,
-    borderRadius: 8,
-    backgroundColor: "#F1F5F9",
+    paddingVertical: spacing.md,
+    minHeight: 44,
+    justifyContent: "center",
+    borderRadius: radii.md,
+    backgroundColor: colors.secondary,
     alignItems: "center",
   },
   rescheduleOptionText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1F2933",
+    ...typography.body,
+    color: colors.foreground,
   },
 });

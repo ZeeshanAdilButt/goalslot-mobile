@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
+import { colors, radii, spacing, typography } from "@/theme/tokens";
+
 export interface EmptyStateProps {
   message: string;
   icon?: ReactNode;
@@ -26,22 +28,25 @@ const styles = StyleSheet.create({
   container: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
-    padding: 24,
+    gap: spacing.md,
+    padding: spacing.xxl,
   },
   message: {
-    fontSize: 14,
-    opacity: 0.7,
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
     textAlign: "center",
   },
   actionButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
-    backgroundColor: "#1F2933",
+    minHeight: 44,
+    justifyContent: "center",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.md,
+    backgroundColor: colors.primary,
   },
   actionText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
+    color: colors.primaryForeground,
+    fontWeight: "700",
   },
 });
