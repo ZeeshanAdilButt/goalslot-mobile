@@ -23,7 +23,7 @@ export function createExpoNotificationCapability(): NotificationCapability {
       return response.granted;
     },
 
-    async scheduleNotification({ id, title, body, fireAtUtc }: NotificationInput) {
+    async scheduleNotification({ id, title, body, fireAtUtc, data }: NotificationInput) {
       const current = await Notifications.getPermissionsAsync();
       let granted = current.granted;
 
@@ -39,7 +39,9 @@ export function createExpoNotificationCapability(): NotificationCapability {
 
       await Notifications.scheduleNotificationAsync({
         identifier: id,
-        content: { title, body },
+        // `data` is what src/lib/deep-links.ts reads back on tap to decide
+        // which screen to open — without it a tap can only cold-open the app.
+        content: { title, body, data },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.DATE,
           date: new Date(fireAtUtc),

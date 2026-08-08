@@ -32,6 +32,15 @@ export interface NotificationInput {
   title: string
   body: string
   fireAtUtc: string
+  /**
+   * Arbitrary payload carried on the notification and handed back when the
+   * user taps it, so the app can route somewhere specific instead of just
+   * opening cold. Deliberately untyped here: this package can't know an
+   * individual app's route shape, and typing it would invert the dependency
+   * (shared → app). The mobile app narrows it at the tap site — see
+   * apps/mobile/src/lib/deep-links.ts's DeepLinkNotificationData.
+   */
+  data?: Record<string, unknown>
 }
 
 export interface NotificationCapability {
