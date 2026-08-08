@@ -15,6 +15,18 @@ import type { User } from "@goalslot/shared";
 import { apiClient, setSessionExpiredHandler } from "../lib/api-client";
 import { secureTokenStorage } from "../lib/secure-token-storage";
 
+// Mobile keyboards/autofill routinely tack on a leading/trailing space or
+// leave stray capitalization on email addresses (autocapitalize, swipe-typed
+// suggestions, password-manager autofill). The API compares emails
+// byte-for-byte, so an untrimmed value that matches a real account still
+// gets rejected as invalid credentials. Normalising here — rather than only
+// in the login screen — means every caller (login, register) benefits.
+// Passwords are deliberately left untouched: leading/trailing whitespace in
+// a password can be intentional and part of the real secret.
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
 export interface RegisterInput {
@@ -38,14 +50,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   status: "loading",
 
   async login(email, password) {
-    const response = await apiClient.auth.login({ email, password });
+    const response = await apiClient.auth.login({ email: normalizeEmail(email), password });
     const { accessToken, refreshToken, user } = response.data;
     await secureTokenStorage.setTokens(accessToken, refreshToken);
     set({ user, status: "authenticated" });
   },
 
   async register(data) {
-    const response = await apiClient.auth.register(data);
+    const response = await apiClient.auth.register({ ...data, email: normalizeEmail(data.email) });
     const { accessToken, refreshToken, user } = response.data;
     await secureTokenStorage.setTokens(accessToken, refreshToken);
     set({ user, status: "authenticated" });
