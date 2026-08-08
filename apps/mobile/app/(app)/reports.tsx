@@ -5,6 +5,14 @@
 // reports API on `packages/shared` (and this screen intentionally doesn't
 // add one) — everything here is computed client-side from data the app
 // already fetches via the existing goal/task/time-entry query factories.
+//
+// Visual language borrows dw-time-web's reports/time-tracker cards (see
+// dw-time-web/src/components/ui/stat-card.tsx and
+// dw-time-web/src/features/reports/components/focus-trend-card.tsx):
+// bordered white cards, an uppercase caption + tabular bold value per tile,
+// and a chart with a baseline, light gridlines and a brand-colored series —
+// no charting library is added here, this is the same View-based bar chart
+// dressed to read like a real one.
 
 import { useCallback, useMemo, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, View, type DimensionValue } from "react-native";
@@ -24,10 +32,22 @@ import {
 import { EmptyState, ErrorState, Skeleton } from "@/components";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const TREND_DAYS = 7;
 const CHART_HEIGHT = 96;
 const MIN_BAR_HEIGHT = 3;
+const CHART_LABEL_ROW_HEIGHT = 24;
+// 0 doubles as the baseline/x-axis line sitting right under the bars.
+const GRIDLINE_FRACTIONS = [0, 0.25, 0.5, 0.75];
+
+type StatAccent = "brand" | "success" | "neutral";
+
+const ACCENT_COLOR: Record<StatAccent, string> = {
+  brand: colors.primary,
+  success: colors.success,
+  neutral: colors.mutedForeground,
+};
 
 interface DailyTotal {
   dateStr: string;
@@ -128,6 +148,11 @@ export default function ReportsScreen() {
 
   const dailyTotals = useMemo(() => buildDailyTotals(timeEntries), [timeEntries]);
   const maxMinutes = Math.max(1, ...dailyTotals.map((day) => day.minutes));
+  const totalTrailingMinutes = useMemo(
+    () => dailyTotals.reduce((sum, day) => sum + day.minutes, 0),
+    [dailyTotals],
+  );
+  const todayDateStr = useMemo(() => getLocalDateString(), []);
 
   // Genuinely first load: none of the three queries have cached data yet.
   // Matches the Today screen's convention — once any one of them has data
@@ -147,16 +172,17 @@ export default function ReportsScreen() {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
         <View style={styles.header}>
-          <Skeleton width="40%" height={22} />
+          <Skeleton width="30%" height={13} />
+          <Skeleton width="40%" height={22} style={styles.headerSkeletonTitle} />
         </View>
         <View style={styles.tileRow}>
-          <Skeleton width="30%" height={84} borderRadius={12} />
-          <Skeleton width="30%" height={84} borderRadius={12} />
-          <Skeleton width="30%" height={84} borderRadius={12} />
+          <Skeleton width="30%" height={84} borderRadius={radii.lg} />
+          <Skeleton width="30%" height={84} borderRadius={radii.lg} />
+          <Skeleton width="30%" height={84} borderRadius={radii.lg} />
         </View>
         <View style={styles.section}>
           <Skeleton width="50%" height={14} />
-          <Skeleton width="100%" height={CHART_HEIGHT + 24} style={styles.chartSkeleton} />
+          <Skeleton width="100%" height={CHART_HEIGHT + CHART_LABEL_ROW_HEIGHT} style={styles.chartSkeleton} />
         </View>
       </SafeAreaView>
     );
@@ -186,6 +212,7 @@ export default function ReportsScreen() {
         }
       >
         <View style={styles.header}>
+          <Text style={styles.eyebrow}>Analytics</Text>
           <Text style={styles.headerTitle}>Reports</Text>
         </View>
 
@@ -194,35 +221,68 @@ export default function ReportsScreen() {
         ) : (
           <>
             <View style={styles.tileRow}>
-              <StatTile label="Hours this week" value={formatDuration(minutesThisWeek)} />
-              <StatTile
+              <StatCard label="Hours this week" value={formatDuration(minutesThisWeek)} accent="brand" />
+              <StatCard
                 label="Active goals"
                 value={String(activeGoals.length)}
                 sublabel={activeGoals.length > 0 ? `${avgGoalProgress}% avg progress` : undefined}
+                accent="neutral"
               />
-              <StatTile label="Tasks done this week" value={String(tasksCompletedThisWeek)} />
+              <StatCard label="Tasks done this week" value={String(tasksCompletedThisWeek)} accent="success" />
             </View>
 
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Hours logged — last 7 days</Text>
-              <View style={styles.chart}>
-                {dailyTotals.map((day) => {
-                  const barHeight: DimensionValue =
-                    day.minutes === 0 ? 0 : Math.max(MIN_BAR_HEIGHT, Math.round((day.minutes / maxMinutes) * CHART_HEIGHT));
-                  return (
-                    <View
-                      key={day.dateStr}
-                      style={styles.chartColumn}
-                      accessible
-                      accessibilityLabel={`${day.label}: ${formatDuration(day.minutes)} logged`}
-                    >
-                      <View style={styles.barTrack}>
-                        <View style={[styles.bar, { height: barHeight }]} />
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionTitle}>Hours logged — last 7 days</Text>
+                <Text style={styles.sectionTotal}>{formatDuration(totalTrailingMinutes)}</Text>
+              </View>
+
+              <View style={styles.chartCard}>
+                <View style={styles.chart}>
+                  {/* Gridlines behind the bars give the chart a baseline/axis
+                      reading instead of bars floating in empty space —
+                      mirrors the CartesianGrid in dw-time-web's
+                      FocusTrendCard (recharts isn't available here). */}
+                  <View style={styles.gridlines} pointerEvents="none">
+                    {GRIDLINE_FRACTIONS.map((fraction) => (
+                      <View
+                        key={fraction}
+                        style={[
+                          styles.gridline,
+                          fraction === 0 && styles.gridlineBaseline,
+                          { bottom: CHART_LABEL_ROW_HEIGHT + CHART_HEIGHT * fraction },
+                        ]}
+                      />
+                    ))}
+                  </View>
+
+                  {dailyTotals.map((day) => {
+                    const isToday = day.dateStr === todayDateStr;
+                    const barHeight: DimensionValue =
+                      day.minutes === 0
+                        ? MIN_BAR_HEIGHT
+                        : Math.max(MIN_BAR_HEIGHT, Math.round((day.minutes / maxMinutes) * CHART_HEIGHT));
+                    return (
+                      <View
+                        key={day.dateStr}
+                        style={styles.chartColumn}
+                        accessible
+                        accessibilityLabel={`${day.label}: ${formatDuration(day.minutes)} logged`}
+                      >
+                        <View style={styles.barTrack}>
+                          <View
+                            style={[
+                              styles.bar,
+                              { height: barHeight },
+                              day.minutes === 0 ? styles.barEmpty : isToday && styles.barToday,
+                            ]}
+                          />
+                        </View>
+                        <Text style={[styles.barLabel, isToday && styles.barLabelToday]}>{day.label}</Text>
                       </View>
-                      <Text style={styles.barLabel}>{day.label}</Text>
-                    </View>
-                  );
-                })}
+                    );
+                  })}
+                </View>
               </View>
             </View>
           </>
@@ -232,24 +292,31 @@ export default function ReportsScreen() {
   );
 }
 
-interface StatTileProps {
+interface StatCardProps {
   label: string;
   value: string;
   sublabel?: string;
+  accent: StatAccent;
 }
 
-function StatTile({ label, value, sublabel }: StatTileProps) {
+// Mirrors dw-time-web's <StatCard>: uppercase caption + accent dot up top,
+// a big bold tabular-figure value, and an optional muted sublabel — a
+// "designed" tile instead of a flat colored box.
+function StatCard({ label, value, sublabel, accent }: StatCardProps) {
   return (
     <View
       style={styles.tile}
       accessible
       accessibilityLabel={`${label}: ${value}${sublabel ? `, ${sublabel}` : ""}`}
     >
+      <View style={styles.tileHeaderRow}>
+        <Text style={styles.tileLabel} numberOfLines={2}>
+          {label}
+        </Text>
+        <View style={[styles.tileAccentDot, { backgroundColor: ACCENT_COLOR[accent] }]} />
+      </View>
       <Text style={styles.tileValue} numberOfLines={1}>
         {value}
-      </Text>
-      <Text style={styles.tileLabel} numberOfLines={2}>
-        {label}
       </Text>
       {sublabel ? (
         <Text style={styles.tileSublabel} numberOfLines={1}>
@@ -263,73 +330,137 @@ function StatTile({ label, value, sublabel }: StatTileProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.background,
   },
   scrollContent: {
     paddingBottom: 96,
   },
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+    gap: 2,
+  },
+  eyebrow: {
+    ...typography.caption,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: colors.mutedForeground,
+  },
+  headerSkeletonTitle: {
+    marginTop: spacing.xxs,
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#0F172A",
+    ...typography.h1,
+    color: colors.foreground,
   },
   tileRow: {
     flexDirection: "row",
-    gap: 10,
-    paddingHorizontal: 20,
-    paddingTop: 8,
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
   },
   tile: {
     flex: 1,
-    gap: 4,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    backgroundColor: "#F1F5F9",
+    gap: spacing.xs,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.lg,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadows.card,
+  },
+  tileHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.xs,
+  },
+  tileAccentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 2,
   },
   tileValue: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#1F2933",
+    fontVariant: ["tabular-nums"],
+    color: colors.foreground,
   },
   tileLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#64748B",
+    flex: 1,
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    color: colors.mutedForeground,
   },
   tileSublabel: {
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.mutedForeground,
   },
   section: {
-    marginTop: 24,
-    paddingHorizontal: 20,
-    gap: 12,
+    marginTop: spacing.xxl,
+    paddingHorizontal: spacing.xl,
+    gap: spacing.md,
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    opacity: 0.5,
+    ...typography.label,
+    color: colors.mutedForeground,
+  },
+  sectionTotal: {
+    fontSize: 14,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    color: colors.foreground,
   },
   chartSkeleton: {
     marginTop: 4,
+  },
+  chartCard: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    paddingTop: spacing.lg,
+    paddingHorizontal: spacing.md,
+    ...shadows.card,
   },
   chart: {
     flexDirection: "row",
     alignItems: "flex-end",
     justifyContent: "space-between",
-    height: CHART_HEIGHT + 24,
+    height: CHART_HEIGHT + CHART_LABEL_ROW_HEIGHT,
+  },
+  gridlines: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  gridline: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+    opacity: 0.6,
+  },
+  gridlineBaseline: {
+    opacity: 1,
   },
   chartColumn: {
     flex: 1,
     alignItems: "center",
-    gap: 6,
+    gap: spacing.xs,
   },
   barTrack: {
     width: "60%",
@@ -338,12 +469,24 @@ const styles = StyleSheet.create({
   },
   bar: {
     width: "100%",
-    borderRadius: 4,
-    backgroundColor: "#1F2933",
-    minHeight: 0,
+    borderTopLeftRadius: radii.sm,
+    borderTopRightRadius: radii.sm,
+    backgroundColor: colors.primary,
+    minHeight: MIN_BAR_HEIGHT,
+  },
+  barEmpty: {
+    backgroundColor: colors.border,
+  },
+  barToday: {
+    backgroundColor: colors.primaryDark,
   },
   barLabel: {
     fontSize: 11,
-    color: "#64748B",
+    fontWeight: "600",
+    color: colors.mutedForeground,
+  },
+  barLabelToday: {
+    fontWeight: "700",
+    color: colors.foreground,
   },
 });

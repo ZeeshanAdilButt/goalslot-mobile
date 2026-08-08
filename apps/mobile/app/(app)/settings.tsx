@@ -6,9 +6,17 @@
 // Logout is the important one here: useAuth().logout() has existed since
 // the auth provider was built, but nothing in the app called it — once a
 // user logged in there was no way back out. This screen is the fix.
+//
+// Visually this now follows the platform "grouped list" convention (see
+// dw-time-web/src/app/dashboard/settings/page.tsx's sidebar card, which
+// uses the same bordered-card + divided-row + chevron pattern this screen
+// was missing): each section's rows sit inside one bordered card with
+// hairline dividers between rows, and only rows that actually navigate get
+// a trailing chevron. The "More" section below is intentionally left as-is
+// — it's being replaced by a drawer in a parallel effort.
 
 import { useCallback, useState } from "react";
-import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Link, useFocusEffect } from "expo-router";
 
@@ -89,66 +97,76 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Settings</Text>
-      </View>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.header}>
+          <Text style={styles.eyebrow}>Account</Text>
+          <Text style={styles.headerTitle}>Settings</Text>
+        </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Profile</Text>
-        <View style={styles.profileRow}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarInitial}>{(user?.name || user?.email || "?").charAt(0).toUpperCase()}</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Profile</Text>
+          <View style={styles.card}>
+            <View style={styles.profileRow}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarInitial}>
+                  {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
+                </Text>
+              </View>
+              <View style={styles.profileText}>
+                <Text style={styles.profileName} numberOfLines={1}>
+                  {user?.name || "—"}
+                </Text>
+                <Text style={styles.profileEmail} numberOfLines={1}>
+                  {user?.email || "—"}
+                </Text>
+              </View>
+            </View>
           </View>
-          <View style={styles.profileText}>
-            <Text style={styles.profileName} numberOfLines={1}>
-              {user?.name || "—"}
-            </Text>
-            <Text style={styles.profileEmail} numberOfLines={1}>
-              {user?.email || "—"}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Notifications</Text>
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <Text style={styles.rowLabel}>Enable notifications</Text>
+              <Switch
+                value={notificationsEnabled}
+                onValueChange={(value) => void handleNotificationsToggle(value)}
+                accessibilityRole="switch"
+                accessibilityLabel="Enable notifications"
+                accessibilityState={{ checked: notificationsEnabled }}
+              />
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Theme</Text>
+          <View style={[styles.card, styles.themeCard]}>
+            <View style={styles.segmentedControl}>
+              {THEME_OPTIONS.map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={[styles.segmentButton, themePreference === option.value && styles.segmentButtonActive]}
+                  onPress={() => setThemePreference(option.value)}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`${option.label} theme`}
+                  accessibilityState={{ selected: themePreference === option.value }}
+                >
+                  <Text
+                    style={[styles.segmentLabel, themePreference === option.value && styles.segmentLabelActive]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.themeNote}>
+              Theme switching isn't wired up across the app yet — your choice is saved and will take effect once
+              full theme support ships.
             </Text>
           </View>
         </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Notifications</Text>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Enable notifications</Text>
-          <Switch
-            value={notificationsEnabled}
-            onValueChange={(value) => void handleNotificationsToggle(value)}
-            accessibilityRole="switch"
-            accessibilityLabel="Enable notifications"
-            accessibilityState={{ checked: notificationsEnabled }}
-          />
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Theme</Text>
-        <View style={styles.segmentedControl}>
-          {THEME_OPTIONS.map((option) => (
-            <Pressable
-              key={option.value}
-              style={[styles.segmentButton, themePreference === option.value && styles.segmentButtonActive]}
-              onPress={() => setThemePreference(option.value)}
-              accessibilityRole="radio"
-              accessibilityLabel={`${option.label} theme`}
-              accessibilityState={{ selected: themePreference === option.value }}
-            >
-              <Text
-                style={[styles.segmentLabel, themePreference === option.value && styles.segmentLabelActive]}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={styles.themeNote}>
-          Theme switching isn't wired up across the app yet — your choice is saved and will take effect once
-          full theme support ships.
-        </Text>
-      </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>More</Text>
@@ -171,14 +189,19 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <Pressable
-        style={styles.logoutButton}
-        onPress={confirmLogout}
-        accessibilityRole="button"
-        accessibilityLabel="Log out"
-      >
-        <Text style={styles.logoutButtonText}>Log out</Text>
-      </Pressable>
+        <View style={[styles.section, styles.logoutSection]}>
+          <View style={styles.card}>
+            <Pressable
+              style={styles.logoutRow}
+              onPress={confirmLogout}
+              accessibilityRole="button"
+              accessibilityLabel="Log out"
+            >
+              <Text style={styles.logoutButtonText}>Log out</Text>
+            </Pressable>
+          </View>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -188,10 +211,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  scrollContent: {
+    paddingBottom: spacing.xxxl,
+  },
   header: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
+    gap: 2,
+  },
+  eyebrow: {
+    ...typography.caption,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: colors.mutedForeground,
   },
   headerTitle: {
     ...typography.h1,
@@ -219,6 +252,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.lg,
   },
   avatar: {
     width: 48,
@@ -250,11 +285,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    minHeight: 44,
+    minHeight: 56,
+    paddingHorizontal: spacing.lg,
   },
   rowLabel: {
     ...typography.body,
     color: colors.foreground,
+  },
+  themeCard: {
+    padding: spacing.lg,
+    gap: spacing.sm,
   },
   segmentedControl: {
     flexDirection: "row",
@@ -286,7 +326,6 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     fontWeight: "400",
     color: colors.mutedForeground,
-    marginTop: spacing.xs,
   },
   moreRow: {
     flexDirection: "row",
@@ -319,15 +358,14 @@ const styles = StyleSheet.create({
     fontSize: 20,
     color: colors.mutedForeground,
   },
-  logoutButton: {
-    marginTop: spacing.xxxl,
-    marginHorizontal: spacing.xl,
-    minHeight: 44,
+  logoutSection: {
+    marginBottom: spacing.md,
+  },
+  logoutRow: {
+    minHeight: 48,
     justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
     alignItems: "center",
-    backgroundColor: colors.destructiveMuted,
+    paddingVertical: spacing.md,
   },
   logoutButtonText: {
     fontSize: 15,

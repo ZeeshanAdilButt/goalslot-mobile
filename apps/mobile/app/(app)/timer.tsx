@@ -6,6 +6,12 @@
 // state and ticks a local re-render every second while running. See that
 // file's header comment for why the ticking interval lives here and not
 // inside the store.
+//
+// Visual language matches dw-time-web's time-tracker feature (see
+// dw-time-web/src/features/time-tracker/components/timer-display.tsx,
+// timer-controls.tsx and recent-entries.tsx): a dark status pill with an
+// accent dot, a big tabular-figure clock as the hero element, and
+// brand/secondary/destructive-colored controls depending on state.
 
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from "react-native";
@@ -13,6 +19,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 
 import {
   createTimeEntrySchema,
@@ -28,28 +42,38 @@ import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
-import { getElapsedMs, useTimerStore } from "@/lib/timer-store";
+import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RECENT_SKELETON_ROWS = 4;
 
 /**
- * mm:ss or h:mm:ss for the big live clock. Deliberately not
- * `formatDuration` from packages/shared/src/scheduling/time.ts — that
+ * Always-padded hh/mm/ss parts for the hero clock — deliberately not
+ * `formatDuration` from packages/shared/src/scheduling/time.ts, which
  * formats whole minutes for summaries ("1h 20m"), not a seconds-precision
- * ticking display, so it's the wrong tool for this specific job. Past
- * entries in the recent list below do use `formatDuration`.
+ * ticking display. Always showing hours (rather than hiding a leading
+ * "00:") mirrors dw-time-web's TimerDisplay so the clock reads identically
+ * across platforms. Past entries in the recent list below do use
+ * `formatDuration`.
  */
-function formatClock(ms: number): string {
+function formatClockParts(ms: number): { hh: string; mm: string; ss: string } {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+  return {
+    hh: String(hours).padStart(2, "0"),
+    mm: String(minutes).padStart(2, "0"),
+    ss: String(seconds).padStart(2, "0"),
+  };
 }
+
+const STATUS_META: Record<TimerStatus, { label: string; dotColor: string; pulse: boolean; textColor: string }> = {
+  idle: { label: "Ready to start", dotColor: colors.mutedForeground, pulse: false, textColor: colors.white },
+  running: { label: "Tracking", dotColor: colors.primary, pulse: true, textColor: colors.primary },
+  paused: { label: "Paused", dotColor: colors.primary, pulse: false, textColor: colors.primary },
+};
 
 export default function TimerScreen() {
   const analytics = useAnalytics();
@@ -92,6 +116,7 @@ export default function TimerScreen() {
   }, [status]);
 
   const elapsedMs = getElapsedMs({ status, startedAt, pausedElapsedMs });
+  const { hh, mm, ss } = formatClockParts(elapsedMs);
 
   // What's actually being tracked right now — resolved from the store's
   // persisted ids against the loaded task/goal lists, so this is correct
@@ -106,6 +131,7 @@ export default function TimerScreen() {
     [goalsQuery.data, timerGoalId, status, selectedGoal],
   );
   const activeLabel = activeTask?.title ?? activeGoal?.title ?? null;
+  const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
 
   const handlePickTask = useCallback((task: Task) => {
     setSelectedTask(task);
@@ -175,14 +201,37 @@ export default function TimerScreen() {
   }, [activeLabel, activeTask, stop, timerGoalId, timerTaskId]);
 
   const canStart = status === "idle" && (selectedTask !== null || selectedGoal !== null);
+  const statusMeta = STATUS_META[status];
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <Text style={styles.header}>Time Tracker</Text>
+      <View style={styles.header}>
+        <Text style={styles.eyebrow}>Focus</Text>
+        <Text style={styles.headerTitle}>Time Tracker</Text>
+      </View>
 
       <View style={styles.timerCard}>
-        <Text style={styles.trackingLabel}>{activeLabel ?? "Nothing selected"}</Text>
-        <Text style={styles.clock}>{formatClock(elapsedMs)}</Text>
+        <View style={styles.statusPill}>
+          <PulsingDot color={statusMeta.dotColor} pulse={statusMeta.pulse} />
+          <Text style={[styles.statusPillText, status !== "idle" && { color: statusMeta.textColor }]}>
+            {statusMeta.label}
+          </Text>
+        </View>
+
+        <View style={styles.clockRow}>
+          <Text style={styles.clockDigits}>{hh}</Text>
+          <Text style={styles.clockColon}>:</Text>
+          <Text style={styles.clockDigits}>{mm}</Text>
+          <Text style={styles.clockColon}>:</Text>
+          <Text style={styles.clockSeconds}>{ss}</Text>
+        </View>
+
+        <View style={styles.activeLabelRow}>
+          {activeColor ? <View style={[styles.activeDot, { backgroundColor: activeColor }]} /> : null}
+          <Text style={[styles.activeLabelText, !activeLabel && styles.activeLabelPlaceholder]} numberOfLines={1}>
+            {activeLabel ?? "Nothing selected"}
+          </Text>
+        </View>
 
         {status === "idle" ? (
           <>
@@ -195,6 +244,7 @@ export default function TimerScreen() {
               <Text style={styles.pickerButtonText}>
                 {activeLabel ? "Change task or goal" : "Choose task or goal"}
               </Text>
+              <Text style={styles.pickerButtonChevron}>›</Text>
             </Pressable>
             <Pressable
               style={[styles.primaryButton, !canStart && styles.buttonDisabled]}
@@ -220,12 +270,12 @@ export default function TimerScreen() {
               </Pressable>
             ) : (
               <Pressable
-                style={styles.secondaryButton}
+                style={styles.resumeButton}
                 onPress={handleResume}
                 accessibilityRole="button"
                 accessibilityLabel="Resume timer"
               >
-                <Text style={styles.secondaryButtonText}>Resume</Text>
+                <Text style={styles.resumeButtonText}>Resume</Text>
               </Pressable>
             )}
             <Pressable
@@ -257,6 +307,7 @@ export default function TimerScreen() {
             data={recentQuery.data}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => <RecentEntryRow entry={item} />}
+            ItemSeparatorComponent={RecentEntrySeparator}
             refreshing={recentQuery.isFetching}
             onRefresh={() => void recentQuery.refetch()}
             contentContainerStyle={styles.listContent}
@@ -276,6 +327,32 @@ export default function TimerScreen() {
   );
 }
 
+// Small animated status dot — mirrors dw-time-web's TimerDisplay pill, whose
+// "RUNNING" dot pulses (`animate-pulse`) while STOPPED/PAUSED stay static.
+// Uses Reanimated (already a dependency; see Skeleton.tsx for the same
+// pattern) rather than the JS-thread Animated API.
+function PulsingDot({ color, pulse }: { color: string; pulse: boolean }) {
+  const opacity = useSharedValue(1);
+
+  useEffect(() => {
+    if (!pulse) {
+      cancelAnimation(opacity);
+      opacity.value = 1;
+      return;
+    }
+    opacity.value = withRepeat(withTiming(0.3, { duration: 700, easing: Easing.inOut(Easing.ease) }), -1, true);
+    return () => cancelAnimation(opacity);
+  }, [pulse, opacity]);
+
+  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+
+  return <Animated.View style={[styles.statusDot, { backgroundColor: color }, animatedStyle]} />;
+}
+
+function RecentEntrySeparator() {
+  return <View style={styles.rowSeparator} />;
+}
+
 interface RecentEntryRowProps {
   entry: TimeEntry;
 }
@@ -284,6 +361,7 @@ function RecentEntryRow({ entry }: RecentEntryRowProps) {
   const when = new Date(entry.date).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return (
     <View style={styles.row}>
+      <View style={[styles.rowDot, { backgroundColor: entry.goal?.color ?? colors.primary }]} />
       <View style={styles.rowBody}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {entry.taskTitle || entry.taskName}
@@ -315,6 +393,7 @@ function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }:
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose}>
         <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.modalHandle} />
           <Text style={styles.modalTitle}>What are you tracking?</Text>
 
           <Text style={styles.modalSectionLabel}>Tasks</Text>
@@ -351,6 +430,7 @@ function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }:
                   accessibilityRole="button"
                   accessibilityLabel={`Track goal "${goal.title}"`}
                 >
+                  <View style={[styles.chipDot, { backgroundColor: goal.color }]} />
                   <Text style={styles.chipText} numberOfLines={1}>
                     {goal.title}
                   </Text>
@@ -379,10 +459,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   header: {
-    ...typography.h1,
-    color: colors.foreground,
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.xs,
+    gap: 2,
+  },
+  eyebrow: {
+    ...typography.caption,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: colors.mutedForeground,
+  },
+  headerTitle: {
+    ...typography.h1,
+    color: colors.foreground,
   },
   timerCard: {
     margin: spacing.xl,
@@ -395,35 +484,98 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     ...shadows.card,
   },
-  trackingLabel: {
-    ...typography.bodySmall,
-    color: colors.mutedForeground,
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    height: 28,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    backgroundColor: colors.foreground,
   },
-  clock: {
-    fontSize: 48,
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusPillText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+    color: colors.white,
+  },
+  clockRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    marginTop: spacing.xs,
+  },
+  clockDigits: {
+    fontSize: 56,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
+    letterSpacing: -1,
     color: colors.foreground,
   },
+  clockColon: {
+    fontSize: 44,
+    fontWeight: "700",
+    color: colors.border,
+    marginHorizontal: 1,
+  },
+  clockSeconds: {
+    fontSize: 56,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -1,
+    color: colors.mutedForeground,
+  },
+  activeLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    maxWidth: "100%",
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  activeLabelText: {
+    ...typography.body,
+    color: colors.foreground,
+  },
+  activeLabelPlaceholder: {
+    color: colors.mutedForeground,
+    fontWeight: "400",
+  },
   pickerButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
     minHeight: 44,
-    justifyContent: "center",
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.lg,
     borderRadius: radii.md,
     borderWidth: 1,
     borderColor: colors.border,
+    backgroundColor: colors.background,
+    marginTop: spacing.xs,
   },
   pickerButtonText: {
     ...typography.bodySmall,
     color: colors.foreground,
   },
+  pickerButtonChevron: {
+    fontSize: 18,
+    color: colors.mutedForeground,
+  },
   primaryButton: {
     marginTop: spacing.xs,
-    minHeight: 44,
+    minHeight: 48,
+    width: "100%",
     justifyContent: "center",
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xxxl * 1.5,
     borderRadius: radii.lg,
     backgroundColor: colors.primary,
   },
@@ -440,26 +592,43 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.md,
     marginTop: spacing.xs,
+    width: "100%",
   },
   secondaryButton: {
-    minHeight: 44,
+    flex: 1,
+    minHeight: 48,
     justifyContent: "center",
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xxl,
     borderRadius: radii.lg,
-    backgroundColor: colors.foreground,
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   secondaryButtonText: {
     fontSize: 16,
     fontWeight: "700",
-    color: colors.white,
+    color: colors.foreground,
+    textAlign: "center",
+  },
+  resumeButton: {
+    flex: 1,
+    minHeight: 48,
+    justifyContent: "center",
+    paddingVertical: spacing.md,
+    borderRadius: radii.lg,
+    backgroundColor: colors.primary,
+  },
+  resumeButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: colors.primaryForeground,
     textAlign: "center",
   },
   stopButton: {
-    minHeight: 44,
+    flex: 1,
+    minHeight: 48,
     justifyContent: "center",
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xxl,
     borderRadius: radii.lg,
     backgroundColor: colors.destructive,
   },
@@ -487,8 +656,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.md,
     paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+  },
+  rowSeparator: {
+    height: spacing.xs,
+  },
+  rowDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   rowBody: {
     flex: 1,
@@ -505,7 +683,8 @@ const styles = StyleSheet.create({
   },
   rowDuration: {
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
     color: colors.foreground,
   },
   modalBackdrop: {
@@ -519,6 +698,14 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xl,
     padding: spacing.xl,
     maxHeight: "70%",
+  },
+  modalHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: spacing.md,
   },
   modalTitle: {
     ...typography.h2,
@@ -542,6 +729,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md + 2,
     borderRadius: radii.full,
@@ -549,6 +739,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     maxWidth: "100%",
+  },
+  chipDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   chipText: {
     fontSize: 13,
