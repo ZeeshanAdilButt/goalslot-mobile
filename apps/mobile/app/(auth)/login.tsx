@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Link, useLocalSearchParams } from "expo-router";
 
 import { useAuth } from "@/providers/auth-provider";
 
 export default function LoginScreen() {
   const { login } = useAuth();
+  const { resetSuccess } = useLocalSearchParams<{ resetSuccess?: string }>();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +29,10 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Log in to GoalSlot</Text>
+
+      {resetSuccess ? (
+        <Text style={styles.success}>Your password has been reset. Please log in.</Text>
+      ) : null}
 
       <TextInput
         style={styles.input}
@@ -54,9 +60,23 @@ export default function LoginScreen() {
         style={[styles.button, submitting && styles.buttonDisabled]}
         onPress={handleSubmit}
         disabled={submitting || !email || !password}
+        accessibilityRole="button"
+        accessibilityLabel="Log in"
       >
         <Text style={styles.buttonText}>{submitting ? "Logging in..." : "Log in"}</Text>
       </TouchableOpacity>
+
+      <Link href="/forgot-password" asChild>
+        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Forgot password?">
+          <Text style={styles.link}>Forgot password?</Text>
+        </TouchableOpacity>
+      </Link>
+
+      <Link href="/signup" asChild>
+        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Don't have an account? Sign up">
+          <Text style={styles.link}>Don&apos;t have an account? Sign up</Text>
+        </TouchableOpacity>
+      </Link>
     </View>
   );
 }
@@ -83,6 +103,16 @@ const styles = StyleSheet.create({
   },
   error: {
     color: "#B3261E",
+  },
+  success: {
+    color: "#1B7F3E",
+  },
+  link: {
+    color: "#1F2933",
+    textAlign: "center",
+    fontSize: 14,
+    marginTop: 4,
+    textDecorationLine: "underline",
   },
   button: {
     marginTop: 8,
