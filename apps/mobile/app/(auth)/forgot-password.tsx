@@ -1,8 +1,15 @@
 import { useState } from "react";
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Link, router } from "expo-router";
+import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { apiClient } from "@/lib/api-client";
+import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
+import { Button } from "@/components/ui/Button";
+import { TextField } from "@/components/ui/TextField";
+import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -30,6 +37,8 @@ export default function ForgotPasswordScreen() {
   const [error, setError] = useState<string | null>(null);
   const [sendingCode, setSendingCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  const reduceMotion = useReduceMotion();
 
   const canSendCode = email.trim().length > 0;
   const canReset = otp.trim().length === 6 && newPassword.length >= MIN_PASSWORD_LENGTH;
@@ -60,144 +69,186 @@ export default function ForgotPasswordScreen() {
     }
   }
 
+  const brand = (
+    <Animated.View
+      entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base)}
+      style={styles.brandBlock}
+    >
+      <View style={styles.logoBadge}>
+        <GoalSlotLogo size={44} color={colors.primary} accessibilityLabel="GoalSlot logo" />
+      </View>
+      <Text style={styles.brandName}>GoalSlot</Text>
+    </Animated.View>
+  );
+
   if (step === "reset") {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Reset your password</Text>
-        <Text style={styles.subtitle}>Enter the 6-digit code we sent to {email}</Text>
+      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            {brand}
 
-        <TextInput
-          style={styles.input}
-          placeholder="6-digit code"
-          value={otp}
-          onChangeText={setOtp}
-          keyboardType="number-pad"
-          maxLength={6}
-          textContentType="oneTimeCode"
-          accessibilityLabel="Verification code"
-        />
+            <Animated.View
+              entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base).delay(80)}
+              style={styles.formBlock}
+            >
+              <Text style={styles.title}>Reset your password</Text>
+              <Text style={styles.subtitle}>Enter the 6-digit code we sent to {email}</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="New password"
-          value={newPassword}
-          onChangeText={setNewPassword}
-          secureTextEntry
-          textContentType="newPassword"
-          accessibilityLabel="New password"
-        />
+              <TextField
+                label="Verification code"
+                placeholder="6-digit code"
+                value={otp}
+                onChangeText={setOtp}
+                keyboardType="number-pad"
+                maxLength={6}
+                textContentType="oneTimeCode"
+                accessibilityLabel="Verification code"
+              />
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+              <TextField
+                label="New password"
+                placeholder="At least 8 characters"
+                value={newPassword}
+                onChangeText={setNewPassword}
+                secureTextEntry
+                textContentType="newPassword"
+                accessibilityLabel="New password"
+              />
 
-        <TouchableOpacity
-          style={[styles.button, (submitting || !canReset) && styles.buttonDisabled]}
-          onPress={handleResetPassword}
-          disabled={submitting || !canReset}
-          accessibilityRole="button"
-          accessibilityLabel="Reset password"
-        >
-          <Text style={styles.buttonText}>{submitting ? "Resetting..." : "Reset password"}</Text>
-        </TouchableOpacity>
+              {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          onPress={() => setStep("email")}
-          disabled={submitting}
-          accessibilityRole="button"
-          accessibilityLabel="Back to email entry"
-        >
-          <Text style={styles.link}>Back</Text>
-        </TouchableOpacity>
-      </View>
+              <Button
+                label={submitting ? "Resetting..." : "Reset password"}
+                onPress={handleResetPassword}
+                loading={submitting}
+                disabled={!canReset}
+                accessibilityLabel="Reset password"
+                style={styles.submitButton}
+              />
+
+              <TouchableOpacity
+                onPress={() => setStep("email")}
+                disabled={submitting}
+                accessibilityRole="button"
+                accessibilityLabel="Back to email entry"
+              >
+                <Text style={styles.link}>Back</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Forgot password</Text>
-      <Text style={styles.subtitle}>We&apos;ll send a code to your email to reset your password.</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          {brand}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="email-address"
-        textContentType="emailAddress"
-        accessibilityLabel="Email"
-      />
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base).delay(80)}
+            style={styles.formBlock}
+          >
+            <Text style={styles.title}>Forgot password</Text>
+            <Text style={styles.subtitle}>We&apos;ll send a code to your email to reset your password.</Text>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+            <TextField
+              label="Email"
+              placeholder="you@example.com"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              textContentType="emailAddress"
+              accessibilityLabel="Email"
+            />
 
-      <TouchableOpacity
-        style={[styles.button, (sendingCode || !canSendCode) && styles.buttonDisabled]}
-        onPress={handleSendCode}
-        disabled={sendingCode || !canSendCode}
-        accessibilityRole="button"
-        accessibilityLabel="Send reset code"
-      >
-        <Text style={styles.buttonText}>{sendingCode ? "Sending code..." : "Send reset code"}</Text>
-      </TouchableOpacity>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <Link href="/login" asChild>
-        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Back to log in">
-          <Text style={styles.link}>Back to log in</Text>
-        </TouchableOpacity>
-      </Link>
-    </View>
+            <Button
+              label={sendingCode ? "Sending code..." : "Send reset code"}
+              onPress={handleSendCode}
+              loading={sendingCode}
+              disabled={!canSendCode}
+              accessibilityLabel="Send reset code"
+              style={styles.submitButton}
+            />
+
+            <Link href="/login" asChild>
+              <TouchableOpacity accessibilityRole="link" accessibilityLabel="Back to log in">
+                <Text style={styles.link}>Back to log in</Text>
+              </TouchableOpacity>
+            </Link>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
-    padding: 24,
-    gap: 12,
+    padding: spacing.xl,
+    gap: spacing.xxl,
+  },
+  brandBlock: {
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  logoBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: radii.xl,
+    backgroundColor: colors.foreground,
+    alignItems: "center",
+    justifyContent: "center",
+    ...shadows.raised,
+  },
+  brandName: {
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
+    letterSpacing: 0.2,
+  },
+  formBlock: {
+    gap: spacing.md,
   },
   title: {
-    fontSize: 24,
-    fontWeight: "600",
-    marginBottom: 12,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
   },
   subtitle: {
-    fontSize: 14,
-    color: "#4A5568",
-    marginTop: -8,
-    marginBottom: 4,
-  },
-  input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#8A94A6",
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
+    fontSize: typography.size.sm,
+    color: colors.mutedForeground,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.xs,
   },
   error: {
-    color: "#B3261E",
+    color: colors.destructive,
+    fontSize: typography.size.sm,
   },
-  button: {
-    marginTop: 8,
-    backgroundColor: "#1F2933",
-    borderRadius: 6,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
+  submitButton: {
+    marginTop: spacing.sm,
   },
   link: {
-    color: "#1F2933",
+    color: colors.foreground,
     textAlign: "center",
-    fontSize: 14,
-    marginTop: 4,
+    fontSize: typography.size.sm,
+    marginTop: spacing.xs,
     textDecorationLine: "underline",
   },
 });

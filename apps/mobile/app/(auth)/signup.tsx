@@ -1,9 +1,16 @@
 import { useState } from "react";
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Link } from "expo-router";
+import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { useAuth } from "@/providers/auth-provider";
 import { apiClient } from "@/lib/api-client";
+import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
+import { Button } from "@/components/ui/Button";
+import { TextField } from "@/components/ui/TextField";
+import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -35,6 +42,8 @@ export default function SignupScreen() {
   const [sendingCode, setSendingCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  const reduceMotion = useReduceMotion();
+
   const canSendCode = name.trim().length > 0 && email.trim().length > 0 && password.length >= MIN_PASSWORD_LENGTH;
   const canCreateAccount = otp.trim().length === 6;
 
@@ -65,153 +74,196 @@ export default function SignupScreen() {
     }
   }
 
+  const brand = (
+    <Animated.View
+      entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base)}
+      style={styles.brandBlock}
+    >
+      <View style={styles.logoBadge}>
+        <GoalSlotLogo size={44} color={colors.primary} accessibilityLabel="GoalSlot logo" />
+      </View>
+      <Text style={styles.brandName}>GoalSlot</Text>
+    </Animated.View>
+  );
+
   if (step === "otp") {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Verify your email</Text>
-        <Text style={styles.subtitle}>Enter the 6-digit code we sent to {email}</Text>
+      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            {brand}
 
-        <TextInput
-          style={styles.input}
-          placeholder="6-digit code"
-          value={otp}
-          onChangeText={setOtp}
-          keyboardType="number-pad"
-          maxLength={6}
-          textContentType="oneTimeCode"
-          accessibilityLabel="Verification code"
-        />
+            <Animated.View
+              entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base).delay(80)}
+              style={styles.formBlock}
+            >
+              <Text style={styles.title}>Verify your email</Text>
+              <Text style={styles.subtitle}>Enter the 6-digit code we sent to {email}</Text>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+              <TextField
+                label="Verification code"
+                placeholder="6-digit code"
+                value={otp}
+                onChangeText={setOtp}
+                keyboardType="number-pad"
+                maxLength={6}
+                textContentType="oneTimeCode"
+                accessibilityLabel="Verification code"
+              />
 
-        <TouchableOpacity
-          style={[styles.button, (submitting || !canCreateAccount) && styles.buttonDisabled]}
-          onPress={handleCreateAccount}
-          disabled={submitting || !canCreateAccount}
-          accessibilityRole="button"
-          accessibilityLabel="Create account"
-        >
-          <Text style={styles.buttonText}>{submitting ? "Creating account..." : "Create account"}</Text>
-        </TouchableOpacity>
+              {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          onPress={() => setStep("form")}
-          disabled={submitting}
-          accessibilityRole="button"
-          accessibilityLabel="Back to sign up details"
-        >
-          <Text style={styles.link}>Back</Text>
-        </TouchableOpacity>
-      </View>
+              <Button
+                label={submitting ? "Creating account..." : "Create account"}
+                onPress={handleCreateAccount}
+                loading={submitting}
+                disabled={!canCreateAccount}
+                accessibilityLabel="Create account"
+                style={styles.submitButton}
+              />
+
+              <TouchableOpacity
+                onPress={() => setStep("form")}
+                disabled={submitting}
+                accessibilityRole="button"
+                accessibilityLabel="Back to sign up details"
+              >
+                <Text style={styles.link}>Back</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Create your GoalSlot account</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          {brand}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Name"
-        value={name}
-        onChangeText={setName}
-        autoCapitalize="words"
-        textContentType="name"
-        accessibilityLabel="Name"
-      />
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base).delay(80)}
+            style={styles.formBlock}
+          >
+            <Text style={styles.title}>Create your account</Text>
+            <Text style={styles.subtitle}>Start turning goals into logged hours.</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="email-address"
-        textContentType="emailAddress"
-        accessibilityLabel="Email"
-      />
+            <TextField
+              label="Name"
+              placeholder="Your name"
+              value={name}
+              onChangeText={setName}
+              autoCapitalize="words"
+              textContentType="name"
+              accessibilityLabel="Name"
+            />
 
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        textContentType="newPassword"
-        accessibilityLabel="Password"
-      />
+            <TextField
+              label="Email"
+              placeholder="you@example.com"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              textContentType="emailAddress"
+              accessibilityLabel="Email"
+            />
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+            <TextField
+              label="Password"
+              placeholder="At least 8 characters"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              textContentType="newPassword"
+              accessibilityLabel="Password"
+            />
 
-      <TouchableOpacity
-        style={[styles.button, (sendingCode || !canSendCode) && styles.buttonDisabled]}
-        onPress={handleSendCode}
-        disabled={sendingCode || !canSendCode}
-        accessibilityRole="button"
-        accessibilityLabel="Send code"
-      >
-        <Text style={styles.buttonText}>{sendingCode ? "Sending code..." : "Send code"}</Text>
-      </TouchableOpacity>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <Link href="/login" asChild>
-        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Already have an account? Log in">
-          <Text style={styles.link}>Already have an account? Log in</Text>
-        </TouchableOpacity>
-      </Link>
-    </View>
+            <Button
+              label={sendingCode ? "Sending code..." : "Send code"}
+              onPress={handleSendCode}
+              loading={sendingCode}
+              disabled={!canSendCode}
+              accessibilityLabel="Send code"
+              style={styles.submitButton}
+            />
+
+            <Link href="/login" asChild>
+              <TouchableOpacity accessibilityRole="link" accessibilityLabel="Already have an account? Log in">
+                <Text style={styles.link}>Already have an account? Log in</Text>
+              </TouchableOpacity>
+            </Link>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
-    padding: 24,
-    gap: 12,
+    padding: spacing.xl,
+    gap: spacing.xxl,
+  },
+  brandBlock: {
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  logoBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: radii.xl,
+    backgroundColor: colors.foreground,
+    alignItems: "center",
+    justifyContent: "center",
+    ...shadows.raised,
+  },
+  brandName: {
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
+    letterSpacing: 0.2,
+  },
+  formBlock: {
+    gap: spacing.md,
   },
   title: {
-    fontSize: 24,
-    fontWeight: "600",
-    marginBottom: 12,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
   },
   subtitle: {
-    fontSize: 14,
-    color: "#4A5568",
-    marginTop: -8,
-    marginBottom: 4,
-  },
-  input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#8A94A6",
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
+    fontSize: typography.size.sm,
+    color: colors.mutedForeground,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.xs,
   },
   error: {
-    color: "#B3261E",
+    color: colors.destructive,
+    fontSize: typography.size.sm,
   },
-  button: {
-    marginTop: 8,
-    backgroundColor: "#1F2933",
-    borderRadius: 6,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
+  submitButton: {
+    marginTop: spacing.sm,
   },
   link: {
-    color: "#1F2933",
+    color: colors.foreground,
     textAlign: "center",
-    fontSize: 14,
-    marginTop: 4,
+    fontSize: typography.size.sm,
+    marginTop: spacing.xs,
     textDecorationLine: "underline",
   },
 });
