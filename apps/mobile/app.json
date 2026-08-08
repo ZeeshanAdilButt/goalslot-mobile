@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "jsEngine": "hermes",
     "description": "GoalSlot turns your goals into a schedule you actually follow — plan your day, track tasks, and time your focus sessions, online or off.",
-    "primaryColor": "#E6F4FE",
+    "primaryColor": "#F2CC0D",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "io.goalslot.mobile",
@@ -20,7 +20,7 @@
       "package": "io.goalslot.mobile",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#F2CC0D",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -53,7 +53,7 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#E6F4FE"
+          "backgroundColor": "#F2CC0D"
         }
       ]
     ],
