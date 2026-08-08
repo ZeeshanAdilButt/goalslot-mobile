@@ -30,9 +30,11 @@ import {
   Flag,
   LayoutDashboard,
   LogOut,
+  MessageSquareText,
   Menu,
   NotebookPen,
   Pencil,
+  StickyNote,
   Plus,
   Settings,
   Tag,
@@ -54,6 +56,9 @@ const ICONS = {
   reports: BarChart3,
   categories: Tag,
   journal: NotebookPen,
+  // Coach AI chat and Notes — both reachable from the navigation drawer.
+  coach: MessageSquareText,
+  notes: StickyNote,
   add: Plus,
   // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.
   menu: Menu,

@@ -18,6 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/providers/auth-provider";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
+import { Icon, type IconName } from "@/components/ui/Icon";
 
 // Closed set of real app routes, exactly mirroring the literal-union pattern
 // `MORE_LINKS` already uses in app/(app)/settings.tsx — deliberately not the
@@ -33,27 +34,31 @@ export type DrawerHref =
   | "/reports"
   | "/categories"
   | "/journal"
+  | "/notes"
+  | "/coach"
   | "/settings";
 
 interface DrawerNavItem {
   href: DrawerHref;
   label: string;
-  glyph: string;
+  icon: IconName;
 }
 
 // All nine screens. The first five match the tab bar's order; the last four
 // are the ones `href: null` hides from the tab bar but that still need a
 // clearly-labeled way in.
 const NAV_ITEMS: DrawerNavItem[] = [
-  { href: "/", label: "Today", glyph: "☀" },
-  { href: "/schedule", label: "Schedule", glyph: "▤" },
-  { href: "/goals", label: "Goals", glyph: "◎" },
-  { href: "/tasks", label: "Tasks", glyph: "✓" },
-  { href: "/timer", label: "Timer", glyph: "◷" },
-  { href: "/reports", label: "Reports", glyph: "▥" },
-  { href: "/categories", label: "Categories", glyph: "▦" },
-  { href: "/journal", label: "Journal", glyph: "✎" },
-  { href: "/settings", label: "Settings", glyph: "⚙" },
+  { href: "/", label: "Today", icon: "today" },
+  { href: "/schedule", label: "Schedule", icon: "schedule" },
+  { href: "/goals", label: "Goals", icon: "goals" },
+  { href: "/tasks", label: "Tasks", icon: "tasks" },
+  { href: "/timer", label: "Timer", icon: "timer" },
+  { href: "/coach", label: "Coach AI", icon: "coach" },
+  { href: "/notes", label: "Notes", icon: "notes" },
+  { href: "/journal", label: "Journal", icon: "journal" },
+  { href: "/reports", label: "Reports", icon: "reports" },
+  { href: "/categories", label: "Categories", icon: "categories" },
+  { href: "/settings", label: "Settings", icon: "settings" },
 ];
 
 // "/" (Today) only matches the exact root path; every other route also
@@ -120,7 +125,7 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
               accessibilityLabel={item.label}
               accessibilityState={{ selected: active }}
             >
-              <Text style={[styles.navGlyph, active && styles.navGlyphActive]}>{item.glyph}</Text>
+              <Icon name={item.icon} size={20} color={active ? colors.primaryDark : colors.mutedForeground} />
               <Text style={[styles.navLabel, active && styles.navLabelActive]}>{item.label}</Text>
             </Pressable>
           );

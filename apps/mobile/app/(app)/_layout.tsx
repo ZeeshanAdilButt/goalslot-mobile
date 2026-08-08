@@ -88,6 +88,7 @@ export default function AppLayout() {
           name="timer"
           options={{ title: "Timer", tabBarIcon: ({ color, size }) => <Icon name="timer" color={color} size={size} /> }}
         />
+        <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
         <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
         <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />
         <Tabs.Screen name="journal" options={{ title: "Journal", href: null }} />
