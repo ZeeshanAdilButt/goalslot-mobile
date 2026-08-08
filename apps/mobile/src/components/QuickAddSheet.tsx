@@ -25,6 +25,7 @@ import {
 import { useQuickAdd, type QuickAddInput } from "../hooks/useQuickAdd";
 import { hapticLight } from "../lib/haptics";
 import { useAnalytics } from "../providers/growth-provider";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export type QuickAddKind = "goal" | "task" | "slot";
 
@@ -58,8 +59,9 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
 
   const [title, setTitle] = useState("");
   const [dayOfWeek, setDayOfWeek] = useState(() => new Date().getDay());
+  const [isTitleFocused, setIsTitleFocused] = useState(false);
 
-  const snapPoints = useMemo(() => ["45%"], []);
+  const snapPoints = useMemo(() => ["50%"], []);
   const copy = COPY[kind];
   const canSubmit = title.trim().length > 0 && !isSubmitting;
 
@@ -90,6 +92,10 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
     }
   }, [canSubmit, dayOfWeek, kind, submit, title]);
 
+  const handleCancel = useCallback(() => {
+    sheetRef.current?.dismiss();
+  }, []);
+
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
       <BottomSheetBackdrop {...props} appearsOnIndex={0} disappearsOnIndex={-1} pressBehavior="close" />
@@ -107,18 +113,24 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
       enablePanDownToClose
+      handleIndicatorStyle={styles.handleIndicator}
+      backgroundStyle={styles.sheetBackground}
     >
       <BottomSheetView style={styles.content}>
         <Text style={styles.title}>{copy.title}</Text>
 
         <BottomSheetTextInput
-          style={styles.input}
+          style={[styles.input, isTitleFocused && styles.inputFocused]}
           placeholder={copy.placeholder}
+          placeholderTextColor={colors.mutedForeground}
           value={title}
           onChangeText={setTitle}
           autoFocus
           returnKeyType="done"
           onSubmitEditing={handleSubmit}
+          onFocus={() => setIsTitleFocused(true)}
+          onBlur={() => setIsTitleFocused(false)}
+          accessibilityLabel={copy.title}
         />
 
         {kind === "slot" ? (
@@ -128,6 +140,9 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
                 key={label}
                 style={[styles.dayChip, index === dayOfWeek && styles.dayChipSelected]}
                 onPress={() => setDayOfWeek(index)}
+                accessibilityRole="button"
+                accessibilityLabel={`Set day to ${label}`}
+                accessibilityState={{ selected: index === dayOfWeek }}
               >
                 <Text style={[styles.dayChipText, index === dayOfWeek && styles.dayChipTextSelected]}>
                   {label}
@@ -139,36 +154,67 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={!canSubmit}
-        >
-          <Text style={styles.submitText}>{isSubmitting ? "Adding…" : copy.submitLabel}</Text>
-        </TouchableOpacity>
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={handleCancel}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
+          >
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={!canSubmit}
+            accessibilityRole="button"
+            accessibilityLabel={copy.submitLabel}
+            accessibilityState={{ disabled: !canSubmit }}
+          >
+            <Text style={styles.submitText}>{isSubmitting ? "Adding…" : copy.submitLabel}</Text>
+          </TouchableOpacity>
+        </View>
       </BottomSheetView>
     </BottomSheetModal>
   );
 });
 
 const styles = StyleSheet.create({
+  sheetBackground: {
+    backgroundColor: colors.card,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+  },
+  handleIndicator: {
+    backgroundColor: colors.border,
+    width: 40,
+    height: 4,
+    borderRadius: radii.full,
+  },
   content: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    gap: 16,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
+    gap: spacing.lg,
   },
   title: {
-    fontSize: 18,
-    fontWeight: "700",
+    ...typography.h2,
+    color: colors.foreground,
   },
   input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.select({ ios: 12, android: 8, default: 10 }),
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
     fontSize: 16,
+    color: colors.foreground,
+  },
+  inputFocused: {
+    borderColor: colors.primary,
+    borderWidth: 2,
   },
   dayRow: {
     flexDirection: "row",
@@ -177,38 +223,63 @@ const styles = StyleSheet.create({
   dayChip: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: radii.full,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.secondary,
   },
   dayChipSelected: {
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.foreground,
   },
   dayChipText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#334155",
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
   dayChipTextSelected: {
-    color: "#FFFFFF",
+    color: colors.white,
   },
   error: {
-    color: "#B3261E",
+    color: colors.destructive,
     fontSize: 13,
   },
-  submitButton: {
-    backgroundColor: "#1F2933",
-    borderRadius: 8,
-    paddingVertical: 14,
+  footer: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  cancelButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md - 2,
     alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.card,
+  },
+  cancelText: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  submitButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md - 2,
+    alignItems: "center",
+    justifyContent: "center",
   },
   submitButtonDisabled: {
     opacity: 0.5,
   },
   submitText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.primaryForeground,
   },
 });

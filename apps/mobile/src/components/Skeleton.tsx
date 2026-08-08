@@ -18,7 +18,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
-import { colors, spacing } from "@/theme/tokens";
+import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
 export interface SkeletonProps {
   width?: DimensionValue;
@@ -27,9 +27,12 @@ export interface SkeletonProps {
   style?: object;
 }
 
-const MIN_OPACITY = 0.35;
+// Mirrors dw-time-web's `animate-pulse` cadence (Tailwind default: 2s,
+// ease-in-out, alternating 1 <-> ~0.5) rather than a snappier/JS-native
+// feel, so the loading moment reads the same on both platforms.
+const MIN_OPACITY = 0.45;
 const MAX_OPACITY = 1;
-const PULSE_DURATION_MS = 800;
+const PULSE_DURATION_MS = 1000;
 
 export function Skeleton({ width = "100%", height = 16, borderRadius = 6, style }: SkeletonProps) {
   const opacity = useSharedValue(MIN_OPACITY);
@@ -62,8 +65,14 @@ export function Skeleton({ width = "100%", height = 16, borderRadius = 6, style 
   );
 }
 
+// Real leading markers on Today/Schedule/Goals rows are small 12px category
+// dots (see e.g. goals.tsx's `colorDot` / index.tsx's `colorDot`), not
+// avatar-sized circles — sized to match so the skeleton doesn't visibly
+// "pop" into a smaller dot once real content lands.
+const LEADING_DOT_SIZE = 12;
+
 export interface SkeletonListItemProps {
-  /** Show a leading circular avatar-style skeleton (e.g. category dot, icon). Defaults to true. */
+  /** Show a leading circular dot skeleton (matches a category/status dot). Defaults to true. */
   showLeading?: boolean;
 }
 
@@ -77,10 +86,32 @@ export interface SkeletonListItemProps {
 export function SkeletonListItem({ showLeading = true }: SkeletonListItemProps) {
   return (
     <View style={styles.row}>
-      {showLeading ? <Skeleton width={32} height={32} borderRadius={16} /> : null}
+      {showLeading ? <Skeleton width={LEADING_DOT_SIZE} height={LEADING_DOT_SIZE} borderRadius={LEADING_DOT_SIZE / 2} /> : null}
       <View style={styles.rowText}>
         <Skeleton width="70%" height={14} />
         <Skeleton width="40%" height={12} style={styles.rowSubtitle} />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * A composed convenience for the elevated-card row shape goals.tsx renders
+ * (bordered/shadowed card, small leading dot, title + category line, then a
+ * progress-bar track + label) — SkeletonListItem's plain-row shape reads as
+ * noticeably thinner than that card chrome, so this gives screens with that
+ * shape (goal lists today, anything similar later) a matching placeholder
+ * instead of forcing SkeletonListItem to grow a variant prop.
+ */
+export function SkeletonCard() {
+  return (
+    <View style={styles.card}>
+      <Skeleton width={LEADING_DOT_SIZE} height={LEADING_DOT_SIZE} borderRadius={LEADING_DOT_SIZE / 2} />
+      <View style={styles.cardBody}>
+        <Skeleton width="55%" height={15} />
+        <Skeleton width="30%" height={12} style={styles.rowSubtitle} />
+        <Skeleton width="100%" height={6} borderRadius={3} style={styles.cardProgressTrack} />
+        <Skeleton width="35%" height={11} style={styles.rowSubtitle} />
       </View>
     </View>
   );
@@ -102,6 +133,25 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   rowSubtitle: {
+    marginTop: spacing.xxs,
+  },
+  card: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadows.card,
+  },
+  cardBody: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  cardProgressTrack: {
     marginTop: spacing.xxs,
   },
 });
