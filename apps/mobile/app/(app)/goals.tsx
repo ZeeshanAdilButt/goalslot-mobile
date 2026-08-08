@@ -1,8 +1,8 @@
 // Goals tab: filtered list (Active/Completed) with mark-complete and delete
-// actions, plus the shared QuickAddSheet for title-only creation. Full edit
-// (title/category/target hours) is out of scope for this pass — see
-// packages/shared/src/validation/goal.ts's updateGoalSchema for the fields a
-// future edit form would use.
+// actions, plus the shared QuickAddSheet for title-only creation. Tapping a
+// goal row (not the Done/Delete buttons) opens EditGoalSheet for full edit
+// (title/category/target hours/deadline/color) — see
+// src/components/EditGoalSheet.tsx.
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View, type DimensionValue } from "react-native";
@@ -13,7 +13,7 @@ import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 
 import { calculateProgressPercent, updateGoalSchema, type Goal, type GoalStatus } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, QuickAddSheet, SkeletonListItem } from "@/components";
+import { EditGoalSheet, EmptyState, ErrorState, QuickAddSheet, SkeletonListItem, type EditGoalSheetRef } from "@/components";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { goalQueries } from "@/lib/queries";
@@ -40,6 +40,7 @@ export default function GoalsScreen() {
   const [tab, setTab] = useState<GoalTab>("ACTIVE");
   const analytics = useAnalytics();
   const quickAddRef = useRef<BottomSheetModal>(null);
+  const editGoalRef = useRef<EditGoalSheetRef>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -111,11 +112,15 @@ export default function GoalsScreen() {
     [deleteGoal],
   );
 
+  const openEdit = useCallback((goal: Goal) => {
+    editGoalRef.current?.present(goal);
+  }, []);
+
   const renderItem = useCallback(
     ({ item }: { item: Goal }) => (
-      <GoalRow goal={item} onComplete={handleComplete} onDelete={confirmDelete} />
+      <GoalRow goal={item} onComplete={handleComplete} onDelete={confirmDelete} onEdit={openEdit} />
     ),
-    [confirmDelete, handleComplete],
+    [confirmDelete, handleComplete, openEdit],
   );
 
   let content: React.ReactNode;
@@ -174,6 +179,7 @@ export default function GoalsScreen() {
       </Pressable>
 
       <QuickAddSheet ref={quickAddRef} kind="goal" />
+      <EditGoalSheet ref={editGoalRef} />
     </View>
   );
 }
@@ -182,14 +188,20 @@ interface GoalRowProps {
   goal: Goal;
   onComplete: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
+  onEdit: (goal: Goal) => void;
 }
 
-function GoalRow({ goal, onComplete, onDelete }: GoalRowProps) {
+function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
   const progress = calculateProgressPercent(goal.loggedHours, goal.targetHours);
   const progressWidth: DimensionValue = `${progress}%`;
 
   return (
-    <View style={styles.row}>
+    <Pressable
+      style={styles.row}
+      onPress={() => onEdit(goal)}
+      accessibilityRole="button"
+      accessibilityLabel={`Edit "${goal.title}"`}
+    >
       <View style={[styles.colorDot, { backgroundColor: goal.color || "#94A3B8" }]} />
 
       <View style={styles.rowBody}>
@@ -234,7 +246,7 @@ function GoalRow({ goal, onComplete, onDelete }: GoalRowProps) {
           <Text style={styles.deleteButtonText}>Delete</Text>
         </Pressable>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
