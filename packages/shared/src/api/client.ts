@@ -15,6 +15,7 @@ import type { ApiClientConfig } from './types'
 import { createAuthApi } from './auth'
 import { createCategoriesApi } from './categories'
 import { createGoalsApi } from './goals'
+import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
 import { createScheduleApi } from './schedule'
 import { createTasksApi } from './tasks'
@@ -169,6 +170,7 @@ export function createApiClient(config: ApiClientConfig) {
     timeEntries: createTimeEntriesApi(api),
     categories: createCategoriesApi(api),
     labels: createLabelsApi(api),
+    journal: createJournalApi(api),
   }
 }
 
