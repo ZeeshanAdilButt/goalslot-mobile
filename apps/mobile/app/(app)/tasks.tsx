@@ -1,8 +1,10 @@
 // Tasks screen: swipe-left-to-reveal-complete, swipe-right-to-reveal
-// reschedule/delete. All three mutations follow the same optimistic-patch
-// -> live call -> invalidate-or-rollback shape as src/hooks/useQuickAdd.ts,
-// just inlined here (this file is the only one this task is scoped to
-// touch) instead of factored into a shared hook.
+// reschedule/delete, tap-the-row-to-edit. All mutations follow the same
+// optimistic-patch -> live call -> invalidate-or-rollback shape as
+// src/hooks/useQuickAdd.ts, just inlined here (this file is the only one
+// this task is scoped to touch) instead of factored into a shared hook. The
+// row-tap edit flow (title/category/due date/estimated minutes) opens
+// src/components/EditTaskSheet.tsx, which follows the same shape itself.
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
@@ -14,6 +16,7 @@ import { useFocusEffect } from "expo-router";
 
 import { getLocalDateString, type CompleteTaskInput, type Task, type UpdateTaskInput } from "@goalslot/shared";
 
+import { EditTaskSheet, type EditTaskSheetRef } from "@/components/EditTaskSheet";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
@@ -54,6 +57,7 @@ export default function TasksScreen() {
 
   const quickAddSheetRef = useRef<BottomSheetModal>(null);
   const rescheduleSheetRef = useRef<BottomSheetModal>(null);
+  const editTaskRef = useRef<EditTaskSheetRef>(null);
   const [rescheduleTarget, setRescheduleTarget] = useState<Task | null>(null);
 
   useFocusEffect(
@@ -170,11 +174,21 @@ export default function TasksScreen() {
     quickAddSheetRef.current?.present();
   }, []);
 
+  const openEdit = useCallback((task: Task) => {
+    editTaskRef.current?.present(task);
+  }, []);
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Task>) => (
-      <TaskRow task={item} onComplete={handleComplete} onDelete={handleDelete} onReschedule={openReschedule} />
+      <TaskRow
+        task={item}
+        onComplete={handleComplete}
+        onDelete={handleDelete}
+        onReschedule={openReschedule}
+        onEdit={openEdit}
+      />
     ),
-    [handleComplete, handleDelete, openReschedule],
+    [handleComplete, handleDelete, openEdit, openReschedule],
   );
 
   if (isPending) {
@@ -220,6 +234,7 @@ export default function TasksScreen() {
       </TouchableOpacity>
 
       <QuickAddSheet ref={quickAddSheetRef} kind="task" />
+      <EditTaskSheet ref={editTaskRef} />
 
       <BottomSheetModal ref={rescheduleSheetRef} snapPoints={RESCHEDULE_SNAP_POINTS} enablePanDownToClose>
         <BottomSheetView style={styles.rescheduleContent}>
@@ -248,9 +263,10 @@ interface TaskRowProps {
   onComplete: (task: Task) => void;
   onDelete: (task: Task) => void;
   onReschedule: (task: Task) => void;
+  onEdit: (task: Task) => void;
 }
 
-function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
+function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
   const swipeableRef = useRef<Swipeable>(null);
   const isDone = task.status === "DONE";
 
@@ -303,7 +319,12 @@ function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
 
   return (
     <Swipeable ref={swipeableRef} renderLeftActions={renderLeftActions} renderRightActions={renderRightActions}>
-      <View style={styles.row}>
+      <TouchableOpacity
+        style={styles.row}
+        onPress={() => onEdit(task)}
+        accessibilityRole="button"
+        accessibilityLabel={`Edit "${task.title}"`}
+      >
         <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
           {task.title}
         </Text>
@@ -312,7 +333,7 @@ function TaskRow({ task, onComplete, onDelete, onReschedule }: TaskRowProps) {
             .filter(Boolean)
             .join(" · ") || "No details"}
         </Text>
-      </View>
+      </TouchableOpacity>
     </Swipeable>
   );
 }
