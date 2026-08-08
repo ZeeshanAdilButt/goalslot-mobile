@@ -30,6 +30,7 @@ import {
   Flag,
   LayoutDashboard,
   LogOut,
+  Menu,
   NotebookPen,
   Pencil,
   Plus,
@@ -54,6 +55,8 @@ const ICONS = {
   categories: Tag,
   journal: NotebookPen,
   add: Plus,
+  // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.
+  menu: Menu,
   close: X,
   chevron: ChevronRight,
   check: Check,
