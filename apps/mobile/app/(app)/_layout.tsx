@@ -1,16 +1,8 @@
 import { Redirect, Tabs } from "expo-router";
-import { Text, type ColorValue } from "react-native";
 
+import { Icon } from "@/components/ui/Icon";
 import { useAuth } from "@/providers/auth-provider";
 import { colors } from "@/theme/tokens";
-
-// Simple text glyphs instead of an icon library dependency (none is
-// installed, and this task can't add one) — sized/weighted to read clearly
-// at tab-bar scale and tinted via `color` so the focused/unfocused states
-// from `tabBarActiveTintColor`/`tabBarInactiveTintColor` apply automatically.
-function TabIcon({ glyph, color }: { glyph: string; color: ColorValue }) {
-  return <Text style={{ fontSize: 20, color, lineHeight: 24 }}>{glyph}</Text>;
-}
 
 export default function AppLayout() {
   const { status } = useAuth();
@@ -56,23 +48,26 @@ export default function AppLayout() {
     >
       <Tabs.Screen
         name="index"
-        options={{ title: "Today", tabBarIcon: ({ color }) => <TabIcon glyph="☀" color={color} /> }}
+        options={{ title: "Today", tabBarIcon: ({ color, size }) => <Icon name="today" color={color} size={size} /> }}
       />
       <Tabs.Screen
         name="schedule"
-        options={{ title: "Schedule", tabBarIcon: ({ color }) => <TabIcon glyph="▤" color={color} /> }}
+        options={{
+          title: "Schedule",
+          tabBarIcon: ({ color, size }) => <Icon name="schedule" color={color} size={size} />,
+        }}
       />
       <Tabs.Screen
         name="goals"
-        options={{ title: "Goals", tabBarIcon: ({ color }) => <TabIcon glyph="◎" color={color} /> }}
+        options={{ title: "Goals", tabBarIcon: ({ color, size }) => <Icon name="goals" color={color} size={size} /> }}
       />
       <Tabs.Screen
         name="tasks"
-        options={{ title: "Tasks", tabBarIcon: ({ color }) => <TabIcon glyph="✓" color={color} /> }}
+        options={{ title: "Tasks", tabBarIcon: ({ color, size }) => <Icon name="tasks" color={color} size={size} /> }}
       />
       <Tabs.Screen
         name="timer"
-        options={{ title: "Timer", tabBarIcon: ({ color }) => <TabIcon glyph="◷" color={color} /> }}
+        options={{ title: "Timer", tabBarIcon: ({ color, size }) => <Icon name="timer" color={color} size={size} /> }}
       />
       <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
       <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />
