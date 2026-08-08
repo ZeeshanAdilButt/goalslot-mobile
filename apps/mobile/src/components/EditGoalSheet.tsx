@@ -18,8 +18,8 @@ import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
+  BottomSheetScrollView,
   BottomSheetTextInput,
-  BottomSheetView,
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
 
@@ -28,6 +28,7 @@ import { updateGoalSchema, type Goal, type UpdateGoalInput } from "@goalslot/sha
 import { apiClient } from "../lib/api-client";
 import { goalQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export interface EditGoalSheetRef {
   present: (goal: Goal) => void;
@@ -55,6 +56,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const [color, setColor] = useState<string>(COLOR_OPTIONS[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | "deadline" | null>(null);
 
   useImperativeHandle(
     ref,
@@ -93,6 +95,10 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     ),
     [],
   );
+
+  const handleCancel = useCallback(() => {
+    sheetRef.current?.dismiss();
+  }, []);
 
   const handleSubmit = useCallback(async () => {
     if (!goal || !canSubmit) return;
@@ -166,17 +172,26 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
       enablePanDownToClose
+      handleIndicatorStyle={styles.handleIndicator}
+      backgroundStyle={styles.sheetBackground}
     >
-      <BottomSheetView style={styles.content}>
+      <BottomSheetScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={styles.title}>Edit goal</Text>
 
         <View style={styles.field}>
           <Text style={styles.label}>Title</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "title" && styles.inputFocused]}
             placeholder="What do you want to work toward?"
+            placeholderTextColor={colors.mutedForeground}
             value={title}
             onChangeText={setTitle}
+            onFocus={() => setFocusedField("title")}
+            onBlur={() => setFocusedField(null)}
             accessibilityLabel="Goal title"
           />
         </View>
@@ -184,10 +199,13 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         <View style={styles.field}>
           <Text style={styles.label}>Category</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "category" && styles.inputFocused]}
             placeholder="e.g. Fitness"
+            placeholderTextColor={colors.mutedForeground}
             value={category}
             onChangeText={setCategory}
+            onFocus={() => setFocusedField("category")}
+            onBlur={() => setFocusedField(null)}
             accessibilityLabel="Goal category"
           />
         </View>
@@ -195,10 +213,13 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         <View style={styles.field}>
           <Text style={styles.label}>Target hours</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "targetHours" && styles.inputFocused]}
             placeholder="e.g. 20"
+            placeholderTextColor={colors.mutedForeground}
             value={targetHours}
             onChangeText={setTargetHours}
+            onFocus={() => setFocusedField("targetHours")}
+            onBlur={() => setFocusedField(null)}
             keyboardType="numeric"
             accessibilityLabel="Target hours"
           />
@@ -207,10 +228,13 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         <View style={styles.field}>
           <Text style={styles.label}>Deadline (YYYY-MM-DD, optional)</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "deadline" && styles.inputFocused]}
             placeholder="2026-12-31"
+            placeholderTextColor={colors.mutedForeground}
             value={deadline}
             onChangeText={setDeadline}
+            onFocus={() => setFocusedField("deadline")}
+            onBlur={() => setFocusedField(null)}
             accessibilityLabel="Goal deadline"
           />
           {!deadlineValid ? <Text style={styles.fieldError}>Use YYYY-MM-DD format.</Text> : null}
@@ -234,84 +258,135 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={!canSubmit}
-          accessibilityRole="button"
-          accessibilityLabel="Save goal changes"
-        >
-          <Text style={styles.submitText}>{isSubmitting ? "Saving…" : "Save changes"}</Text>
-        </TouchableOpacity>
-      </BottomSheetView>
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={handleCancel}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
+          >
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={!canSubmit}
+            accessibilityRole="button"
+            accessibilityLabel="Save goal changes"
+            accessibilityState={{ disabled: !canSubmit }}
+          >
+            <Text style={styles.submitText}>{isSubmitting ? "Saving…" : "Save changes"}</Text>
+          </TouchableOpacity>
+        </View>
+      </BottomSheetScrollView>
     </BottomSheetModal>
   );
 });
 
 const styles = StyleSheet.create({
-  content: {
+  sheetBackground: {
+    backgroundColor: colors.card,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+  },
+  handleIndicator: {
+    backgroundColor: colors.border,
+    width: 40,
+    height: 4,
+    borderRadius: radii.full,
+  },
+  scroll: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 24,
-    gap: 14,
+  },
+  content: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xxl,
+    gap: spacing.lg,
   },
   title: {
-    fontSize: 18,
-    fontWeight: "700",
+    ...typography.h2,
+    color: colors.foreground,
   },
   field: {
-    gap: 6,
+    gap: spacing.xs,
   },
   label: {
-    fontSize: 13,
+    ...typography.bodySmall,
     fontWeight: "600",
-    color: "#334155",
+    color: colors.mutedForeground,
   },
   input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.select({ ios: 12, android: 8, default: 10 }),
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
     fontSize: 16,
+    color: colors.foreground,
+  },
+  inputFocused: {
+    borderColor: colors.primary,
+    borderWidth: 2,
   },
   colorRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: spacing.sm + spacing.xxs,
   },
   colorSwatch: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: radii.full,
     borderWidth: 2,
     borderColor: "transparent",
   },
   colorSwatchSelected: {
-    borderColor: "#0F172A",
+    borderColor: colors.primary,
   },
   fieldError: {
-    color: "#B3261E",
+    color: colors.destructive,
     fontSize: 12,
   },
   error: {
-    color: "#B3261E",
+    color: colors.destructive,
     fontSize: 13,
   },
-  submitButton: {
-    backgroundColor: "#1F2933",
-    borderRadius: 8,
-    paddingVertical: 14,
+  footer: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  cancelButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
     alignItems: "center",
-    marginTop: 4,
+    justifyContent: "center",
+    backgroundColor: colors.card,
+  },
+  cancelText: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  submitButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    alignItems: "center",
+    justifyContent: "center",
   },
   submitButtonDisabled: {
     opacity: 0.5,
   },
   submitText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.primaryForeground,
   },
 });

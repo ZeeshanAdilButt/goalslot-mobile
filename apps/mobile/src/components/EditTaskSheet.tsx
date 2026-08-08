@@ -30,8 +30,8 @@ import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
+  BottomSheetScrollView,
   BottomSheetTextInput,
-  BottomSheetView,
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
 
@@ -40,6 +40,7 @@ import { getLocalDateString, updateTaskSchema, type Task, type UpdateTaskInput }
 import { apiClient } from "../lib/api-client";
 import { taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export interface EditTaskSheetRef {
   present: (task: Task) => void;
@@ -68,6 +69,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
   const [estimatedMinutes, setEstimatedMinutes] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<"title" | "category" | "estimatedMinutes" | null>(null);
 
   useImperativeHandle(
     ref,
@@ -99,6 +101,10 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
     ),
     [],
   );
+
+  const handleCancel = useCallback(() => {
+    sheetRef.current?.dismiss();
+  }, []);
 
   const handleSubmit = useCallback(async () => {
     if (!task || !canSubmit) return;
@@ -154,17 +160,26 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
       enablePanDownToClose
+      handleIndicatorStyle={styles.handleIndicator}
+      backgroundStyle={styles.sheetBackground}
     >
-      <BottomSheetView style={styles.content}>
+      <BottomSheetScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={styles.title}>Edit task</Text>
 
         <View style={styles.field}>
           <Text style={styles.label}>Title</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "title" && styles.inputFocused]}
             placeholder="What needs doing?"
+            placeholderTextColor={colors.mutedForeground}
             value={title}
             onChangeText={setTitle}
+            onFocus={() => setFocusedField("title")}
+            onBlur={() => setFocusedField(null)}
             accessibilityLabel="Task title"
           />
         </View>
@@ -172,10 +187,13 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
         <View style={styles.field}>
           <Text style={styles.label}>Category</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "category" && styles.inputFocused]}
             placeholder="e.g. Work"
+            placeholderTextColor={colors.mutedForeground}
             value={category}
             onChangeText={setCategory}
+            onFocus={() => setFocusedField("category")}
+            onBlur={() => setFocusedField(null)}
             accessibilityLabel="Task category"
           />
         </View>
@@ -183,10 +201,13 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
         <View style={styles.field}>
           <Text style={styles.label}>Estimated minutes</Text>
           <BottomSheetTextInput
-            style={styles.input}
+            style={[styles.input, focusedField === "estimatedMinutes" && styles.inputFocused]}
             placeholder="e.g. 30"
+            placeholderTextColor={colors.mutedForeground}
             value={estimatedMinutes}
             onChangeText={setEstimatedMinutes}
+            onFocus={() => setFocusedField("estimatedMinutes")}
+            onBlur={() => setFocusedField(null)}
             keyboardType="numeric"
             accessibilityLabel="Estimated minutes"
           />
@@ -219,91 +240,142 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={!canSubmit}
-          accessibilityRole="button"
-          accessibilityLabel="Save task changes"
-        >
-          <Text style={styles.submitText}>{isSubmitting ? "Saving…" : "Save changes"}</Text>
-        </TouchableOpacity>
-      </BottomSheetView>
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={handleCancel}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
+          >
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={!canSubmit}
+            accessibilityRole="button"
+            accessibilityLabel="Save task changes"
+            accessibilityState={{ disabled: !canSubmit }}
+          >
+            <Text style={styles.submitText}>{isSubmitting ? "Saving…" : "Save changes"}</Text>
+          </TouchableOpacity>
+        </View>
+      </BottomSheetScrollView>
     </BottomSheetModal>
   );
 });
 
 const styles = StyleSheet.create({
-  content: {
+  sheetBackground: {
+    backgroundColor: colors.card,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+  },
+  handleIndicator: {
+    backgroundColor: colors.border,
+    width: 40,
+    height: 4,
+    borderRadius: radii.full,
+  },
+  scroll: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 24,
-    gap: 14,
+  },
+  content: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xxl,
+    gap: spacing.lg,
   },
   title: {
-    fontSize: 18,
-    fontWeight: "700",
+    ...typography.h2,
+    color: colors.foreground,
   },
   field: {
-    gap: 6,
+    gap: spacing.xs,
   },
   label: {
-    fontSize: 13,
+    ...typography.bodySmall,
     fontWeight: "600",
-    color: "#334155",
+    color: colors.mutedForeground,
   },
   input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.select({ ios: 12, android: 8, default: 10 }),
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
     fontSize: 16,
+    color: colors.foreground,
+  },
+  inputFocused: {
+    borderColor: colors.primary,
+    borderWidth: 2,
   },
   dueDateRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: spacing.sm,
   },
   dueDateChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    backgroundColor: "#F1F5F9",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md + spacing.xxs,
+    borderRadius: radii.full,
+    backgroundColor: colors.secondary,
   },
   dueDateChipSelected: {
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
   },
   dueDateChipText: {
-    fontSize: 13,
+    ...typography.bodySmall,
     fontWeight: "600",
-    color: "#334155",
+    color: colors.mutedForeground,
   },
   dueDateChipTextSelected: {
-    color: "#FFFFFF",
+    color: colors.primaryForeground,
   },
   fieldError: {
-    color: "#B3261E",
+    color: colors.destructive,
     fontSize: 12,
   },
   error: {
-    color: "#B3261E",
+    color: colors.destructive,
     fontSize: 13,
   },
-  submitButton: {
-    backgroundColor: "#1F2933",
-    borderRadius: 8,
-    paddingVertical: 14,
+  footer: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  cancelButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
     alignItems: "center",
-    marginTop: 4,
+    justifyContent: "center",
+    backgroundColor: colors.card,
+  },
+  cancelText: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  submitButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    alignItems: "center",
+    justifyContent: "center",
   },
   submitButtonDisabled: {
     opacity: 0.5,
   },
   submitText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.primaryForeground,
   },
 });
