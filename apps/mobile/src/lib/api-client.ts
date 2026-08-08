@@ -1,4 +1,15 @@
 import Constants from "expo-constants";
+// `expo/fetch` (not React Native's built-in global `fetch`) — Hermes'
+// fetch cannot expose `response.body` as a readable stream, so reading an
+// SSE reply chunk-by-chunk silently doesn't work with it (the body only
+// resolves once, fully buffered, same as calling `.text()`). `expo/fetch`
+// is backed by native networking (NSURLSession on iOS, OkHttp on Android)
+// and returns a real WHATWG `Response` whose `.body.getReader()` streams
+// incrementally, same shape the browser gives web. It ships inside the
+// `expo` package already installed here — no new dependency. Verified via
+// apps/mobile/node_modules/expo/build/winter/fetch/FetchResponse.d.ts,
+// which types `body` as `ReadableStream<Uint8Array> | null`.
+import { fetch as expoFetch } from "expo/fetch";
 
 import { createApiClient } from "@goalslot/shared";
 
@@ -43,4 +54,10 @@ export const apiClient = createApiClient({
     sessionExpiredHandler?.();
   },
   notify,
+  // `expo/fetch`'s type doesn't structurally match the DOM `typeof fetch`
+  // shared/api/coach.ts declares (this app's tsconfig extends
+  // expo/tsconfig.base, which doesn't include the "DOM" lib shared's
+  // package.json opts into for that one file) — cast at this single
+  // boundary rather than loosening either side's types.
+  fetchImpl: expoFetch as unknown as typeof fetch,
 });

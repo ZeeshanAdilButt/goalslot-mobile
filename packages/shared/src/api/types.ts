@@ -22,4 +22,15 @@ export interface ApiClientConfig {
   onSessionExpired: () => void
   /** Optional user-facing toast/snackbar hook for non-fatal notices. */
   notify?: (message: string) => void
+  /**
+   * fetch implementation used only by the Coach chat SSE stream (see
+   * api/coach.ts) — everything else goes through axios. Defaults to the
+   * environment's global `fetch`, which is correct for web (browser fetch
+   * streams response bodies fine) but WRONG for React Native: Hermes'
+   * built-in `fetch` cannot read `response.body` as a stream. The mobile
+   * app must pass `expo/fetch`'s fetch explicitly (cast to this type at
+   * that call site — RN's TS lib set doesn't include "DOM", so the two
+   * types aren't structurally checked against each other, just trusted).
+   */
+  fetchImpl?: typeof fetch
 }

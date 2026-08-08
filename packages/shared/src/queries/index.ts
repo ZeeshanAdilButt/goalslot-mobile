@@ -1,3 +1,4 @@
+export * from './coach'
 export * from './goals'
 export * from './notes'
 export * from './tasks'

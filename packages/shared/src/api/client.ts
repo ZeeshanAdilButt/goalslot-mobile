@@ -14,6 +14,7 @@ import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestCo
 import type { ApiClientConfig } from './types'
 import { createAuthApi } from './auth'
 import { createCategoriesApi } from './categories'
+import { createCoachApi, postCoachStream, type CoachStreamChunk } from './coach'
 import { createGoalsApi } from './goals'
 import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
@@ -36,7 +37,7 @@ function isAuthFailureStatus(status: number | undefined): boolean {
 }
 
 export function createApiClient(config: ApiClientConfig) {
-  const { baseUrl, storage, onSessionExpired, notify } = config
+  const { baseUrl, storage, onSessionExpired, notify, fetchImpl = fetch } = config
 
   const api = axios.create({
     baseURL: `${baseUrl}/api`,
@@ -162,6 +163,8 @@ export function createApiClient(config: ApiClientConfig) {
     },
   )
 
+  const coachApi = createCoachApi(api)
+
   return {
     api,
     auth: createAuthApi(api),
@@ -173,6 +176,24 @@ export function createApiClient(config: ApiClientConfig) {
     categories: createCategoriesApi(api),
     labels: createLabelsApi(api),
     journal: createJournalApi(api),
+    coach: {
+      ...coachApi,
+      // Not axios-based (see api/coach.ts's header comment for why) — goes
+      // through the injected fetchImpl instead, reusing the same token
+      // storage the axios interceptor above reads from so both request
+      // paths stay in sync on login/refresh/logout.
+      streamChat: (
+        scopeKey: string,
+        content: string,
+        opts?: { signal?: AbortSignal },
+      ): Promise<AsyncGenerator<CoachStreamChunk, void, void>> =>
+        postCoachStream(
+          { baseUrl, fetchImpl, getAccessToken: () => storage.getAccessToken() },
+          `/coach/chat/${scopeKey}`,
+          { content },
+          opts?.signal,
+        ),
+    },
   }
 }
 

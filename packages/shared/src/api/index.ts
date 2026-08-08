@@ -1,6 +1,7 @@
 export * from './types'
 export * from './client'
 export * from './auth'
+export * from './coach'
 export * from './goals'
 export * from './notes'
 export * from './tasks'

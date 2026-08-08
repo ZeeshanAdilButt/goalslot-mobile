@@ -9,6 +9,7 @@
 
 import {
   createCategoryQueries,
+  createCoachQueries,
   createGoalQueries,
   createJournalQueries,
   createLabelQueries,
@@ -20,6 +21,7 @@ import {
 
 import { apiClient } from "./api-client";
 
+export const coachQueries = createCoachQueries(apiClient.coach);
 export const goalQueries = createGoalQueries(apiClient.goals);
 export const taskQueries = createTaskQueries(apiClient.tasks);
 export const scheduleQueries = createScheduleQueries(apiClient.schedule);
