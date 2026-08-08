@@ -48,6 +48,7 @@ describe('createConsoleAnalytics', () => {
       analytics.track({ name: 'timerPaused', payload: { taskId: 't1' } })
       analytics.track({ name: 'quickAddOpened', payload: { kind: 'goal' } })
       analytics.track({ name: 'screenViewed', payload: { screenName: 'Today' } })
+      analytics.track({ name: 'journalEntrySaved', payload: { date: '2026-08-08' } })
     }).not.toThrow()
   })
 })

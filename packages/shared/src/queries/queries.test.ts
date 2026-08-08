@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { CategoriesApi } from '../api/categories'
 import type { GoalsApi } from '../api/goals'
+import type { JournalApi } from '../api/journal'
 import type { LabelsApi } from '../api/labels'
 import type { ScheduleApi } from '../api/schedule'
 import type { TasksApi } from '../api/tasks'
@@ -12,6 +13,7 @@ import { createScheduleQueries } from './schedule'
 import { createTimeEntryQueries } from './time-entries'
 import { createCategoryQueries } from './categories'
 import { createLabelQueries } from './labels'
+import { createJournalQueries } from './journal'
 
 describe('goal queries', () => {
   it('builds stable, filter-sensitive query keys and wires the fetcher to goalsApi.getAll', async () => {
@@ -86,5 +88,40 @@ describe('label queries', () => {
     const { list } = createLabelQueries(labelsApi)
     await list().queryFn?.({} as never)
     expect(getAll).toHaveBeenCalled()
+  })
+})
+
+describe('journal queries', () => {
+  it('builds stable, range-sensitive query keys and wires the fetcher to journalApi.list', async () => {
+    const list = vi.fn().mockResolvedValue({ data: [{ id: 'j1', date: '2026-08-08', content: 'hi' }] })
+    const journalApi = { list, getByDate: vi.fn() } as unknown as JournalApi
+    const { journalQueries, list: listOptions } = createJournalQueries(journalApi)
+
+    const range = { from: '2026-08-01', to: '2026-08-08' }
+    expect(journalQueries.list(range)).toEqual(['journal', 'list', range])
+    expect(journalQueries.byDate('2026-08-08')).toEqual(['journal', 'date', '2026-08-08'])
+
+    const data = await listOptions(range).queryFn?.({} as never)
+    expect(list).toHaveBeenCalledWith(range)
+    expect(data).toEqual([{ id: 'j1', date: '2026-08-08', content: 'hi' }])
+  })
+
+  it('resolves a 404 from getByDate to null instead of throwing', async () => {
+    const notFound = { response: { status: 404 } }
+    const getByDate = vi.fn().mockRejectedValue(notFound)
+    const journalApi = { list: vi.fn(), getByDate } as unknown as JournalApi
+    const { byDate } = createJournalQueries(journalApi)
+
+    const data = await byDate('2026-08-08').queryFn?.({} as never)
+    expect(data).toBeNull()
+  })
+
+  it('rethrows non-404 errors from getByDate', async () => {
+    const serverError = { response: { status: 500 } }
+    const getByDate = vi.fn().mockRejectedValue(serverError)
+    const journalApi = { list: vi.fn(), getByDate } as unknown as JournalApi
+    const { byDate } = createJournalQueries(journalApi)
+
+    await expect(byDate('2026-08-08').queryFn?.({} as never)).rejects.toBe(serverError)
   })
 })

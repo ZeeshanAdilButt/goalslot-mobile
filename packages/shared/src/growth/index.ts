@@ -8,10 +8,11 @@
 // today are inert/console stubs.
 
 /**
- * The v1 event surface. Deliberately scoped to what the five upcoming
- * screens (Today, Schedule, Goals, Tasks, Time Tracker) actually fire —
- * not a speculative full taxonomy. Each key's payload is the argument
- * shape `track()` requires for that event.
+ * The v1 event surface. Deliberately scoped to what the upcoming screens
+ * (Today, Schedule, Goals, Tasks, Time Tracker, and Journal — reinstated in
+ * simplified form after being cut from the original v1 list, see
+ * DECISIONS.md #5) actually fire — not a speculative full taxonomy. Each
+ * key's payload is the argument shape `track()` requires for that event.
  */
 export interface AnalyticsEventMap {
   goalCreated: { goalId: string }
@@ -28,6 +29,7 @@ export interface AnalyticsEventMap {
   timerPaused: { taskId?: string; scheduleBlockId?: string }
   quickAddOpened: { kind: 'goal' | 'task' | 'slot' }
   screenViewed: { screenName: string }
+  journalEntrySaved: { date: string }
 }
 
 export type AnalyticsEventName = keyof AnalyticsEventMap

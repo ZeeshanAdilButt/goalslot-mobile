@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createGoalSchema, updateGoalSchema } from './goal'
+import { createJournalEntrySchema, updateJournalEntrySchema } from './journal'
 import { createScheduleBlockSchema, updateScheduleBlockSchema } from './schedule'
 import { completeTaskSchema, createTaskSchema } from './task'
 import { createTimeEntrySchema } from './time-entry'
@@ -90,5 +91,23 @@ describe('time entry validation', () => {
 
   it('rejects a missing taskName', () => {
     expect(createTimeEntrySchema.safeParse({ duration: 30, date: '2026-08-07' }).success).toBe(false)
+  })
+})
+
+describe('journal validation', () => {
+  it('accepts a minimal valid create payload', () => {
+    expect(createJournalEntrySchema.safeParse({ date: '2026-08-08', content: 'Today was good.' }).success).toBe(true)
+  })
+
+  it('accepts empty content (an opened-but-unwritten entry)', () => {
+    expect(createJournalEntrySchema.safeParse({ date: '2026-08-08', content: '' }).success).toBe(true)
+  })
+
+  it('rejects a missing date', () => {
+    expect(createJournalEntrySchema.safeParse({ content: 'x' }).success).toBe(false)
+  })
+
+  it('update accepts a content-only payload', () => {
+    expect(updateJournalEntrySchema.safeParse({ content: 'edited' }).success).toBe(true)
   })
 })
