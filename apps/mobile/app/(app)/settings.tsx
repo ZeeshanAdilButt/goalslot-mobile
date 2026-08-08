@@ -10,17 +10,28 @@
 import { useCallback, useState } from "react";
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { Link, useFocusEffect } from "expo-router";
 
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { useSettingsStore, type ThemePreference } from "@/lib/settings-store";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
   { value: "system", label: "System" },
+];
+
+// The three screens that were cut from the tab bar (see app/(app)/_layout.tsx)
+// but still need a way in — Settings is that way in. Each is a plain
+// Tabs.Screen route (href: null just hides it from the tab bar), so a
+// normal Link/router navigation works exactly like any other route.
+const MORE_LINKS: { href: "/reports" | "/categories" | "/journal"; label: string; description: string }[] = [
+  { href: "/reports", label: "Reports", description: "Weekly stats and trends" },
+  { href: "/categories", label: "Categories & labels", description: "Manage how you organize goals and tasks" },
+  { href: "/journal", label: "Journal", description: "Your daily writing entries" },
 ];
 
 export default function SettingsScreen() {
@@ -139,6 +150,27 @@ export default function SettingsScreen() {
         </Text>
       </View>
 
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>More</Text>
+        <View style={styles.card}>
+          {MORE_LINKS.map((link, index) => (
+            <Link key={link.href} href={link.href} asChild>
+              <Pressable
+                style={[styles.moreRow, index < MORE_LINKS.length - 1 && styles.moreRowDivider]}
+                accessibilityRole="link"
+                accessibilityLabel={link.label}
+              >
+                <View style={styles.moreRowText}>
+                  <Text style={styles.moreRowLabel}>{link.label}</Text>
+                  <Text style={styles.moreRowDescription}>{link.description}</Text>
+                </View>
+                <Text style={styles.moreRowChevron}>›</Text>
+              </Pressable>
+            </Link>
+          ))}
+        </View>
+      </View>
+
       <Pressable
         style={styles.logoutButton}
         onPress={confirmLogout}
@@ -154,108 +186,152 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.background,
   },
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
+    ...typography.h1,
+    color: colors.foreground,
   },
   section: {
-    marginTop: 20,
-    paddingHorizontal: 20,
-    gap: 8,
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.xl,
+    gap: spacing.sm,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    opacity: 0.5,
-    marginBottom: 4,
+    ...typography.label,
+    color: colors.mutedForeground,
+    marginBottom: spacing.xs,
+  },
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: "hidden",
+    ...shadows.card,
   },
   profileRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: spacing.md,
   },
   avatar: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
   },
   avatarInitial: {
-    color: "#FFFFFF",
+    color: colors.primaryForeground,
     fontSize: 18,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   profileText: {
     flex: 1,
-    gap: 2,
+    gap: spacing.xxs,
   },
   profileName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#0F172A",
+    ...typography.title,
+    color: colors.foreground,
   },
   profileEmail: {
-    fontSize: 13,
-    color: "#64748B",
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    minHeight: 44,
   },
   rowLabel: {
-    fontSize: 15,
-    color: "#0F172A",
+    ...typography.body,
+    color: colors.foreground,
   },
   segmentedControl: {
     flexDirection: "row",
-    gap: 8,
+    gap: spacing.sm,
   },
   segmentButton: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: "center",
+    borderRadius: radii.md,
     alignItems: "center",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   segmentButtonActive: {
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.foreground,
+    borderColor: colors.foreground,
   },
   segmentLabel: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#334155",
+    color: colors.foreground,
   },
   segmentLabelActive: {
-    color: "#FFFFFF",
+    color: colors.white,
   },
   themeNote: {
-    fontSize: 12,
-    opacity: 0.6,
-    marginTop: 4,
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
+    marginTop: spacing.xs,
+  },
+  moreRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 56,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    gap: spacing.md,
+  },
+  moreRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  moreRowText: {
+    flex: 1,
+    gap: spacing.xxs,
+  },
+  moreRowLabel: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  moreRowDescription: {
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
+  },
+  moreRowChevron: {
+    fontSize: 20,
+    color: colors.mutedForeground,
   },
   logoutButton: {
-    marginTop: 32,
-    marginHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 8,
+    marginTop: spacing.xxxl,
+    marginHorizontal: spacing.xl,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingVertical: spacing.md,
+    borderRadius: radii.md,
     alignItems: "center",
-    backgroundColor: "#FEE2E2",
+    backgroundColor: colors.destructiveMuted,
   },
   logoutButtonText: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#B3261E",
+    color: colors.destructive,
   },
 });

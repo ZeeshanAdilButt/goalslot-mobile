@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { Link, useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
@@ -31,6 +31,7 @@ import { Skeleton, SkeletonListItem } from "@/components/Skeleton";
 import { scheduleQueries, taskQueries } from "@/lib/queries";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 // There's no user-configured-timezone concept wired up yet (per the project
 // brief) — the device's own zone is the best available approximation of
@@ -147,13 +148,17 @@ export default function TodayScreen() {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
         <View style={styles.header}>
-          <Skeleton width="60%" height={22} />
-          <Skeleton width="40%" height={14} style={styles.headerDateSkeleton} />
+          <View style={styles.headerText}>
+            <Skeleton width="60%" height={22} />
+            <Skeleton width="40%" height={14} style={styles.headerDateSkeleton} />
+          </View>
         </View>
         <View style={styles.section}>
-          <SkeletonListItem />
-          <SkeletonListItem />
-          <SkeletonListItem />
+          <View style={styles.card}>
+            <SkeletonListItem />
+            <SkeletonListItem />
+            <SkeletonListItem />
+          </View>
         </View>
       </SafeAreaView>
     );
@@ -191,13 +196,24 @@ export default function TodayScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.header}>
-          <Text style={styles.greeting}>
-            {greetingFor(now.getHours())}
-            {user?.name ? `, ${user.name.split(" ")[0]}` : ""}
-          </Text>
-          <Text style={styles.date}>
-            {now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
-          </Text>
+          <View style={styles.headerText}>
+            <Text style={styles.greeting}>
+              {greetingFor(now.getHours())}
+              {user?.name ? `, ${user.name.split(" ")[0]}` : ""}
+            </Text>
+            <Text style={styles.date}>
+              {now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+            </Text>
+          </View>
+          <Link href="/settings" asChild>
+            <TouchableOpacity
+              style={styles.settingsButton}
+              accessibilityRole="button"
+              accessibilityLabel="Open settings"
+            >
+              <Text style={styles.settingsButtonIcon}>⚙</Text>
+            </TouchableOpacity>
+          </Link>
         </View>
 
         {nothingToday ? (
@@ -271,7 +287,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      {children}
+      <View style={styles.card}>{children}</View>
     </View>
   );
 }
@@ -355,45 +371,71 @@ function QuickAddFab({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.background,
   },
   scrollContent: {
-    paddingBottom: 96,
+    paddingBottom: spacing.xxxl * 3,
   },
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
-    gap: 4,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+  },
+  headerText: {
+    flex: 1,
+    gap: spacing.xxs,
   },
   headerDateSkeleton: {
-    marginTop: 4,
+    marginTop: spacing.xxs,
   },
   greeting: {
-    fontSize: 22,
-    fontWeight: "700",
+    ...typography.h1,
+    color: colors.foreground,
   },
   date: {
-    fontSize: 14,
-    opacity: 0.6,
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
+  },
+  settingsButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  settingsButtonIcon: {
+    fontSize: 18,
+    color: colors.foreground,
   },
   section: {
-    marginTop: 20,
-    paddingHorizontal: 20,
-    gap: 8,
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.xl,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    opacity: 0.5,
-    marginBottom: 4,
+    ...typography.label,
+    color: colors.mutedForeground,
+    marginBottom: spacing.sm,
+  },
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: spacing.xs,
+    overflow: "hidden",
+    ...shadows.card,
   },
   upNextLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    opacity: 0.5,
-    marginBottom: 4,
+    ...typography.caption,
+    color: colors.mutedForeground,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
   },
   taskListContainer: {
     // FlashList needs a layout pass; with scrollEnabled=false it sizes to
@@ -404,8 +446,11 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 10,
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
   },
   colorDot: {
     width: 12,
@@ -416,57 +461,54 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
   },
   statusDotActive: {
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.primary,
   },
   rowText: {
     flex: 1,
-    gap: 2,
+    gap: spacing.xxs,
   },
   rowTitle: {
-    fontSize: 15,
-    fontWeight: "500",
+    ...typography.body,
+    color: colors.foreground,
   },
   rowSubtitle: {
-    fontSize: 13,
-    opacity: 0.6,
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
   },
   fabContainer: {
     position: "absolute",
-    right: 20,
-    bottom: 24,
+    right: spacing.xl,
+    bottom: spacing.xxl,
     alignItems: "flex-end",
-    gap: 12,
+    gap: spacing.md,
   },
   fab: {
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
+    ...shadows.fab,
   },
   fabIcon: {
-    color: "#FFFFFF",
+    color: colors.primaryForeground,
     fontSize: 28,
     fontWeight: "400",
     lineHeight: 30,
   },
   fabOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: "#334155",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.full,
+    backgroundColor: colors.foreground,
   },
   fabOptionText: {
-    color: "#FFFFFF",
+    color: colors.white,
     fontWeight: "600",
     fontSize: 14,
   },

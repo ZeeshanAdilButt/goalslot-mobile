@@ -19,6 +19,7 @@ import { hapticCompletion } from "@/lib/haptics";
 import { goalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 // The two tabs this screen offers. PAUSED goals (the third GoalStatus value)
 // have no tab of their own in v1 — out of scope per the project brief.
@@ -202,7 +203,7 @@ function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
       accessibilityRole="button"
       accessibilityLabel={`Edit "${goal.title}"`}
     >
-      <View style={[styles.colorDot, { backgroundColor: goal.color || "#94A3B8" }]} />
+      <View style={[styles.colorDot, { backgroundColor: goal.color || colors.mutedForeground }]} />
 
       <View style={styles.rowBody}>
         <Text style={styles.title} numberOfLines={1}>
@@ -253,45 +254,54 @@ function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
   },
   tabRow: {
     flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    gap: 8,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+    gap: spacing.sm,
   },
   tabButton: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: "center",
+    borderRadius: radii.md,
     alignItems: "center",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   tabButtonActive: {
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.foreground,
+    borderColor: colors.foreground,
   },
   tabLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#334155",
+    ...typography.bodySmall,
+    color: colors.foreground,
   },
   tabLabelActive: {
-    color: "#FFFFFF",
+    color: colors.white,
   },
   listArea: {
     flex: 1,
   },
   listContent: {
-    paddingVertical: 8,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E2E8F0",
+    gap: spacing.md,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadows.card,
   },
   colorDot: {
     width: 12,
@@ -300,88 +310,84 @@ const styles = StyleSheet.create({
   },
   rowBody: {
     flex: 1,
-    gap: 4,
+    gap: spacing.xxs,
   },
   title: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#0F172A",
+    ...typography.title,
+    color: colors.foreground,
   },
   category: {
-    fontSize: 12,
-    color: "#64748B",
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
   },
   progressTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.secondary,
     overflow: "hidden",
-    marginTop: 2,
+    marginTop: spacing.xxs,
   },
   progressFill: {
     height: "100%",
     borderRadius: 3,
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
   },
   progressLabel: {
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.mutedForeground,
   },
   actions: {
     alignItems: "flex-end",
-    gap: 6,
+    gap: spacing.xs,
   },
   completeButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    backgroundColor: "#DCFCE7",
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.sm,
+    backgroundColor: colors.successMuted,
   },
   completeButtonText: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#166534",
+    color: colors.success,
   },
   statusBadge: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    backgroundColor: "#E2E8F0",
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.sm,
+    backgroundColor: colors.secondary,
   },
   statusBadgeText: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#334155",
+    color: colors.mutedForeground,
   },
   deleteButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
   },
   deleteButtonText: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#B3261E",
+    color: colors.destructive,
   },
   fab: {
     position: "absolute",
-    right: 20,
-    bottom: 24,
+    right: spacing.xl,
+    bottom: spacing.xxl,
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: "#1F2933",
+    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 4,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    ...shadows.fab,
   },
   fabIcon: {
     fontSize: 28,
     lineHeight: 28,
-    color: "#FFFFFF",
+    color: colors.primaryForeground,
     fontWeight: "400",
   },
 });
