@@ -10,6 +10,7 @@
 import {
   createCategoryQueries,
   createGoalQueries,
+  createLabelQueries,
   createScheduleQueries,
   createTaskQueries,
   createTimeEntryQueries,
@@ -21,4 +22,5 @@ export const goalQueries = createGoalQueries(apiClient.goals);
 export const taskQueries = createTaskQueries(apiClient.tasks);
 export const scheduleQueries = createScheduleQueries(apiClient.schedule);
 export const categoryQueries = createCategoryQueries(apiClient.categories);
+export const labelQueries = createLabelQueries(apiClient.labels);
 export const timeEntryQueries = createTimeEntryQueries(apiClient.timeEntries);
