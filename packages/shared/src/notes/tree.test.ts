@@ -182,7 +182,26 @@ describe('getProjection', () => {
     const items = visible('c')
     const projected = getProjection(items, 'c', 'b', 2 * INDENTATION_WIDTH, INDENTATION_WIDTH)
 
-    expect(projected).toEqual({ depth: 2, maxDepth: 2, minDepth: 0, parentId: 'a2' })
+    expect(projected).toEqual({
+      depth: 2,
+      maxDepth: 2,
+      minDepth: 0,
+      parentId: 'a2',
+      insertAfterId: 'a2',
+    })
+  })
+
+  it('returns an inert projection when the active or over row is unknown', () => {
+    const items = visible('c')
+
+    expect(getProjection(items, 'ghost', 'b', 0, INDENTATION_WIDTH)).toEqual({
+      depth: 0,
+      maxDepth: 0,
+      minDepth: 0,
+      parentId: null,
+      insertAfterId: null,
+    })
+    expect(getProjection(items, 'c', 'ghost', 0, INDENTATION_WIDTH).insertAfterId).toBeNull()
   })
 
   it('clamps an over-indent to maxDepth (previous row depth + 1)', () => {
@@ -194,13 +213,34 @@ describe('getProjection', () => {
     expect(projected.parentId).toBe('a2')
   })
 
-  it('clamps an over-outdent to minDepth (row below) and resolves a null parent', () => {
+  it('floors an over-outdent at the root level without running the slot away', () => {
     const items = visible('a1')
     const projected = getProjection(items, 'a1', 'a2', -10 * INDENTATION_WIDTH, INDENTATION_WIDTH)
 
     expect(projected.depth).toBe(0)
     expect(projected.minDepth).toBe(0)
     expect(projected.parentId).toBeNull()
+    // The requested depth is floored at 0 BEFORE the hop scan, so an
+    // over-shot leftward drag stays put instead of hopping to the end.
+    expect(projected.insertAfterId).toBe('a2')
+  })
+
+  it('hops the slot past later siblings so a middle child can outdent (smart outdent)', () => {
+    // p(c1, c2, c3): dragging c1 one level left cannot land between its
+    // own siblings, so the slot moves below the whole block and c1
+    // becomes p's sibling — what "drag left" means in OneNote/Workflowy.
+    const notes = [
+      note('p', null, 1000),
+      note('c1', 'p', 1000),
+      note('c2', 'p', 2000),
+      note('c3', 'p', 3000),
+    ]
+    const items = visible('c1', notes)
+    const projected = getProjection(items, 'c1', 'c1', -INDENTATION_WIDTH, INDENTATION_WIDTH)
+
+    expect(projected.depth).toBe(0)
+    expect(projected.parentId).toBeNull()
+    expect(projected.insertAfterId).toBe('c3')
   })
 
   it('keeps a same-depth drop as a sibling of the previous row', () => {
@@ -209,7 +249,13 @@ describe('getProjection', () => {
     const items = visible('a1a', notes)
     const projected = getProjection(items, 'a1a', 'a1a', -INDENTATION_WIDTH, INDENTATION_WIDTH)
 
-    expect(projected).toEqual({ depth: 1, maxDepth: 2, minDepth: 0, parentId: 'a' })
+    expect(projected).toEqual({
+      depth: 1,
+      maxDepth: 2,
+      minDepth: 0,
+      parentId: 'a',
+      insertAfterId: 'a1',
+    })
   })
 
   it('resolves an outdent parent from the nearest shallower row above', () => {
@@ -238,7 +284,7 @@ describe('buildReorderPayload', () => {
   it('renumbers the destination siblings on the sparse *1000 scale for a same-parent move', () => {
     const { items, notes } = setup('c')
     const projected = getProjection(items, 'c', 'b', 0, INDENTATION_WIDTH)
-    const payload = buildReorderPayload(items, notes, 'c', 'b', projected)
+    const payload = buildReorderPayload(notes, 'c', projected)
 
     expect(payload).toEqual([
       { noteId: 'a', parentId: null, order: 1000 },
@@ -250,10 +296,29 @@ describe('buildReorderPayload', () => {
   it('reparents on indent and only renumbers the new parent’s children', () => {
     const { items, notes } = setup('c')
     const projected = getProjection(items, 'c', 'b', 2 * INDENTATION_WIDTH, INDENTATION_WIDTH)
-    const payload = buildReorderPayload(items, notes, 'c', 'b', projected)
+    const payload = buildReorderPayload(notes, 'c', projected)
 
     // c becomes the (only) child of a2 — no root rows in the payload.
     expect(payload).toEqual([{ noteId: 'c', parentId: 'a2', order: 1000 }])
+  })
+
+  it('lands a smart-outdented middle child after its former parent', () => {
+    const notes = [
+      note('p', null, 1000),
+      note('c1', 'p', 1000),
+      note('c2', 'p', 2000),
+      note('c3', 'p', 3000),
+    ]
+    const { items } = setup('c1', notes)
+    const projected = getProjection(items, 'c1', 'c1', -INDENTATION_WIDTH, INDENTATION_WIDTH)
+    const payload = buildReorderPayload(notes, 'c1', projected)
+
+    // The row above the line (c3) is deep inside p's subtree; the anchor
+    // walk resolves it up to p, so c1 lands directly after p at root.
+    expect(payload).toEqual([
+      { noteId: 'p', parentId: null, order: 1000 },
+      { noteId: 'c1', parentId: null, order: 2000 },
+    ])
   })
 
   it('places an outdented note after its former ancestor among the new siblings', () => {
@@ -265,7 +330,7 @@ describe('buildReorderPayload', () => {
     ]
     const { items } = setup('z', notes)
     const projected = getProjection(items, 'z', 'z', INDENTATION_WIDTH, INDENTATION_WIDTH)
-    const payload = buildReorderPayload(items, notes, 'z', 'z', projected)
+    const payload = buildReorderPayload(notes, 'z', projected)
 
     expect(payload).toEqual([
       { noteId: 'a1', parentId: 'a', order: 1000 },
@@ -276,7 +341,7 @@ describe('buildReorderPayload', () => {
   it('moves a whole subtree by emitting only the dragged note, not its descendants', () => {
     const { items, notes } = setup('a') // a's children are tucked away
     const projected = getProjection(items, 'a', 'b', 0, INDENTATION_WIDTH)
-    const payload = buildReorderPayload(items, notes, 'a', 'b', projected)
+    const payload = buildReorderPayload(notes, 'a', projected)
 
     expect(payload).toEqual([
       { noteId: 'b', parentId: null, order: 1000 },
@@ -290,14 +355,13 @@ describe('buildReorderPayload', () => {
     const { items, notes } = setup('c')
     const projected = getProjection(items, 'c', 'c', 0, INDENTATION_WIDTH)
 
-    expect(buildReorderPayload(items, notes, 'c', 'c', projected)).toBeNull()
+    expect(buildReorderPayload(notes, 'c', projected)).toBeNull()
   })
 
-  it('returns null when the active or over row is unknown', () => {
+  it('returns null when the dragged note is unknown', () => {
     const { items, notes } = setup('c')
     const projected = getProjection(items, 'c', 'b', 0, INDENTATION_WIDTH)
 
-    expect(buildReorderPayload(items, notes, 'ghost', 'b', projected)).toBeNull()
-    expect(buildReorderPayload(items, notes, 'c', 'ghost', projected)).toBeNull()
+    expect(buildReorderPayload(notes, 'ghost', projected)).toBeNull()
   })
 })

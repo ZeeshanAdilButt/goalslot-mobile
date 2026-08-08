@@ -1,0 +1,1202 @@
+// Notes tab: OneNote-style pages tree (pages + subpages, indent = depth).
+// The tree math is all shared code (packages/shared/src/notes/tree.ts,
+// ported from the web's dnd-kit sortable-tree implementation): vertical drag
+// position picks the slot, horizontal drag offset picks the depth, and the
+// dragged note's subtree tucks away for the duration of the drag so cycles
+// are impossible by construction.
+//
+// Rendering deliberately uses a plain Reanimated Animated.ScrollView with
+// fixed-height rows instead of FlashList: cell recycling reuses row views
+// while a drag transform is mid-flight (the lifted row's transform would be
+// recycled onto another item), and a notes list is tens-to-hundreds of rows,
+// not thousands — fixed ROW_H math over a ScrollView is simpler and safe.
+//
+// Worklet boundary (important): the shared getProjection/buildReorderPayload
+// are plain JS and MUST NOT be called from worklets per-frame. The drag loop
+// keeps a minimal UI-thread mirror (an array of row depths + the same
+// prev/next clamp rules) to drive the drop indicator, fires haptics only on
+// slot/depth *changes* via runOnJS, and calls the real shared functions
+// exactly once, on drop, from the JS thread.
+//
+// Mutations follow the tasks.tsx snapshot-rollback shape: optimistic cache
+// patch -> live call -> invalidate on success / restore snapshot + Alert on
+// failure.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AccessibilityInfo,
+  Alert,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
+  type AccessibilityActionEvent,
+  type AccessibilityActionInfo,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Swipeable, { type SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
+import Animated, {
+  runOnJS,
+  scrollTo,
+  useAnimatedRef,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useFrameCallback,
+  useSharedValue,
+  withTiming,
+  type SharedValue,
+} from "react-native-reanimated";
+import { useQuery } from "@tanstack/react-query";
+import { router, useFocusEffect } from "expo-router";
+
+import {
+  buildNoteTree,
+  buildReorderPayload,
+  flattenVisibleTree,
+  getProjection,
+  type FlatNote,
+  type Note,
+  type NoteReorderItem,
+  type NoteTreeItem,
+} from "@goalslot/shared";
+
+import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { apiClient } from "@/lib/api-client";
+import {
+  hapticCompletion,
+  hapticDepthTick,
+  hapticDragStart,
+  hapticLight,
+  hapticSlotTick,
+} from "@/lib/haptics";
+import { noteQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
+import { useNotesUiStore } from "@/lib/notes-ui-store";
+import { useAnalytics } from "@/providers/growth-provider";
+
+/** Fixed row height — every drag/drop position is index * ROW_H. */
+const ROW_H = 48;
+/** On-screen indent per depth level AND the horizontal drag quantum passed
+ *  to the shared getProjection — same value as the shared
+ *  INDENTATION_WIDTH, kept as a local constant because it doubles as the
+ *  layout indent. Wide enough that thumb jitter doesn't flicker the
+ *  projected depth. */
+const INDENT_W = 24;
+/** Vertical padding above/below the rows inside the scroll content. */
+const LIST_PAD = 8;
+/** Start autoscrolling when the lifted row is within this of an edge. */
+const AUTOSCROLL_EDGE = 72;
+/** Max autoscroll speed in px/second (proximity-ramped from 0). */
+const AUTOSCROLL_MAX_SPEED = 520;
+const SKELETON_ROW_COUNT = 8;
+const DRAG_ACTIVATE_MS = 300;
+const INDICATOR_TIMING_MS = 120;
+
+const listKey = noteQueries.noteQueries.list();
+
+export default function NotesScreen() {
+  const analytics = useAnalytics();
+
+  const { data: notes, isPending, isError, isFetching, refetch } = useQuery(noteQueries.list());
+
+  const collapsedIds = useNotesUiStore((s) => s.collapsedIds);
+  const toggleCollapsed = useNotesUiStore((s) => s.toggleCollapsed);
+  const expand = useNotesUiStore((s) => s.expand);
+
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      analytics.track({ name: "screenViewed", payload: { screenName: "notes" } });
+    }, [analytics]),
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (mounted) setReduceMotion(enabled);
+    });
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, []);
+
+  const collapsedSet = useMemo(() => new Set(collapsedIds), [collapsedIds]);
+  const tree = useMemo(() => buildNoteTree(notes ?? []), [notes]);
+  const visibleItems = useMemo(
+    () => flattenVisibleTree(tree, collapsedSet, activeId),
+    [tree, collapsedSet, activeId],
+  );
+
+  /** id -> full-tree node (children lookups for delete/indent/outdent). */
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, NoteTreeItem>();
+    const walk = (items: NoteTreeItem[]) => {
+      for (const item of items) {
+        map.set(item.id, item);
+        walk(item.children);
+      }
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
+
+  /** id -> "page X of Y" among its full-tree siblings, for a11y labels. */
+  const siblingInfo = useMemo(() => {
+    const map = new Map<string, { position: number; count: number }>();
+    const walk = (items: NoteTreeItem[]) => {
+      items.forEach((item, index) => {
+        map.set(item.id, { position: index + 1, count: items.length });
+        walk(item.children);
+      });
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
+
+  // Refs so the (stable) drag callbacks always see the latest data without
+  // recreating every row's gesture on each fetch.
+  const visibleItemsRef = useRef(visibleItems);
+  visibleItemsRef.current = visibleItems;
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+
+  // ---------------------------------------------------------------------
+  // Drag state (UI-thread shared values)
+  // ---------------------------------------------------------------------
+  const scrollRef = useAnimatedRef<Animated.ScrollView>();
+  const scrollOffset = useSharedValue(0);
+  const dragActive = useSharedValue(false);
+  /** Set only after the JS re-render (subtree tucked away) has synced the
+   *  depth mirror below — projections before that would use stale rows. */
+  const dragReady = useSharedValue(false);
+  const dragX = useSharedValue(0);
+  const dragY = useSharedValue(0);
+  const dragStartScroll = useSharedValue(0);
+  const activeIndexSv = useSharedValue(0);
+  const activeDepthSv = useSharedValue(0);
+  const targetIndexSv = useSharedValue(0);
+  const projectedDepthSv = useSharedValue(0);
+  /** UI-thread mirror of visibleItems' depths (minimal projection input). */
+  const depthsSv = useSharedValue<number[]>([]);
+  const viewportHSv = useSharedValue(0);
+  const indicatorY = useSharedValue(0);
+  const indicatorLeft = useSharedValue(0);
+  const liftScale = useSharedValue(1);
+  const reduceMotionSv = useSharedValue(false);
+
+  useEffect(() => {
+    reduceMotionSv.value = reduceMotion;
+  }, [reduceMotion, reduceMotionSv]);
+
+  // Sync the UI-thread mirror once the tucked-subtree list has rendered.
+  useEffect(() => {
+    if (activeId === null) {
+      dragReady.value = false;
+      return;
+    }
+    const index = visibleItems.findIndex((item) => item.id === activeId);
+    if (index === -1) return;
+    depthsSv.value = visibleItems.map((item) => item.depth);
+    activeIndexSv.value = index;
+    activeDepthSv.value = visibleItems[index]?.depth ?? 0;
+    targetIndexSv.value = index;
+    projectedDepthSv.value = visibleItems[index]?.depth ?? 0;
+    indicatorY.value = LIST_PAD + index * ROW_H - 1;
+    indicatorLeft.value = 16 + (visibleItems[index]?.depth ?? 0) * INDENT_W;
+    dragReady.value = true;
+  }, [
+    activeId,
+    visibleItems,
+    activeDepthSv,
+    activeIndexSv,
+    depthsSv,
+    dragReady,
+    indicatorLeft,
+    indicatorY,
+    projectedDepthSv,
+    targetIndexSv,
+  ]);
+
+  /**
+   * UI-thread mirror of the shared getProjection's clamp rules, driving the
+   * drop indicator only. Runs on gesture updates and on autoscroll frames —
+   * never calls back into JS except when the quantized slot/depth actually
+   * changes (haptic ticks).
+   */
+  const updateProjection = useCallback(() => {
+    "worklet";
+    if (!dragActive.value || !dragReady.value) return;
+    const depths = depthsSv.value;
+    const count = depths.length;
+    if (count === 0) return;
+
+    const ai = activeIndexSv.value;
+    const rawIndex = ai + Math.round((dragY.value + scrollOffset.value - dragStartScroll.value) / ROW_H);
+    const idx = Math.max(0, Math.min(rawIndex, count - 1));
+
+    // Mirror of the shared insertion-position model. `without` is the
+    // visible list with the active row removed; withoutDepth(j) maps a
+    // position in it back into `depths` (removing index ai shifts every
+    // later row down one). `p` is the insertion position.
+    const withoutCount = count - 1;
+    const withoutDepth = (j: number) => {
+      "worklet";
+      return depths[j < ai ? j : j + 1] ?? 0;
+    };
+
+    // Floor at 0 before the hop scan, then hop down past any block
+    // deeper than the requested depth — the smart outdent that lets a
+    // middle child become a sibling of its parent (see getProjection).
+    const requestedDepth = Math.max(0, activeDepthSv.value + Math.round(dragX.value / INDENT_W));
+    let p = idx;
+    while (p < withoutCount && withoutDepth(p) > requestedDepth) p++;
+
+    const hasPrev = p - 1 >= 0;
+    const hasNext = p < withoutCount;
+    const maxDepth = hasPrev ? withoutDepth(p - 1) + 1 : 0;
+    const minDepth = hasNext ? withoutDepth(p) : 0;
+    let depth = requestedDepth;
+    if (depth > maxDepth) depth = maxDepth;
+    if (depth < minDepth) depth = minDepth;
+
+    // The line sits under the row at `without` position p-1, mapped back
+    // to its index among the rendered rows (the active row stays in the
+    // list, lifted under the finger).
+    const gapIndex = hasPrev ? (p - 1 < ai ? p - 1 : p) + 1 : 0;
+    const y = LIST_PAD + gapIndex * ROW_H - 1;
+
+    // targetIndexSv keeps the PRE-hop slot: it is what handleDrop feeds
+    // back into the shared getProjection, which re-derives the hop
+    // itself, and a finger crossing a row boundary is the right moment
+    // for the slot haptic.
+    if (idx !== targetIndexSv.value) {
+      targetIndexSv.value = idx;
+      runOnJS(hapticSlotTick)();
+    }
+    if (y !== indicatorY.value) {
+      indicatorY.value = reduceMotionSv.value ? y : withTiming(y, { duration: INDICATOR_TIMING_MS });
+    }
+    if (depth !== projectedDepthSv.value) {
+      projectedDepthSv.value = depth;
+      const left = 16 + depth * INDENT_W;
+      indicatorLeft.value = reduceMotionSv.value ? left : withTiming(left, { duration: INDICATOR_TIMING_MS });
+      runOnJS(hapticDepthTick)();
+    }
+  }, [
+    activeDepthSv,
+    activeIndexSv,
+    depthsSv,
+    dragActive,
+    dragReady,
+    dragStartScroll,
+    dragX,
+    dragY,
+    indicatorLeft,
+    indicatorY,
+    projectedDepthSv,
+    reduceMotionSv,
+    scrollOffset,
+    targetIndexSv,
+  ]);
+
+  const scrollHandler = useAnimatedScrollHandler((event) => {
+    scrollOffset.value = event.contentOffset.y;
+    // Autoscroll moves the list under a stationary finger — recompute the
+    // slot from the new offset even though the gesture emitted no update.
+    updateProjection();
+  });
+
+  // Proximity-ramped autoscroll while the lifted row sits near an edge.
+  useFrameCallback((frame) => {
+    if (!dragActive.value || !dragReady.value) return;
+    const viewportH = viewportHSv.value;
+    if (viewportH <= 0) return;
+
+    // The lifted row's on-screen center: content position minus scroll — the
+    // scroll terms cancel, so this only moves when the finger does.
+    const screenY = LIST_PAD + activeIndexSv.value * ROW_H + dragY.value - dragStartScroll.value + ROW_H / 2;
+
+    let direction = 0;
+    let proximity = 0;
+    if (screenY < AUTOSCROLL_EDGE) {
+      direction = -1;
+      proximity = Math.min(1, (AUTOSCROLL_EDGE - screenY) / AUTOSCROLL_EDGE);
+    } else if (screenY > viewportH - AUTOSCROLL_EDGE) {
+      direction = 1;
+      proximity = Math.min(1, (screenY - (viewportH - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE);
+    }
+    if (direction === 0) return;
+
+    const dtSeconds = (frame.timeSincePreviousFrame ?? 16) / 1000;
+    const maxOffset = Math.max(0, LIST_PAD * 2 + depthsSv.value.length * ROW_H - viewportH);
+    const next = Math.max(
+      0,
+      Math.min(scrollOffset.value + direction * proximity * AUTOSCROLL_MAX_SPEED * dtSeconds, maxOffset),
+    );
+    if (next === scrollOffset.value) return;
+    scrollTo(scrollRef, 0, next, false);
+    scrollOffset.value = next;
+    updateProjection();
+  });
+
+  // ---------------------------------------------------------------------
+  // Mutations (all snapshot-rollback, tasks.tsx pattern)
+  // ---------------------------------------------------------------------
+
+  const restoreSnapshot = useCallback((previous: Note[] | undefined) => {
+    queryClient.setQueryData<Note[]>(listKey, previous);
+  }, []);
+
+  const announce = useCallback((message: string) => {
+    AccessibilityInfo.announceForAccessibility(message);
+  }, []);
+
+  /**
+   * Apply a reorder payload: optimistic parentId/order rewrite on the list
+   * cache, live PUT /notes/reorder, invalidate on success, snapshot rollback
+   * on failure. Shared by drag-drop, the a11y move actions, and the
+   * delete-time child reparenting.
+   */
+  const applyReorder = useCallback(
+    async (
+      payload: NoteReorderItem[],
+      options: { movedId?: string; expandParentId?: string | null; announceMessage?: string } = {},
+    ): Promise<boolean> => {
+      const previous = queryClient.getQueryData<Note[]>(listKey);
+      const patchById = new Map(payload.map((item) => [item.noteId, item]));
+      queryClient.setQueryData<Note[]>(listKey, (existing) =>
+        (existing ?? []).map((note) => {
+          const patch = patchById.get(note.id);
+          return patch ? { ...note, parentId: patch.parentId, order: patch.order } : note;
+        }),
+      );
+      if (options.expandParentId) expand(options.expandParentId);
+
+      try {
+        await apiClient.notes.reorder(payload);
+        void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
+        hapticCompletion();
+        if (options.movedId) {
+          analytics.track({ name: "noteMoved", payload: { noteId: options.movedId } });
+        }
+        if (options.announceMessage) announce(options.announceMessage);
+        return true;
+      } catch {
+        restoreSnapshot(previous);
+        Alert.alert("Couldn't move page", "Please try again.");
+        return false;
+      }
+    },
+    [analytics, announce, expand, restoreSnapshot],
+  );
+
+  const startDrag = useCallback((noteId: string) => {
+    hapticDragStart();
+    setActiveId(noteId);
+  }, []);
+
+  const endDrag = useCallback(() => {
+    setActiveId(null);
+  }, []);
+
+  /**
+   * Drop: called once, on the JS thread, with the final slot/offset read
+   * from the shared values. This is where the real shared projection math
+   * runs — getProjection for the canonical depth/parent, then
+   * buildReorderPayload for the PUT body (null = no-op drop).
+   */
+  const handleDrop = useCallback(
+    (noteId: string, targetIndex: number, dragOffsetX: number) => {
+      const items = visibleItemsRef.current;
+      const allNotes = notesRef.current ?? [];
+      const clamped = Math.max(0, Math.min(targetIndex, items.length - 1));
+      const over = items[clamped];
+      const active = items.find((item) => item.id === noteId);
+
+      if (over && active) {
+        const projected = getProjection(items, noteId, over.id, dragOffsetX, INDENT_W);
+        const payload = buildReorderPayload(allNotes, noteId, projected);
+        if (payload) {
+          const parentTitle = projected.parentId ? nodeMap.get(projected.parentId)?.title : null;
+          void applyReorder(payload, {
+            movedId: noteId,
+            expandParentId: projected.parentId,
+            announceMessage: parentTitle
+              ? `Moved "${active.title}" under "${parentTitle}"`
+              : `Moved "${active.title}" to the top level`,
+          });
+        }
+      }
+      endDrag();
+    },
+    [applyReorder, endDrag, nodeMap],
+  );
+
+  // Stable trampolines so per-row gestures don't recreate on every data
+  // change (runOnJS targets must not be stale closures).
+  const handleDropRef = useRef(handleDrop);
+  handleDropRef.current = handleDrop;
+  const stableHandleDrop = useCallback((noteId: string, targetIndex: number, dragOffsetX: number) => {
+    handleDropRef.current(noteId, targetIndex, dragOffsetX);
+  }, []);
+
+  const createNote = useCallback(
+    async (parentId: string | null) => {
+      if (isCreating) return;
+      setIsCreating(true);
+      try {
+        const response = await apiClient.notes.create({
+          title: "Untitled page",
+          content: "",
+          parentId,
+        });
+        const created = response.data;
+        queryClient.setQueryData<Note[]>(listKey, (existing) => [...(existing ?? []), created]);
+        void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
+        if (parentId) expand(parentId);
+        analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
+        router.push(`/note/${created.id}`);
+      } catch {
+        Alert.alert("Couldn't create page", "Please try again.");
+      } finally {
+        setIsCreating(false);
+      }
+    },
+    [analytics, expand, isCreating],
+  );
+
+  const deleteNote = useCallback(
+    async (note: FlatNote) => {
+      const children = nodeMap.get(note.id)?.children ?? [];
+      const previous = queryClient.getQueryData<Note[]>(listKey);
+
+      // The server cascades the delete to descendants, so surviving children
+      // must be reparented to the deleted note's parent FIRST (same order the
+      // web does it): grandparent's children keep their sequence, the
+      // orphans append after them, everything renumbered on the *1000 scale.
+      let reparent: NoteReorderItem[] | null = null;
+      if (children.length > 0) {
+        const targetParentId = note.parentId ?? null;
+        const keptSiblings = (notesRef.current ?? [])
+          .filter((n) => (n.parentId ?? null) === targetParentId && n.id !== note.id)
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        reparent = [...keptSiblings, ...children].map((n, i) => ({
+          noteId: n.id,
+          parentId: targetParentId,
+          order: (i + 1) * 1000,
+        }));
+      }
+
+      // Optimistic: reparent children and drop the note in one cache write.
+      const patchById = new Map((reparent ?? []).map((item) => [item.noteId, item]));
+      queryClient.setQueryData<Note[]>(listKey, (existing) =>
+        (existing ?? [])
+          .filter((n) => n.id !== note.id)
+          .map((n) => {
+            const patch = patchById.get(n.id);
+            return patch ? { ...n, parentId: patch.parentId, order: patch.order } : n;
+          }),
+      );
+
+      try {
+        if (reparent) await apiClient.notes.reorder(reparent);
+        await apiClient.notes.delete(note.id);
+        void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
+        analytics.track({ name: "noteDeleted", payload: { noteId: note.id } });
+        announce(`Deleted "${note.title}"`);
+      } catch {
+        restoreSnapshot(previous);
+        Alert.alert("Couldn't delete page", "Please try again.");
+      }
+    },
+    [analytics, announce, nodeMap, restoreSnapshot],
+  );
+
+  const confirmDelete = useCallback(
+    (note: FlatNote) => {
+      const subpageNote =
+        note.descendantCount > 0
+          ? ` Its ${note.descendantCount === 1 ? "subpage" : `${note.descendantCount} subpages`} will move up a level.`
+          : "";
+      Alert.alert("Delete page?", `"${note.title}" will be permanently removed.${subpageNote}`, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => void deleteNote(note) },
+      ]);
+    },
+    [deleteNote],
+  );
+
+  const toggleFavorite = useCallback(
+    async (note: FlatNote) => {
+      const nextValue = !note.isFavorite;
+      const previous = queryClient.getQueryData<Note[]>(listKey);
+      queryClient.setQueryData<Note[]>(listKey, (existing) =>
+        (existing ?? []).map((n) => (n.id === note.id ? { ...n, isFavorite: nextValue } : n)),
+      );
+      try {
+        await apiClient.notes.update(note.id, { isFavorite: nextValue });
+        void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
+        hapticLight();
+      } catch {
+        restoreSnapshot(previous);
+        Alert.alert("Couldn't update favorite", "Please try again.");
+      }
+    },
+    [restoreSnapshot],
+  );
+
+  const openNote = useCallback((noteId: string) => {
+    router.push(`/note/${noteId}`);
+  }, []);
+
+  const toggleCollapse = useCallback(
+    (note: FlatNote) => {
+      hapticLight();
+      const collapsing = !collapsedSet.has(note.id);
+      toggleCollapsed(note.id);
+      announce(collapsing ? `Collapsed "${note.title}"` : `Expanded "${note.title}"`);
+    },
+    [announce, collapsedSet, toggleCollapsed],
+  );
+
+  // ---------------------------------------------------------------------
+  // Accessibility move actions — same payload shapes as drag-drop, driven
+  // by sibling lists instead of pointer geometry.
+  // ---------------------------------------------------------------------
+
+  const siblingsOf = useCallback((parentId: string | null, excludeId?: string): Note[] => {
+    return (notesRef.current ?? [])
+      .filter((n) => (n.parentId ?? null) === parentId && n.id !== excludeId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, []);
+
+  const renumber = useCallback(
+    (ordered: Note[], parentId: string | null): NoteReorderItem[] =>
+      ordered.map((n, i) => ({ noteId: n.id, parentId, order: (i + 1) * 1000 })),
+    [],
+  );
+
+  const moveWithinSiblings = useCallback(
+    (note: FlatNote, delta: -1 | 1) => {
+      const parentId = note.parentId ?? null;
+      const siblings = siblingsOf(parentId);
+      const index = siblings.findIndex((n) => n.id === note.id);
+      const target = index + delta;
+      if (index === -1 || target < 0 || target >= siblings.length) {
+        announce(delta === -1 ? "Already the first page at this level" : "Already the last page at this level");
+        return;
+      }
+      const next = [...siblings];
+      next.splice(index, 1);
+      next.splice(target, 0, siblings[index] as Note);
+      void applyReorder(renumber(next, parentId), {
+        movedId: note.id,
+        announceMessage: `Moved "${note.title}" ${delta === -1 ? "up" : "down"}, page ${target + 1} of ${siblings.length}`,
+      });
+    },
+    [announce, applyReorder, renumber, siblingsOf],
+  );
+
+  const indentNote = useCallback(
+    (note: FlatNote) => {
+      const parentId = note.parentId ?? null;
+      const siblings = siblingsOf(parentId);
+      const index = siblings.findIndex((n) => n.id === note.id);
+      const newParent = index > 0 ? siblings[index - 1] : undefined;
+      if (!newParent) {
+        announce("No page above to become a subpage of");
+        return;
+      }
+      const newSiblings = [...siblingsOf(newParent.id, note.id), note];
+      void applyReorder(renumber(newSiblings, newParent.id), {
+        movedId: note.id,
+        expandParentId: newParent.id,
+        announceMessage: `Made "${note.title}" a subpage of "${newParent.title}"`,
+      });
+    },
+    [announce, applyReorder, renumber, siblingsOf],
+  );
+
+  const outdentNote = useCallback(
+    (note: FlatNote) => {
+      if (!note.parentId) {
+        announce("Already a top-level page");
+        return;
+      }
+      const parent = nodeMap.get(note.parentId);
+      const grandparentId = parent?.parentId ?? null;
+      const targetSiblings = siblingsOf(grandparentId, note.id);
+      const parentIndex = targetSiblings.findIndex((n) => n.id === note.parentId);
+      const next = [...targetSiblings];
+      next.splice(parentIndex === -1 ? next.length : parentIndex + 1, 0, note);
+      void applyReorder(renumber(next, grandparentId), {
+        movedId: note.id,
+        announceMessage: `Promoted "${note.title}" up a level`,
+      });
+    },
+    [announce, applyReorder, nodeMap, renumber, siblingsOf],
+  );
+
+  const handleAccessibilityAction = useCallback(
+    (note: FlatNote, event: AccessibilityActionEvent) => {
+      switch (event.nativeEvent.actionName) {
+        case "moveUp":
+          moveWithinSiblings(note, -1);
+          break;
+        case "moveDown":
+          moveWithinSiblings(note, 1);
+          break;
+        case "indent":
+          indentNote(note);
+          break;
+        case "outdent":
+          outdentNote(note);
+          break;
+        case "expand":
+        case "collapse":
+          toggleCollapse(note);
+          break;
+        default:
+          break;
+      }
+    },
+    [indentNote, moveWithinSiblings, outdentNote, toggleCollapse],
+  );
+
+  // ---------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------
+
+  const indicatorStyle = useAnimatedStyle(() => ({
+    opacity: dragActive.value && dragReady.value ? 1 : 0,
+    transform: [{ translateY: indicatorY.value }],
+    left: indicatorLeft.value,
+  }));
+
+  const dragInProgress = activeId !== null;
+  const contentMinHeight = LIST_PAD * 2 + visibleItems.length * ROW_H;
+
+  let body: React.ReactNode;
+  if (isPending) {
+    body = (
+      <View>
+        {Array.from({ length: SKELETON_ROW_COUNT }).map((_, index) => (
+          <SkeletonListItem key={index} showLeading={false} />
+        ))}
+      </View>
+    );
+  } else if (isError && !notes) {
+    body = <ErrorState message="Couldn't load your notes." onRetry={() => void refetch()} />;
+  } else if (visibleItems.length === 0) {
+    body = (
+      <EmptyState
+        message="No pages yet — create your first note"
+        actionLabel="New page"
+        onAction={() => void createNote(null)}
+      />
+    );
+  } else {
+    body = (
+      <Animated.ScrollView
+        ref={scrollRef}
+        onScroll={scrollHandler}
+        scrollEventThrottle={16}
+        scrollEnabled={!dragInProgress}
+        onLayout={(event) => {
+          viewportHSv.value = event.nativeEvent.layout.height;
+        }}
+        refreshControl={
+          <RefreshControl refreshing={isFetching && !isPending} onRefresh={() => void refetch()} />
+        }
+        contentContainerStyle={[styles.listContent, { minHeight: contentMinHeight }]}
+      >
+        {visibleItems.map((item, index) => (
+          <NoteRow
+            key={item.id}
+            item={item}
+            index={index}
+            isActive={item.id === activeId}
+            dragInProgress={dragInProgress}
+            collapsed={collapsedSet.has(item.id)}
+            siblingInfo={siblingInfo.get(item.id)}
+            drag={{
+              dragActive,
+              dragReady,
+              dragX,
+              dragY,
+              dragStartScroll,
+              scrollOffset,
+              activeIndexSv,
+              activeDepthSv,
+              targetIndexSv,
+              liftScale,
+              reduceMotionSv,
+              updateProjection,
+            }}
+            onStartDrag={startDrag}
+            onDrop={stableHandleDrop}
+            onCancelDrag={endDrag}
+            onPress={openNote}
+            onToggleCollapse={toggleCollapse}
+            onDelete={confirmDelete}
+            onNewSubpage={(note) => void createNote(note.id)}
+            onToggleFavorite={(note) => void toggleFavorite(note)}
+            onAccessibilityAction={handleAccessibilityAction}
+          />
+        ))}
+        <Animated.View pointerEvents="none" style={[styles.dropIndicator, indicatorStyle]}>
+          <View style={styles.dropIndicatorDot} />
+          <View style={styles.dropIndicatorLine} />
+        </Animated.View>
+      </Animated.ScrollView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Notes</Text>
+        <Pressable
+          style={[styles.newButton, isCreating && styles.newButtonDisabled]}
+          onPress={() => void createNote(null)}
+          disabled={isCreating}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="New page"
+        >
+          <Text style={styles.newButtonText}>+ New</Text>
+        </Pressable>
+      </View>
+      <View style={styles.listArea}>{body}</View>
+    </SafeAreaView>
+  );
+}
+
+// -----------------------------------------------------------------------
+// Row
+// -----------------------------------------------------------------------
+
+interface DragController {
+  dragActive: SharedValue<boolean>;
+  dragReady: SharedValue<boolean>;
+  dragX: SharedValue<number>;
+  dragY: SharedValue<number>;
+  dragStartScroll: SharedValue<number>;
+  scrollOffset: SharedValue<number>;
+  activeIndexSv: SharedValue<number>;
+  activeDepthSv: SharedValue<number>;
+  targetIndexSv: SharedValue<number>;
+  liftScale: SharedValue<number>;
+  reduceMotionSv: SharedValue<boolean>;
+  updateProjection: () => void;
+}
+
+interface NoteRowProps {
+  item: FlatNote;
+  index: number;
+  isActive: boolean;
+  dragInProgress: boolean;
+  collapsed: boolean;
+  siblingInfo: { position: number; count: number } | undefined;
+  drag: DragController;
+  onStartDrag: (noteId: string) => void;
+  onDrop: (noteId: string, targetIndex: number, dragOffsetX: number) => void;
+  onCancelDrag: () => void;
+  onPress: (noteId: string) => void;
+  onToggleCollapse: (note: FlatNote) => void;
+  onDelete: (note: FlatNote) => void;
+  onNewSubpage: (note: FlatNote) => void;
+  onToggleFavorite: (note: FlatNote) => void;
+  onAccessibilityAction: (note: FlatNote, event: AccessibilityActionEvent) => void;
+}
+
+const LIFT_SCALE = 1.03;
+
+function NoteRow({
+  item,
+  index,
+  isActive,
+  dragInProgress,
+  collapsed,
+  siblingInfo,
+  drag,
+  onStartDrag,
+  onDrop,
+  onCancelDrag,
+  onPress,
+  onToggleCollapse,
+  onDelete,
+  onNewSubpage,
+  onToggleFavorite,
+  onAccessibilityAction,
+}: NoteRowProps) {
+  const swipeableRef = useRef<SwipeableMethods>(null);
+
+  const {
+    dragActive,
+    dragReady,
+    dragX,
+    dragY,
+    dragStartScroll,
+    scrollOffset,
+    activeIndexSv,
+    activeDepthSv,
+    targetIndexSv,
+    liftScale,
+    reduceMotionSv,
+    updateProjection,
+  } = drag;
+
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        .activateAfterLongPress(DRAG_ACTIVATE_MS)
+        .shouldCancelWhenOutside(false)
+        .onStart(() => {
+          dragActive.value = true;
+          dragReady.value = false; // JS effect flips it after the tuck re-render
+          dragX.value = 0;
+          dragY.value = 0;
+          dragStartScroll.value = scrollOffset.value;
+          activeIndexSv.value = index;
+          activeDepthSv.value = item.depth;
+          targetIndexSv.value = index;
+          liftScale.value = reduceMotionSv.value
+            ? LIFT_SCALE
+            : withTiming(LIFT_SCALE, { duration: INDICATOR_TIMING_MS });
+          runOnJS(onStartDrag)(item.id);
+        })
+        .onUpdate((event) => {
+          dragX.value = event.translationX;
+          dragY.value = event.translationY;
+          updateProjection();
+        })
+        .onEnd(() => {
+          runOnJS(onDrop)(item.id, targetIndexSv.value, dragX.value);
+        })
+        .onFinalize((_event, success) => {
+          dragActive.value = false;
+          dragReady.value = false;
+          liftScale.value = reduceMotionSv.value ? 1 : withTiming(1, { duration: INDICATOR_TIMING_MS });
+          if (!success) runOnJS(onCancelDrag)();
+        }),
+    [
+      activeDepthSv,
+      activeIndexSv,
+      dragActive,
+      dragReady,
+      dragStartScroll,
+      dragX,
+      dragY,
+      index,
+      item.depth,
+      item.id,
+      liftScale,
+      onCancelDrag,
+      onDrop,
+      onStartDrag,
+      reduceMotionSv,
+      scrollOffset,
+      targetIndexSv,
+      updateProjection,
+    ],
+  );
+
+  // Lift transform — only ever non-identity on the active row. The vertical
+  // term adds the autoscroll delta so the row stays under the finger while
+  // the list moves beneath it.
+  const liftedStyle = useAnimatedStyle(() => {
+    if (!isActive) {
+      return { transform: [{ translateY: 0 }, { translateX: 0 }, { scale: 1 }] };
+    }
+    return {
+      transform: [
+        { translateY: dragY.value + (scrollOffset.value - dragStartScroll.value) },
+        { translateX: dragX.value },
+        { scale: liftScale.value },
+      ],
+    };
+  }, [isActive]);
+
+  const chevronStyle = useAnimatedStyle(() => {
+    const target = collapsed ? "0deg" : "90deg";
+    return {
+      transform: [
+        { rotate: reduceMotionSv.value ? target : withTiming(target, { duration: 150 }) },
+      ],
+    };
+  }, [collapsed]);
+
+  const accessibilityActions = useMemo<AccessibilityActionInfo[]>(() => {
+    const actions: AccessibilityActionInfo[] = [
+      { name: "moveUp", label: "Move up" },
+      { name: "moveDown", label: "Move down" },
+      { name: "indent", label: "Make subpage of previous page" },
+      { name: "outdent", label: "Promote page" },
+    ];
+    if (item.childCount > 0) {
+      actions.push(
+        collapsed
+          ? { name: "expand", label: "Expand subpages" }
+          : { name: "collapse", label: "Collapse subpages" },
+      );
+    }
+    return actions;
+  }, [collapsed, item.childCount]);
+
+  const accessibilityLabel = `"${item.title}", level ${item.depth + 1}, page ${siblingInfo?.position ?? 1} of ${siblingInfo?.count ?? 1}`;
+
+  const renderLeftActions = useCallback(
+    () => (
+      <Pressable
+        style={[styles.swipeAction, styles.deleteAction]}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete(item);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete "${item.title}"`}
+      >
+        <Text style={styles.swipeActionText}>Delete</Text>
+      </Pressable>
+    ),
+    [item, onDelete],
+  );
+
+  const renderRightActions = useCallback(
+    () => (
+      <View style={styles.swipeActionsRow}>
+        <Pressable
+          style={[styles.swipeAction, styles.subpageAction]}
+          onPress={() => {
+            swipeableRef.current?.close();
+            onNewSubpage(item);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`New subpage inside "${item.title}"`}
+        >
+          <Text style={styles.swipeActionText}>New subpage</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.swipeAction, styles.favoriteAction]}
+          onPress={() => {
+            swipeableRef.current?.close();
+            onToggleFavorite(item);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={
+            item.isFavorite ? `Remove "${item.title}" from favorites` : `Add "${item.title}" to favorites`
+          }
+        >
+          <Text style={styles.swipeActionText}>{item.isFavorite ? "Unfavorite" : "Favorite"}</Text>
+        </Pressable>
+      </View>
+    ),
+    [item, onNewSubpage, onToggleFavorite],
+  );
+
+  return (
+    <View style={isActive ? styles.rowLifted : undefined}>
+      <Swipeable
+        ref={swipeableRef}
+        enabled={!dragInProgress}
+        renderLeftActions={renderLeftActions}
+        renderRightActions={renderRightActions}
+        overshootLeft={false}
+        overshootRight={false}
+        leftThreshold={40}
+        rightThreshold={40}
+      >
+        <GestureDetector gesture={pan}>
+          <Animated.View style={[styles.rowSurface, isActive && styles.rowSurfaceActive, liftedStyle]}>
+            <Pressable
+              style={[styles.row, { paddingLeft: 16 + item.depth * INDENT_W }]}
+              onPress={() => onPress(item.id)}
+              accessibilityRole="button"
+              accessibilityLabel={accessibilityLabel}
+              accessibilityHint="Opens the page. Long press then drag to move it."
+              accessibilityActions={accessibilityActions}
+              onAccessibilityAction={(event) => onAccessibilityAction(item, event)}
+            >
+              {item.childCount > 0 ? (
+                <Pressable
+                  style={styles.chevronButton}
+                  onPress={() => onToggleCollapse(item)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    collapsed ? `Expand subpages of "${item.title}"` : `Collapse subpages of "${item.title}"`
+                  }
+                >
+                  <Animated.Text style={[styles.chevron, chevronStyle]}>›</Animated.Text>
+                </Pressable>
+              ) : (
+                <View style={styles.chevronSpacer} />
+              )}
+
+              <Text style={styles.rowTitle} numberOfLines={1}>
+                {item.isFavorite ? "★ " : ""}
+                {item.title || "Untitled page"}
+              </Text>
+
+              {isActive && item.descendantCount > 0 ? (
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{item.descendantCount + 1}</Text>
+                </View>
+              ) : collapsed && item.childCount > 0 ? (
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{item.childCount}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          </Animated.View>
+        </GestureDetector>
+      </Swipeable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#1F2933",
+  },
+  newButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: "#1F2933",
+  },
+  newButtonDisabled: {
+    opacity: 0.5,
+  },
+  newButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  listArea: {
+    flex: 1,
+  },
+  listContent: {
+    paddingVertical: LIST_PAD,
+  },
+  rowLifted: {
+    zIndex: 100,
+  },
+  rowSurface: {
+    backgroundColor: "#FFFFFF",
+  },
+  rowSurfaceActive: {
+    elevation: 8,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    borderRadius: 8,
+  },
+  row: {
+    height: ROW_H,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 16,
+    gap: 4,
+  },
+  chevronButton: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chevronSpacer: {
+    width: 24,
+  },
+  chevron: {
+    fontSize: 18,
+    lineHeight: 22,
+    color: "#64748B",
+    fontWeight: "600",
+  },
+  rowTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "500",
+    color: "#1F2933",
+  },
+  countBadge: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 11,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+  },
+  countBadgeText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#475569",
+  },
+  dropIndicator: {
+    position: "absolute",
+    top: 0,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  dropIndicatorDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#2563EB",
+  },
+  dropIndicatorLine: {
+    flex: 1,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: "#2563EB",
+  },
+  swipeActionsRow: {
+    flexDirection: "row",
+  },
+  swipeAction: {
+    width: 96,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  deleteAction: {
+    backgroundColor: "#B3261E",
+  },
+  subpageAction: {
+    backgroundColor: "#334155",
+  },
+  favoriteAction: {
+    backgroundColor: "#B45309",
+  },
+  swipeActionText: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
+    textAlign: "center",
+  },
+});

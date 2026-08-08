@@ -13,9 +13,14 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  // The five v1 tabs. Today is the landing tab (index) per the product
-  // brief. Each screen owns its own data-fetching/skeleton/empty states —
-  // this layout is routing only.
+  // The six tabs (five v1 tabs + Notes). Today is the landing tab (index)
+  // per the product brief. Each screen owns its own data-fetching/skeleton/
+  // empty states — this layout is routing only.
+  //
+  // `note/[id]` (the note editor) lives inside this group so it shares the
+  // auth guard above, but it is not a tab: `href: null` keeps it out of the
+  // tab bar, and hiding `tabBarStyle` while it's focused makes it read as a
+  // full-screen push over the tabs (it renders its own back affordance).
   return (
     <Tabs screenOptions={{ headerShown: false }}>
       <Tabs.Screen name="index" options={{ title: "Today" }} />
@@ -23,6 +28,8 @@ export default function AppLayout() {
       <Tabs.Screen name="goals" options={{ title: "Goals" }} />
       <Tabs.Screen name="tasks" options={{ title: "Tasks" }} />
       <Tabs.Screen name="timer" options={{ title: "Timer" }} />
+      <Tabs.Screen name="notes" options={{ title: "Notes" }} />
+      <Tabs.Screen name="note/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
     </Tabs>
   );
 }

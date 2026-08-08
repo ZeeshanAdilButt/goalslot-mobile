@@ -19,7 +19,7 @@ import type { Note, NoteReorderItem, NoteTreeItem } from '../types/note'
  *  gesture — Math.round(offset / width) — so it needs to be wide enough to
  *  beat pointer jitter but narrow enough that one comfortable wrist (or
  *  thumb) move changes a level. */
-export const INDENTATION_WIDTH = 16
+export const INDENTATION_WIDTH = 24
 
 export interface FlatNote extends Note {
   depth: number
@@ -34,16 +34,10 @@ export interface NoteProjection {
   maxDepth: number
   minDepth: number
   parentId: string | null
-}
-
-/** dnd-kit-compatible arrayMove (immutable), inlined so this package does
- *  not depend on @dnd-kit/sortable. */
-function arrayMove<T>(array: T[], from: number, to: number): T[] {
-  const next = array.slice()
-  const [moved] = next.splice(from, 1)
-  if (moved === undefined) return array.slice()
-  next.splice(to < 0 ? next.length + to : to, 0, moved)
-  return next
+  /** Id of the VISIBLE row the note lands directly below (null = very
+   *  top of the tree). Single source of truth for the drop indicator
+   *  and the reorder payload, including smart-outdent hops. */
+  insertAfterId: string | null
 }
 
 /**
@@ -155,11 +149,18 @@ function getDragDepth(offset: number, indentationWidth: number) {
  * The heart of the pattern. Given the visible list, the dragged id,
  * the row currently hovered (vertical slot) and the horizontal drag
  * offset, compute where the note would land: its depth (clamped to
- * the legal range implied by the rows above and below the slot) and
- * the parent that depth resolves to.
+ * the legal range implied by the rows above and below the slot), the
+ * parent that depth resolves to, and the visible row it lands below.
  *
  *   maxDepth = depth of the row above + 1  (deepest legal: its first child)
  *   minDepth = depth of the row below      (can't outdent past what's underneath)
+ *
+ * Smart outdent: when the requested depth is shallower than the row
+ * below the slot allows (e.g. dragging a middle child left while its
+ * later siblings sit underneath), the slot hops DOWN past the deeper
+ * block to the first legal position — so "drag left" always reads as
+ * "make me a sibling of my parent, after this subtree" instead of
+ * silently clamping. This is what OneNote/Workflowy users expect.
  */
 export function getProjection(
   items: FlatNote[],
@@ -171,18 +172,37 @@ export function getProjection(
   const overItemIndex = items.findIndex(({ id }) => id === overId)
   const activeItemIndex = items.findIndex(({ id }) => id === activeId)
   const activeItem = items[activeItemIndex]
-  const newItems = arrayMove(items, activeItemIndex, overItemIndex)
-  const previousItem = newItems[overItemIndex - 1]
-  const nextItem = newItems[overItemIndex + 1]
-  const dragDepth = getDragDepth(dragOffset, indentationWidth)
-  const projectedDepth = (activeItem?.depth ?? 0) + dragDepth
+  if (overItemIndex === -1 || activeItemIndex === -1 || !activeItem) {
+    return { depth: 0, maxDepth: 0, minDepth: 0, parentId: null, insertAfterId: null }
+  }
+
+  // Work on the list WITHOUT the active row; `p` is the insertion
+  // position (count of rows above the line).
+  const without = items.filter(({ id }) => id !== activeId)
+  // Floor at 0 BEFORE the hop scan — an over-shot leftward drag must
+  // read as "root level", not hop the slot past every row in the list.
+  const requestedDepth = Math.max(
+    0,
+    activeItem.depth + getDragDepth(dragOffset, indentationWidth),
+  )
+  let p = overItemIndex
+  while (p < without.length && (without[p]?.depth ?? 0) > requestedDepth) p++
+
+  const previousItem = without[p - 1]
+  const nextItem = without[p]
   const maxDepth = previousItem ? previousItem.depth + 1 : 0
   const minDepth = nextItem ? nextItem.depth : 0
-  let depth = projectedDepth
-  if (projectedDepth >= maxDepth) depth = maxDepth
-  else if (projectedDepth < minDepth) depth = minDepth
+  let depth = requestedDepth
+  if (depth > maxDepth) depth = maxDepth
+  if (depth < minDepth) depth = minDepth
 
-  return { depth, maxDepth, minDepth, parentId: getParentId() }
+  return {
+    depth,
+    maxDepth,
+    minDepth,
+    parentId: getParentId(),
+    insertAfterId: previousItem?.id ?? null,
+  }
 
   function getParentId(): string | null {
     if (depth === 0 || !previousItem) return null
@@ -190,8 +210,8 @@ export function getProjection(
     if (depth > previousItem.depth) return previousItem.id
     // Outdenting: nearest row above the slot at the projected depth
     // is a sibling-to-be; share its parent.
-    const newParent = newItems
-      .slice(0, overItemIndex)
+    const newParent = without
+      .slice(0, p)
       .reverse()
       .find((item) => item.depth === depth)?.parentId
     return newParent ?? null
@@ -205,37 +225,35 @@ export function getProjection(
  * of the dragged note are NOT in the payload — they follow their
  * parent automatically via parentId.
  *
+ * The anchor comes straight from the projection's insertAfterId: the
+ * visible row above the insertion line. Walking up its parent chain
+ * to the projected parent's direct child gives the sibling the note
+ * lands after (the row above may be arbitrarily deep inside that
+ * sibling's subtree).
+ *
  * Returns null when the drop is a no-op (same parent, same sequence).
  */
 export function buildReorderPayload(
-  visibleItems: FlatNote[],
   allNotes: Note[],
   activeId: string,
-  overId: string,
   projected: NoteProjection,
 ): NoteReorderItem[] | null {
-  const overIndex = visibleItems.findIndex(({ id }) => id === overId)
-  const activeIndex = visibleItems.findIndex(({ id }) => id === activeId)
-  if (overIndex === -1 || activeIndex === -1) return null
-  const moved = arrayMove(visibleItems, activeIndex, overIndex)
-  const previousItem = moved[overIndex - 1]
-
   const active = allNotes.find((n) => n.id === activeId)
   if (!active) return null
 
-  // Resolve the sibling the dragged note lands AFTER (null = first).
   let anchorId: string | null = null
-  if (previousItem) {
-    if (projected.depth > previousItem.depth) {
-      anchorId = null // first child of previousItem
-    } else if (projected.depth === previousItem.depth) {
-      anchorId = previousItem.id
-    } else {
-      anchorId =
-        moved
-          .slice(0, overIndex)
-          .reverse()
-          .find((item) => item.depth === projected.depth)?.id ?? null
+  if (projected.insertAfterId && projected.insertAfterId !== projected.parentId) {
+    const parentOf = new Map(allNotes.map((n) => [n.id, n.parentId ?? null]))
+    const seen = new Set<string>()
+    let cursor: string | null = projected.insertAfterId
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor)
+      const parent: string | null = parentOf.get(cursor) ?? null
+      if (parent === projected.parentId) {
+        anchorId = cursor
+        break
+      }
+      cursor = parent
     }
   }
 
