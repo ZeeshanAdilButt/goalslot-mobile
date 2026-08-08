@@ -1,8 +1,15 @@
 import { useState } from "react";
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Link, useLocalSearchParams } from "expo-router";
+import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { useAuth } from "@/providers/auth-provider";
+import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
+import { Button } from "@/components/ui/Button";
+import { TextField } from "@/components/ui/TextField";
+import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 export default function LoginScreen() {
   const { login } = useAuth();
@@ -11,6 +18,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Entrance animation is opt-out under reduce-motion, per the design
+  // brief — the logo/form still render instantly, just without the
+  // fade + translate.
+  const reduceMotion = useReduceMotion();
 
   async function handleSubmit() {
     setError(null);
@@ -27,106 +39,142 @@ export default function LoginScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Log in to GoalSlot</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base)}
+            style={styles.brandBlock}
+          >
+            <View style={styles.logoBadge}>
+              <GoalSlotLogo size={44} color={colors.primary} accessibilityLabel="GoalSlot logo" />
+            </View>
+            <Text style={styles.brandName}>GoalSlot</Text>
+          </Animated.View>
 
-      {resetSuccess ? (
-        <Text style={styles.success}>Your password has been reset. Please log in.</Text>
-      ) : null}
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base).delay(80)}
+            style={styles.formBlock}
+          >
+            <Text style={styles.title}>Welcome back</Text>
+            <Text style={styles.subtitle}>Log in to keep your goals on track.</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="email-address"
-        textContentType="emailAddress"
-      />
+            {resetSuccess ? <Text style={styles.success}>Your password has been reset. Please log in.</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        textContentType="password"
-      />
+            <TextField
+              label="Email"
+              placeholder="you@example.com"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              textContentType="emailAddress"
+              accessibilityLabel="Email"
+            />
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+            <TextField
+              label="Password"
+              placeholder="Your password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              textContentType="password"
+              accessibilityLabel="Password"
+            />
 
-      <TouchableOpacity
-        style={[styles.button, submitting && styles.buttonDisabled]}
-        onPress={handleSubmit}
-        disabled={submitting || !email || !password}
-        accessibilityRole="button"
-        accessibilityLabel="Log in"
-      >
-        <Text style={styles.buttonText}>{submitting ? "Logging in..." : "Log in"}</Text>
-      </TouchableOpacity>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <Link href="/forgot-password" asChild>
-        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Forgot password?">
-          <Text style={styles.link}>Forgot password?</Text>
-        </TouchableOpacity>
-      </Link>
+            <Button
+              label={submitting ? "Logging in..." : "Log in"}
+              onPress={handleSubmit}
+              loading={submitting}
+              disabled={!email || !password}
+              accessibilityLabel="Log in"
+              style={styles.submitButton}
+            />
 
-      <Link href="/signup" asChild>
-        <TouchableOpacity accessibilityRole="link" accessibilityLabel="Don't have an account? Sign up">
-          <Text style={styles.link}>Don&apos;t have an account? Sign up</Text>
-        </TouchableOpacity>
-      </Link>
-    </View>
+            <Link href="/forgot-password" asChild>
+              <TouchableOpacity accessibilityRole="link" accessibilityLabel="Forgot password?">
+                <Text style={styles.link}>Forgot password?</Text>
+              </TouchableOpacity>
+            </Link>
+
+            <Link href="/signup" asChild>
+              <TouchableOpacity accessibilityRole="link" accessibilityLabel="Don't have an account? Sign up">
+                <Text style={styles.link}>Don&apos;t have an account? Sign up</Text>
+              </TouchableOpacity>
+            </Link>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
-    padding: 24,
-    gap: 12,
+    padding: spacing.xl,
+    gap: spacing.xxl,
+  },
+  brandBlock: {
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  logoBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: radii.xl,
+    backgroundColor: colors.foreground,
+    alignItems: "center",
+    justifyContent: "center",
+    ...shadows.raised,
+  },
+  brandName: {
+    fontSize: typography.size.lg,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
+    letterSpacing: 0.2,
+  },
+  formBlock: {
+    gap: spacing.md,
   },
   title: {
-    fontSize: 24,
-    fontWeight: "600",
-    marginBottom: 12,
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
   },
-  input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#8A94A6",
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-  },
-  error: {
-    color: "#B3261E",
+  subtitle: {
+    fontSize: typography.size.sm,
+    color: colors.mutedForeground,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.xs,
   },
   success: {
-    color: "#1B7F3E",
+    color: colors.success,
+    fontSize: typography.size.sm,
+  },
+  error: {
+    color: colors.destructive,
+    fontSize: typography.size.sm,
+  },
+  submitButton: {
+    marginTop: spacing.sm,
   },
   link: {
-    color: "#1F2933",
+    color: colors.foreground,
     textAlign: "center",
-    fontSize: 14,
-    marginTop: 4,
+    fontSize: typography.size.sm,
+    marginTop: spacing.xs,
     textDecorationLine: "underline",
-  },
-  button: {
-    marginTop: 8,
-    backgroundColor: "#1F2933",
-    borderRadius: 6,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 16,
   },
 });
