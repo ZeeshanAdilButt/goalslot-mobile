@@ -10,6 +10,7 @@ import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -19,15 +20,6 @@ const MIN_PASSWORD_LENGTH = 8;
 // rather than going through the auth provider. `register`, which DOES set
 // tokens/user on success, is already exposed by the provider and is reused
 // as-is (see src/providers/auth-provider.tsx).
-function getErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === "object" && "response" in err) {
-    const response = (err as { response?: { data?: { message?: string } } }).response;
-    if (response?.data?.message) {
-      return response.data.message;
-    }
-  }
-  return err instanceof Error ? err.message : fallback;
-}
 
 export default function SignupScreen() {
   const { register } = useAuth();
@@ -89,7 +81,7 @@ export default function SignupScreen() {
   if (step === "otp") {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {brand}
 
@@ -139,7 +131,7 @@ export default function SignupScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           {brand}
 
@@ -178,6 +170,7 @@ export default function SignupScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              secureToggle
               textContentType="newPassword"
               accessibilityLabel="Password"
             />

@@ -9,6 +9,7 @@ import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 export default function LoginScreen() {
@@ -32,7 +33,7 @@ export default function LoginScreen() {
       // On success `status` flips to 'authenticated' and the (auth) group
       // layout's Redirect takes over — no manual navigation needed here.
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed. Please try again.");
+      setError(getErrorMessage(err, "Login failed. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -40,7 +41,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           <Animated.View
             entering={reduceMotion ? undefined : FadeInDown.duration(motion.duration.base)}
@@ -79,6 +80,7 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              secureToggle
               textContentType="password"
               accessibilityLabel="Password"
             />

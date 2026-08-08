@@ -9,6 +9,7 @@ import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { colors, radii, shadows, spacing, typography, motion } from "@/theme";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -17,15 +18,6 @@ const MIN_PASSWORD_LENGTH = 8;
 // send-otp/reset-password), so this screen talks to apiClient directly
 // rather than going through the auth provider — same reasoning as
 // signup.tsx's "Send code" step.
-function getErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === "object" && "response" in err) {
-    const response = (err as { response?: { data?: { message?: string } } }).response;
-    if (response?.data?.message) {
-      return response.data.message;
-    }
-  }
-  return err instanceof Error ? err.message : fallback;
-}
 
 export default function ForgotPasswordScreen() {
   const [step, setStep] = useState<"email" | "reset">("email");
@@ -84,7 +76,7 @@ export default function ForgotPasswordScreen() {
   if (step === "reset") {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {brand}
 
@@ -112,6 +104,7 @@ export default function ForgotPasswordScreen() {
                 value={newPassword}
                 onChangeText={setNewPassword}
                 secureTextEntry
+                secureToggle
                 textContentType="newPassword"
                 accessibilityLabel="New password"
               />
@@ -144,7 +137,7 @@ export default function ForgotPasswordScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           {brand}
 
