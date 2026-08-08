@@ -13,9 +13,9 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  // The five v1 tabs. Today is the landing tab (index) per the product
-  // brief. Each screen owns its own data-fetching/skeleton/empty states —
-  // this layout is routing only.
+  // The v1 tabs. Today is the landing tab (index) per the product brief.
+  // Each screen owns its own data-fetching/skeleton/empty states — this
+  // layout is routing only.
   return (
     <Tabs screenOptions={{ headerShown: false }}>
       <Tabs.Screen name="index" options={{ title: "Today" }} />
@@ -23,6 +23,7 @@ export default function AppLayout() {
       <Tabs.Screen name="goals" options={{ title: "Goals" }} />
       <Tabs.Screen name="tasks" options={{ title: "Tasks" }} />
       <Tabs.Screen name="timer" options={{ title: "Timer" }} />
+      <Tabs.Screen name="settings" options={{ title: "Settings" }} />
     </Tabs>
   );
 }
