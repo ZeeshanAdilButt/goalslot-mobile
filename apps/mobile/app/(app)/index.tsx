@@ -4,14 +4,28 @@
 // "due today" list underneath IS a FlashList since it can plausibly grow
 // long (see isDueToday below — it includes all undated active tasks, not
 // just ones explicitly due today).
+//
+// Visual language mirrors dw-time-web's dashboard (src/features/dashboard/
+// components/*) and, for the "right now" hero, src/components/focus-now-bar.tsx
+// — the web's "what's happening right now / up next" strip, which is
+// conceptually the heart of a Today view. See inline notes at each section
+// for the specific web pattern being matched.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Link, useFocusEffect } from "expo-router";
+import { Link, useFocusEffect, type Href } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 
 import {
   findUpcomingScheduleBlocks,
@@ -38,6 +52,15 @@ import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 // "what timezone is this schedule being read in right now."
 const DEVICE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+// Warm "focus" accents used only on the "right now" hero card, mirroring the
+// literal values dw-time-web's focus-now-bar.tsx hardcodes for the same
+// purpose (a pale-yellow banner needs a legible warm-ink text color, and
+// neither exists in the shared token file since it's specific to this one
+// surface). Not a theme addition — scoped to this file only.
+const FOCUS_TINT = "#FFFBEA"; // web: from-[#fffbea]
+const FOCUS_BORDER = "rgba(242, 204, 13, 0.35)"; // web: border-[#f2cc0d]/30
+const FOCUS_INK = "#8A7307"; // web: text-[#8a7307]
+
 function greetingFor(hour: number): string {
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
@@ -60,6 +83,14 @@ function isDueToday(task: Task, todayStr: string): boolean {
 function sortByStatusThenTitle(a: Task, b: Task): number {
   if (a.status !== b.status) return a.status === "DOING" ? -1 : b.status === "DOING" ? 1 : 0;
   return a.title.localeCompare(b.title);
+}
+
+// Purely a label for a time already known to the caller (an
+// UpcomingScheduleBlock's `startsAtUtc`) — no new data, just phrased the way
+// dw-time-web's focus-now-bar.tsx phrases its "Up next" countdown.
+function describeCountdown(now: Date, startsAt: Date): string {
+  const diffMin = Math.max(0, Math.round((startsAt.getTime() - now.getTime()) / 60_000));
+  return diffMin <= 0 ? "starting now" : `in ${formatDuration(diffMin)}`;
 }
 
 export default function TodayScreen() {
@@ -126,6 +157,25 @@ export default function TodayScreen() {
     [tasksQuery.data, todayStr],
   );
 
+  // Derived-only display data for the hero card — computed the same way
+  // dw-time-web's focus-now-bar.tsx computes its elapsed-progress bar and
+  // "Xm left" chip, from data this screen already has (activeBlock, now).
+  // No new fetches, no new state.
+  const activeProgress = useMemo(() => {
+    if (!activeBlock) return null;
+    const startMin = timeToMinutes(activeBlock.startTime);
+    const endMin = timeToMinutes(activeBlock.endTime);
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const totalLen = Math.max(1, endMin - startMin);
+    const elapsed = Math.max(0, Math.min(totalLen, nowMin - startMin));
+    return { pct: elapsed / totalLen, minutesLeft: Math.max(0, endMin - nowMin) };
+  }, [activeBlock, now]);
+
+  const nextUpLabel = useMemo(
+    () => (nextUp.length > 0 ? describeCountdown(now, nextUp[0].startsAtUtc) : null),
+    [nextUp, now],
+  );
+
   const openQuickAdd = useCallback((kind: QuickAddKind) => {
     setAddPickerOpen(false);
     const ref = kind === "goal" ? goalSheetRef : kind === "task" ? taskSheetRef : slotSheetRef;
@@ -149,7 +199,7 @@ export default function TodayScreen() {
       <SafeAreaView style={styles.container} edges={["top"]}>
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Skeleton width="60%" height={22} />
+            <Skeleton width="60%" height={26} />
             <Skeleton width="40%" height={14} style={styles.headerDateSkeleton} />
           </View>
         </View>
@@ -217,25 +267,75 @@ export default function TodayScreen() {
         </View>
 
         {nothingToday ? (
-          <EmptyState message="Nothing on the agenda today." />
+          <View style={styles.section}>
+            <EmptyState message="Nothing on the agenda today." />
+          </View>
         ) : (
           <>
-            <Section title="Right now">
+            {/* "Right now" — the hero. Mirrors dw-time-web's
+                src/components/focus-now-bar.tsx: a warm brand-tinted card
+                that leads with a pulsing live indicator, the block title,
+                a time chip, an "Xm left" pill, and a progress bar tracking
+                elapsed time — instead of a plain labelled list row like the
+                other two sections. When nothing is active it falls back to
+                a neutral "up next" treatment (still matching the bar's
+                up-next chip/countdown), then to the empty state. */}
+            <View style={styles.heroWrap}>
               {scheduleQuery.isPending ? (
-                <SkeletonListItem />
+                <View style={styles.card}>
+                  <SkeletonListItem />
+                </View>
               ) : activeBlock ? (
-                <BlockRow block={activeBlock} />
+                <View style={styles.heroCard}>
+                  <View style={styles.heroTopRow}>
+                    <View style={styles.liveRow}>
+                      <LiveDot />
+                      <Text style={styles.liveLabel}>Live now</Text>
+                    </View>
+                    {activeProgress ? (
+                      <View style={styles.heroPill}>
+                        <Text style={styles.heroPillText}>
+                          {formatDuration(activeProgress.minutesLeft)} left
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  <Text style={styles.heroTitle}>{activeBlock.title}</Text>
+                  <BlockMeta block={activeBlock} tint />
+
+                  {activeProgress ? (
+                    <View style={styles.progressTrack}>
+                      <View style={[styles.progressFill, { width: `${Math.round(activeProgress.pct * 100)}%` }]} />
+                    </View>
+                  ) : null}
+                </View>
               ) : nextUp.length > 0 ? (
-                <View>
-                  <Text style={styles.upNextLabel}>Up next</Text>
-                  <BlockRow block={nextUp[0].block} />
+                <View style={styles.heroCardNeutral}>
+                  <View style={styles.heroTopRow}>
+                    <Text style={styles.upNextLabel}>Up next</Text>
+                    {nextUpLabel ? (
+                      <View style={styles.heroPillNeutral}>
+                        <Text style={styles.heroPillNeutralText}>{nextUpLabel}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.heroTitleNeutral}>{nextUp[0].block.title}</Text>
+                  <BlockMeta block={nextUp[0].block} />
                 </View>
               ) : (
-                <EmptyState message="Nothing scheduled right now." />
+                <View style={styles.card}>
+                  <EmptyState message="Nothing scheduled right now." />
+                </View>
               )}
-            </Section>
+            </View>
 
-            <Section title="Today's schedule">
+            <Section
+              title="Today's schedule"
+              count={todaysBlocks.length}
+              viewAllHref="/schedule"
+              viewAllLabel="schedule"
+            >
               {scheduleQuery.isPending ? (
                 <>
                   <SkeletonListItem />
@@ -244,11 +344,18 @@ export default function TodayScreen() {
               ) : todaysBlocks.length === 0 ? (
                 <EmptyState message="No time blocks scheduled today." />
               ) : (
-                todaysBlocks.map((block) => <BlockRow key={block.id} block={block} />)
+                todaysBlocks.map((block, index) => (
+                  <BlockRow key={block.id} block={block} isLast={index === todaysBlocks.length - 1} />
+                ))
               )}
             </Section>
 
-            <Section title="Due today">
+            <Section
+              title="Due today"
+              count={dueTodayTasks.length}
+              viewAllHref="/tasks"
+              viewAllLabel="tasks"
+            >
               {tasksQuery.isPending ? (
                 <>
                   <SkeletonListItem showLeading={false} />
@@ -261,7 +368,9 @@ export default function TodayScreen() {
                   <FlashList
                     data={dueTodayTasks}
                     keyExtractor={(task) => task.id}
-                    renderItem={({ item }) => <TaskRow task={item} />}
+                    renderItem={({ item, index }) => (
+                      <TaskRow task={item} isLast={index === dueTodayTasks.length - 1} />
+                    )}
                     // Nested inside the outer ScrollView, which already owns
                     // the page's scrolling — this list only needs to lay out
                     // its (potentially long) content, not scroll on its own.
@@ -283,36 +392,126 @@ export default function TodayScreen() {
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+// Small pulsing "live" indicator — an expanding, fading ring behind a solid
+// dot — mirroring the CSS `animate-ping` dot dw-time-web's focus-now-bar.tsx
+// uses next to its "Focus now" label. Built on Reanimated's UI-thread
+// primitives, the same pattern Skeleton.tsx already uses for its pulse, so
+// it stays smooth regardless of what the JS thread is doing and cancels
+// cleanly on unmount.
+function LiveDot() {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withRepeat(withTiming(1, { duration: 1400, easing: Easing.out(Easing.ease) }), -1, false);
+    return () => cancelAnimation(progress);
+  }, [progress]);
+
+  const ringStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: 1 + progress.value * 1.8 }],
+    opacity: (1 - progress.value) * 0.55,
+  }));
+
+  return (
+    <View style={styles.liveDotWrap}>
+      <Animated.View style={[styles.liveDotRing, ringStyle]} />
+      <View style={styles.liveDotCore} />
+    </View>
+  );
+}
+
+function Section({
+  title,
+  count,
+  viewAllHref,
+  viewAllLabel,
+  children,
+}: {
+  title: string;
+  count: number;
+  viewAllHref: Href;
+  viewAllLabel: string;
+  children: ReactNode;
+}) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionHeaderLeft}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          {count > 0 ? (
+            <View style={styles.countBadge}>
+              <Text style={styles.countBadgeText}>{count}</Text>
+            </View>
+          ) : null}
+        </View>
+        <Link href={viewAllHref} asChild>
+          <TouchableOpacity
+            style={styles.viewAllButton}
+            accessibilityRole="button"
+            accessibilityLabel={`View all ${viewAllLabel}`}
+            hitSlop={{ top: spacing.sm, bottom: spacing.sm, left: spacing.sm, right: spacing.sm }}
+          >
+            <Text style={styles.viewAllText}>View all</Text>
+          </TouchableOpacity>
+        </Link>
+      </View>
       <View style={styles.card}>{children}</View>
     </View>
   );
 }
 
-function BlockRow({ block }: { block: ScheduleBlock }) {
+// Shared "time · category" meta row for both the hero card and BlockRow.
+// `tint` swaps the muted text/border colors for the warm hero-card variants
+// so it reads clearly against the pale-yellow background.
+function BlockMeta({ block, tint = false }: { block: ScheduleBlock; tint?: boolean }) {
   return (
-    <View style={styles.row}>
-      <View style={[styles.colorDot, { backgroundColor: block.color }]} />
+    <View style={styles.blockMetaRow}>
+      <View style={[styles.timeChip, tint && styles.timeChipTint]}>
+        <Text style={[styles.timeChipText, tint && styles.timeChipTextTint]}>
+          {formatTime12h(block.startTime)} – {formatTime12h(block.endTime)}
+        </Text>
+      </View>
+      {block.category ? (
+        <Text style={[styles.blockCategory, tint && styles.blockCategoryTint]}>{block.category}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function BlockRow({ block, isLast }: { block: ScheduleBlock; isLast: boolean }) {
+  return (
+    <View style={[styles.row, isLast && styles.rowLast]}>
+      <View style={[styles.accentBar, { backgroundColor: block.color }]} />
       <View style={styles.rowText}>
         <Text style={styles.rowTitle}>{block.title}</Text>
-        <Text style={styles.rowSubtitle}>
-          {formatTime12h(block.startTime)} – {formatTime12h(block.endTime)}
-          {block.category ? ` · ${block.category}` : ""}
-        </Text>
+        <BlockMeta block={block} />
       </View>
     </View>
   );
 }
 
-function TaskRow({ task }: { task: Task }) {
+const STATUS_COPY: Record<Task["status"], string> = {
+  BACKLOG: "Backlog",
+  TODO: "To do",
+  DOING: "In progress",
+  DONE: "Done",
+};
+
+function TaskRow({ task, isLast }: { task: Task; isLast: boolean }) {
+  const isDoing = task.status === "DOING";
   return (
-    <View style={styles.row}>
-      <View style={[styles.statusDot, task.status === "DOING" && styles.statusDotActive]} />
+    <View style={[styles.row, isLast && styles.rowLast]}>
+      <View style={[styles.accentBar, isDoing ? styles.accentBarActive : styles.accentBarNeutral]} />
       <View style={styles.rowText}>
-        <Text style={styles.rowTitle}>{task.title}</Text>
+        <View style={styles.taskTitleRow}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {task.title}
+          </Text>
+          <View style={[styles.statusPill, isDoing && styles.statusPillActive]}>
+            <Text style={[styles.statusPillText, isDoing && styles.statusPillTextActive]}>
+              {STATUS_COPY[task.status]}
+            </Text>
+          </View>
+        </View>
         {task.category || task.estimatedMinutes ? (
           <Text style={styles.rowSubtitle}>
             {[task.category, task.estimatedMinutes ? formatDuration(task.estimatedMinutes) : null]
@@ -382,7 +581,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.md,
   },
   headerText: {
     flex: 1,
@@ -392,11 +591,13 @@ const styles = StyleSheet.create({
     marginTop: spacing.xxs,
   },
   greeting: {
-    ...typography.h1,
+    ...typography.display,
+    fontSize: 26,
     color: colors.foreground,
   },
   date: {
     ...typography.bodySmall,
+    fontWeight: "500",
     color: colors.mutedForeground,
   },
   settingsButton: {
@@ -413,29 +614,195 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: colors.foreground,
   },
+
+  // "Right now" hero.
+  heroWrap: {
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
+  heroCard: {
+    backgroundColor: FOCUS_TINT,
+    borderWidth: 1,
+    borderColor: FOCUS_BORDER,
+    borderRadius: radii.xl,
+    padding: spacing.lg,
+    overflow: "hidden",
+  },
+  heroCardNeutral: {
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.xl,
+    padding: spacing.lg,
+    ...shadows.card,
+  },
+  heroTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  liveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  liveDotWrap: {
+    width: 10,
+    height: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveDotRing: {
+    position: "absolute",
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+  liveDotCore: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.primaryDark,
+  },
+  liveLabel: {
+    ...typography.label,
+    color: FOCUS_INK,
+  },
+  upNextLabel: {
+    ...typography.label,
+    color: colors.mutedForeground,
+  },
+  heroPill: {
+    backgroundColor: colors.primary,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xxs,
+  },
+  heroPillText: {
+    ...typography.caption,
+    color: colors.primaryForeground,
+  },
+  heroPillNeutral: {
+    backgroundColor: colors.secondary,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xxs,
+  },
+  heroPillNeutralText: {
+    ...typography.caption,
+    color: colors.foreground,
+  },
+  heroTitle: {
+    ...typography.h1,
+    color: colors.foreground,
+    marginTop: spacing.md,
+  },
+  heroTitleNeutral: {
+    ...typography.h2,
+    color: colors.foreground,
+    marginTop: spacing.md,
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: radii.full,
+    backgroundColor: "rgba(24, 24, 27, 0.08)",
+    marginTop: spacing.lg,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: radii.full,
+    backgroundColor: colors.primary,
+  },
+
+  // Shared block/task meta row.
+  blockMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    flexWrap: "wrap",
+  },
+  timeChip: {
+    backgroundColor: colors.secondary,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  timeChipTint: {
+    backgroundColor: "rgba(255, 255, 255, 0.6)",
+    borderWidth: 1,
+    borderColor: FOCUS_BORDER,
+  },
+  timeChipText: {
+    ...typography.caption,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  timeChipTextTint: {
+    color: FOCUS_INK,
+  },
+  blockCategory: {
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
+  },
+  blockCategoryTint: {
+    color: FOCUS_INK,
+  },
+
+  // Section header (title + count badge + view-all link) and card shell,
+  // shared by "Today's schedule" and "Due today".
   section: {
     marginTop: spacing.xl,
     paddingHorizontal: spacing.xl,
   },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.sm,
+  },
+  sectionHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
   sectionTitle: {
     ...typography.label,
     color: colors.mutedForeground,
-    marginBottom: spacing.sm,
+  },
+  countBadge: {
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radii.full,
+    backgroundColor: colors.secondary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  countBadgeText: {
+    ...typography.caption,
+    fontSize: 11,
+    color: colors.foreground,
+  },
+  viewAllButton: {
+    minHeight: 32,
+    justifyContent: "center",
+  },
+  viewAllText: {
+    ...typography.caption,
+    color: colors.mutedForeground,
   },
   card: {
     backgroundColor: colors.card,
-    borderRadius: radii.lg,
+    borderRadius: radii.xl,
     borderWidth: 1,
     borderColor: colors.border,
     paddingVertical: spacing.xs,
     overflow: "hidden",
     ...shadows.card,
-  },
-  upNextLabel: {
-    ...typography.caption,
-    color: colors.mutedForeground,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
   },
   taskListContainer: {
     // FlashList needs a layout pass; with scrollEnabled=false it sizes to
@@ -445,40 +812,68 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+    minHeight: minRowHeight(),
   },
-  colorDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+  rowLast: {
+    borderBottomWidth: 0,
   },
-  statusDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+  accentBar: {
+    width: 4,
+    alignSelf: "stretch",
+    minHeight: 32,
+    borderRadius: radii.full,
+  },
+  accentBarNeutral: {
     backgroundColor: colors.border,
   },
-  statusDotActive: {
-    backgroundColor: colors.primary,
+  accentBarActive: {
+    backgroundColor: colors.warning,
   },
   rowText: {
     flex: 1,
     gap: spacing.xxs,
   },
+  taskTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
   rowTitle: {
     ...typography.body,
     color: colors.foreground,
+    flexShrink: 1,
   },
   rowSubtitle: {
     ...typography.bodySmall,
     fontWeight: "400",
     color: colors.mutedForeground,
   },
+  statusPill: {
+    flexShrink: 0,
+    backgroundColor: colors.secondary,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
+  statusPillActive: {
+    backgroundColor: colors.warningMuted,
+  },
+  statusPillText: {
+    ...typography.caption,
+    fontSize: 10,
+    color: colors.mutedForeground,
+  },
+  statusPillTextActive: {
+    color: colors.warning,
+  },
+
   fabContainer: {
     position: "absolute",
     right: spacing.xl,
@@ -502,10 +897,12 @@ const styles = StyleSheet.create({
     lineHeight: 30,
   },
   fabOption: {
-    paddingVertical: spacing.sm,
+    minHeight: 44,
+    justifyContent: "center",
     paddingHorizontal: spacing.lg,
     borderRadius: radii.full,
     backgroundColor: colors.foreground,
+    ...shadows.fab,
   },
   fabOptionText: {
     color: colors.white,
@@ -513,3 +910,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
+
+// Keeps row touch targets at/above the 44pt minimum without hard-coding a
+// magic number inline in the StyleSheet above.
+function minRowHeight(): number {
+  return 44;
+}
