@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { Slot } from "expo-router";
+import { router, Slot } from "expo-router";
+import * as Notifications from "expo-notifications";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 
@@ -8,6 +9,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
+import { resolveNotificationRoute } from "@/lib/deep-links";
 import { CapabilitiesProvider } from "@/providers/capabilities-provider";
 import { GrowthProvider } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
@@ -33,6 +35,32 @@ function AppGate() {
     const unsubscribe = offlineSync.init();
     return unsubscribe;
   }, []);
+
+  // Notification-tap routing. `useLastNotificationResponse` covers both
+  // cold start (reads expo-notifications' native "last response" once on
+  // mount, i.e. the app was launched by tapping a notification) and warm/
+  // background taps (it also subscribes to live responses internally) —
+  // one hook, one code path for both cases. This works against whatever
+  // NotificationCapability implementation is scheduling notifications
+  // (noop or real); it only depends on expo-notifications' response
+  // shape. See src/lib/deep-links.ts for the expected `data` payload
+  // shape and the route-resolution logic.
+  const lastNotificationResponse = Notifications.useLastNotificationResponse();
+  useEffect(() => {
+    // Gated on `status`: while it's 'loading' this component renders
+    // <LoadingState> below instead of <Slot/>, so there's no navigator
+    // mounted yet for `router.push` to target. Re-running this effect once
+    // `status` settles means a cold-start tap that arrives before auth
+    // resolves still gets routed (to an auth-guarded screen if needed —
+    // the (app) layout's own redirect-to-login takes it from there).
+    if (status === "loading" || !lastNotificationResponse) {
+      return;
+    }
+    const route = resolveNotificationRoute(lastNotificationResponse.notification.request.content.data);
+    if (route) {
+      router.push(route);
+    }
+  }, [status, lastNotificationResponse]);
 
   if (status === "loading") {
     return <LoadingState message="Loading GoalSlot..." fullScreen />;
