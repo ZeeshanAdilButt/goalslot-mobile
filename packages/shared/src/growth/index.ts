@@ -28,6 +28,9 @@ export interface AnalyticsEventMap {
   timerStopped: { taskId?: string; scheduleBlockId?: string; durationSeconds: number }
   timerPaused: { taskId?: string; scheduleBlockId?: string }
   quickAddOpened: { kind: 'goal' | 'task' | 'slot' }
+  noteCreated: { noteId: string; parentId: string | null }
+  noteDeleted: { noteId: string }
+  noteMoved: { noteId: string }
   screenViewed: { screenName: string }
   journalEntrySaved: { date: string }
 }

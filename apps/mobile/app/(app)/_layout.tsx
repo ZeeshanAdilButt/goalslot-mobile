@@ -77,6 +77,10 @@ export default function AppLayout() {
       <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
       <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />
       <Tabs.Screen name="journal" options={{ title: "Journal", href: null }} />
+      <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
+      {/* The note editor is a route, not a tab: hiding the tab bar while it's
+          focused makes it read as a full-screen push. */}
+      <Tabs.Screen name="note/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
       <Tabs.Screen name="settings" options={{ title: "Settings", href: null }} />
     </Tabs>
   );
