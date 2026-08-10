@@ -1,24 +1,27 @@
 // Time Tracker tab: start/pause/resume/stop a timer against a task or goal,
-// then log it as a TimeEntry, plus a feed of recently logged entries.
+// then log it as a TimeEntry, plus a feed of recently logged sessions.
 //
 // The running-timer state itself lives in src/lib/timer-store.ts (a
 // persisted zustand store) rather than here — this screen just renders that
-// state and ticks a local re-render every second while running. See that
-// file's header comment for why the ticking interval lives here and not
-// inside the store.
+// state. Note that the once-a-second tick that animates the clock now lives
+// inside <TimerRing/> instead of this component: it used to re-render the
+// whole screen (picker, controls, session list) every second purely to move
+// the digits. See that file's header for the full reasoning.
 //
-// Visual language matches dw-time-web's time-tracker feature (see
-// dw-time-web/src/features/time-tracker/components/timer-display.tsx,
-// timer-controls.tsx and recent-entries.tsx): a dark status pill with an
-// accent dot, a big tabular-figure clock as the hero element, and
-// brand/secondary/destructive-colored controls depending on state.
+// Product language and semantics follow dw-time-web's time-tracker feature
+// (dw-time-web/src/features/time-tracker/components/timer-display.tsx,
+// timer-controls.tsx, recent-entries.tsx) — the dark status pill with a
+// pulsing accent dot, the tabular hh:mm:ss clock with dimmed seconds, and
+// the "Tracking / Paused / Ready to start" vocabulary are all carried over.
+// The presentation is native rather than a port of the web layout: a
+// circular progress hero, round transport controls, and a day-grouped
+// session list.
 
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { FlashList } from "@shopify/flash-list";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -30,44 +33,38 @@ import Animated, {
 
 import {
   createTimeEntrySchema,
-  formatDuration,
   getLocalDateString,
   type Goal,
   type Task,
-  type TimeEntry,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { SessionHistory } from "@/components/timer/SessionHistory";
+import { TimerControls } from "@/components/timer/TimerControls";
+import { TimerRing } from "@/components/timer/TimerRing";
+import { TrackingPicker } from "@/components/timer/TrackingPicker";
+import { TrackingTarget } from "@/components/timer/TrackingTarget";
+import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
-import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
+import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RECENT_SKELETON_ROWS = 4;
 
+/** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
+const MAX_RING_SIZE = 300;
 /**
- * Always-padded hh/mm/ss parts for the hero clock — deliberately not
- * `formatDuration` from packages/shared/src/scheduling/time.ts, which
- * formats whole minutes for summaries ("1h 20m"), not a seconds-precision
- * ticking display. Always showing hours (rather than hiding a leading
- * "00:") mirrors dw-time-web's TimerDisplay so the clock reads identically
- * across platforms. Past entries in the recent list below do use
- * `formatDuration`.
+ * Share of the viewport height the ring may take. This is what stops the
+ * hero card from pushing the session list off a short device: on a 844pt
+ * phone it resolves to ~287pt (a ~53pt clock), on a 568pt one to ~193pt.
  */
-function formatClockParts(ms: number): { hh: string; mm: string; ss: string } {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return {
-    hh: String(hours).padStart(2, "0"),
-    mm: String(minutes).padStart(2, "0"),
-    ss: String(seconds).padStart(2, "0"),
-  };
-}
+const RING_HEIGHT_FRACTION = 0.34;
+/** Screen padding (spacing.xl) + card padding (spacing.xl), both sides. */
+const RING_HORIZONTAL_INSET = 4 * spacing.xl;
 
 const STATUS_META: Record<TimerStatus, { label: string; dotColor: string; pulse: boolean; textColor: string }> = {
   idle: { label: "Ready to start", dotColor: colors.mutedForeground, pulse: false, textColor: colors.white },
@@ -77,6 +74,7 @@ const STATUS_META: Record<TimerStatus, { label: string; dotColor: string; pulse:
 
 export default function TimerScreen() {
   const analytics = useAnalytics();
+  const { width, height } = useWindowDimensions();
 
   const status = useTimerStore((s) => s.status);
   const startedAt = useTimerStore((s) => s.startedAt);
@@ -105,19 +103,6 @@ export default function TimerScreen() {
     }, [analytics]),
   );
 
-  // Forces a re-render every second while running, so the clock below
-  // (computed fresh each render via `getElapsedMs`) actually appears to
-  // tick. No elapsed value is stored here — see timer-store.ts.
-  const [, forceTick] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (status !== "running") return;
-    const id = setInterval(forceTick, 1000);
-    return () => clearInterval(id);
-  }, [status]);
-
-  const elapsedMs = getElapsedMs({ status, startedAt, pausedElapsedMs });
-  const { hh, mm, ss } = formatClockParts(elapsedMs);
-
   // What's actually being tracked right now — resolved from the store's
   // persisted ids against the loaded task/goal lists, so this is correct
   // even right after an app restart (before this screen ever set local
@@ -132,6 +117,14 @@ export default function TimerScreen() {
   );
   const activeLabel = activeTask?.title ?? activeGoal?.title ?? null;
   const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
+  // A task shows its parent goal; a goal shows its category — either way the
+  // second line answers "which bucket does this belong to?".
+  const activeSublabel = activeTask ? (activeTask.goal?.title ?? null) : (activeGoal?.category ?? null);
+
+  // Puts a persistent entry in the notification shade for the life of the
+  // session, so a running timer is visible from outside the app. Degrades to
+  // nothing at all if notification permission is refused.
+  useTimerNotification({ status, startedAt, pausedElapsedMs, label: activeLabel });
 
   const handlePickTask = useCallback((task: Task) => {
     setSelectedTask(task);
@@ -202,6 +195,19 @@ export default function TimerScreen() {
 
   const canStart = status === "idle" && (selectedTask !== null || selectedGoal !== null);
   const statusMeta = STATUS_META[status];
+  const ringSize = Math.max(
+    150,
+    Math.min(MAX_RING_SIZE, width - RING_HORIZONTAL_INSET, height * RING_HEIGHT_FRACTION),
+  );
+
+  // Fixed wall-clock start beats a second copy of the elapsed count already
+  // filling the middle of the ring.
+  const ringCaption =
+    status === "running" && startedAt !== null
+      ? `Started ${new Date(startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
+      : status === "paused"
+        ? "Paused"
+        : "Elapsed";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -218,82 +224,36 @@ export default function TimerScreen() {
           </Text>
         </View>
 
-        <View style={styles.clockRow}>
-          <Text style={styles.clockDigits}>{hh}</Text>
-          <Text style={styles.clockColon}>:</Text>
-          <Text style={styles.clockDigits}>{mm}</Text>
-          <Text style={styles.clockColon}>:</Text>
-          <Text style={styles.clockSeconds}>{ss}</Text>
-        </View>
+        <TimerRing
+          status={status}
+          startedAt={startedAt}
+          pausedElapsedMs={pausedElapsedMs}
+          size={ringSize}
+          accentColor={activeColor}
+          caption={ringCaption}
+        />
 
-        <View style={styles.activeLabelRow}>
-          {activeColor ? <View style={[styles.activeDot, { backgroundColor: activeColor }]} /> : null}
-          <Text style={[styles.activeLabelText, !activeLabel && styles.activeLabelPlaceholder]} numberOfLines={1}>
-            {activeLabel ?? "Nothing selected"}
-          </Text>
-        </View>
+        <TrackingTarget
+          label={activeLabel}
+          sublabel={activeSublabel}
+          accentColor={activeColor}
+          editable={status === "idle"}
+          onPress={() => setPickerOpen(true)}
+        />
 
-        {status === "idle" ? (
-          <>
-            <Pressable
-              style={styles.pickerButton}
-              onPress={() => setPickerOpen(true)}
-              accessibilityRole="button"
-              accessibilityLabel={activeLabel ? "Change task or goal" : "Choose task or goal"}
-            >
-              <Text style={styles.pickerButtonText}>
-                {activeLabel ? "Change task or goal" : "Choose task or goal"}
-              </Text>
-              <Text style={styles.pickerButtonChevron}>›</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, !canStart && styles.buttonDisabled]}
-              onPress={handleStart}
-              disabled={!canStart}
-              accessibilityRole="button"
-              accessibilityLabel="Start timer"
-              accessibilityState={{ disabled: !canStart }}
-            >
-              <Text style={styles.primaryButtonText}>Start</Text>
-            </Pressable>
-          </>
-        ) : (
-          <View style={styles.controlRow}>
-            {status === "running" ? (
-              <Pressable
-                style={styles.secondaryButton}
-                onPress={handlePause}
-                accessibilityRole="button"
-                accessibilityLabel="Pause timer"
-              >
-                <Text style={styles.secondaryButtonText}>Pause</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                style={styles.resumeButton}
-                onPress={handleResume}
-                accessibilityRole="button"
-                accessibilityLabel="Resume timer"
-              >
-                <Text style={styles.resumeButtonText}>Resume</Text>
-              </Pressable>
-            )}
-            <Pressable
-              style={styles.stopButton}
-              onPress={() => void handleStop()}
-              accessibilityRole="button"
-              accessibilityLabel="Stop timer and log entry"
-            >
-              <Text style={styles.stopButtonText}>Stop</Text>
-            </Pressable>
-          </View>
-        )}
+        <TimerControls
+          status={status}
+          canStart={canStart}
+          onStart={handleStart}
+          onPause={handlePause}
+          onResume={handleResume}
+          onStop={() => void handleStop()}
+        />
       </View>
 
-      <Text style={styles.sectionTitle}>Recent entries</Text>
       <View style={styles.listArea}>
         {recentQuery.isPending ? (
-          <View>
+          <View style={styles.skeletonArea}>
             {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
               <SkeletonListItem key={index} showLeading={false} />
             ))}
@@ -301,24 +261,24 @@ export default function TimerScreen() {
         ) : recentQuery.isError ? (
           <ErrorState message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
         ) : !recentQuery.data || recentQuery.data.length === 0 ? (
-          <EmptyState message="No time logged yet" />
+          <EmptyState
+            message="No sessions yet"
+            description="Pick a task or goal above and press start — logged sessions land here."
+          />
         ) : (
-          <FlashList
-            data={recentQuery.data}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => <RecentEntryRow entry={item} />}
-            ItemSeparatorComponent={RecentEntrySeparator}
+          <SessionHistory
+            entries={recentQuery.data}
             refreshing={recentQuery.isFetching}
             onRefresh={() => void recentQuery.refetch()}
-            contentContainerStyle={styles.listContent}
           />
         )}
       </View>
 
-      <PickerModal
+      <TrackingPicker
         visible={pickerOpen}
         tasks={tasksQuery.data ?? []}
         goals={goalsQuery.data ?? []}
+        selectedId={selectedTask?.id ?? selectedGoal?.id ?? null}
         onPickTask={handlePickTask}
         onPickGoal={handlePickGoal}
         onClose={() => setPickerOpen(false)}
@@ -349,110 +309,6 @@ function PulsingDot({ color, pulse }: { color: string; pulse: boolean }) {
   return <Animated.View style={[styles.statusDot, { backgroundColor: color }, animatedStyle]} />;
 }
 
-function RecentEntrySeparator() {
-  return <View style={styles.rowSeparator} />;
-}
-
-interface RecentEntryRowProps {
-  entry: TimeEntry;
-}
-
-function RecentEntryRow({ entry }: RecentEntryRowProps) {
-  const when = new Date(entry.date).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  return (
-    <View style={styles.row}>
-      <View style={[styles.rowDot, { backgroundColor: entry.goal?.color ?? colors.primary }]} />
-      <View style={styles.rowBody}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {entry.taskTitle || entry.taskName}
-        </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {when}
-          {entry.goal?.title ? ` · ${entry.goal.title}` : ""}
-        </Text>
-      </View>
-      <Text style={styles.rowDuration}>{formatDuration(entry.duration)}</Text>
-    </View>
-  );
-}
-
-interface PickerModalProps {
-  visible: boolean;
-  tasks: Task[];
-  goals: Goal[];
-  onPickTask: (task: Task) => void;
-  onPickGoal: (goal: Goal) => void;
-  onClose: () => void;
-}
-
-// Deliberately not a searchable combobox — a plain modal with two chip
-// rows, one tap to pick. Good enough for the list sizes this app deals
-// with; a real search box is a v2 concern if lists grow large.
-function PickerModal({ visible, tasks, goals, onPickTask, onPickGoal, onClose }: PickerModalProps) {
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.modalBackdrop} onPress={onClose}>
-        <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>What are you tracking?</Text>
-
-          <Text style={styles.modalSectionLabel}>Tasks</Text>
-          <View style={styles.chipWrap}>
-            {tasks.length === 0 ? (
-              <Text style={styles.modalEmpty}>No tasks yet</Text>
-            ) : (
-              tasks.map((task) => (
-                <Pressable
-                  key={task.id}
-                  style={styles.chip}
-                  onPress={() => onPickTask(task)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Track task "${task.title}"`}
-                >
-                  <Text style={styles.chipText} numberOfLines={1}>
-                    {task.title}
-                  </Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-
-          <Text style={styles.modalSectionLabel}>Goals</Text>
-          <View style={styles.chipWrap}>
-            {goals.length === 0 ? (
-              <Text style={styles.modalEmpty}>No goals yet</Text>
-            ) : (
-              goals.map((goal) => (
-                <Pressable
-                  key={goal.id}
-                  style={styles.chip}
-                  onPress={() => onPickGoal(goal)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Track goal "${goal.title}"`}
-                >
-                  <View style={[styles.chipDot, { backgroundColor: goal.color }]} />
-                  <Text style={styles.chipText} numberOfLines={1}>
-                    {goal.title}
-                  </Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-
-          <Pressable
-            style={styles.modalCloseButton}
-            onPress={onClose}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel"
-          >
-            <Text style={styles.modalCloseText}>Cancel</Text>
-          </Pressable>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -475,13 +331,14 @@ const styles = StyleSheet.create({
   },
   timerCard: {
     margin: spacing.xl,
-    padding: spacing.xxl,
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.xl,
     borderRadius: radii.xl,
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.lg,
     ...shadows.card,
   },
   statusPill: {
@@ -504,259 +361,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     color: colors.white,
   },
-  clockRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    marginTop: spacing.xs,
-  },
-  clockDigits: {
-    fontSize: 56,
-    fontWeight: "700",
-    fontVariant: ["tabular-nums"],
-    letterSpacing: -1,
-    color: colors.foreground,
-  },
-  clockColon: {
-    fontSize: 44,
-    fontWeight: "700",
-    color: colors.border,
-    marginHorizontal: 1,
-  },
-  clockSeconds: {
-    fontSize: 56,
-    fontWeight: "700",
-    fontVariant: ["tabular-nums"],
-    letterSpacing: -1,
-    color: colors.mutedForeground,
-  },
-  activeLabelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    maxWidth: "100%",
-  },
-  activeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  activeLabelText: {
-    ...typography.body,
-    color: colors.foreground,
-  },
-  activeLabelPlaceholder: {
-    color: colors.mutedForeground,
-    fontWeight: "400",
-  },
-  pickerButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    width: "100%",
-    minHeight: 44,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-    marginTop: spacing.xs,
-  },
-  pickerButtonText: {
-    ...typography.bodySmall,
-    color: colors.foreground,
-  },
-  pickerButtonChevron: {
-    fontSize: 18,
-    color: colors.mutedForeground,
-  },
-  primaryButton: {
-    marginTop: spacing.xs,
-    minHeight: 48,
-    width: "100%",
-    justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.4,
-  },
-  primaryButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.primaryForeground,
-    textAlign: "center",
-  },
-  controlRow: {
-    flexDirection: "row",
-    gap: spacing.md,
-    marginTop: spacing.xs,
-    width: "100%",
-  },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 48,
-    justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.secondary,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  secondaryButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.foreground,
-    textAlign: "center",
-  },
-  resumeButton: {
-    flex: 1,
-    minHeight: 48,
-    justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.primary,
-  },
-  resumeButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.primaryForeground,
-    textAlign: "center",
-  },
-  stopButton: {
-    flex: 1,
-    minHeight: 48,
-    justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.destructive,
-  },
-  stopButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.white,
-    textAlign: "center",
-  },
-  sectionTitle: {
-    ...typography.label,
-    color: colors.mutedForeground,
-    paddingHorizontal: spacing.xl,
-    marginBottom: spacing.sm,
-  },
   listArea: {
     flex: 1,
   },
-  listContent: {
+  skeletonArea: {
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.lg,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
-    backgroundColor: colors.card,
-  },
-  rowSeparator: {
-    height: spacing.xs,
-  },
-  rowDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  rowBody: {
-    flex: 1,
-    gap: spacing.xxs,
-  },
-  rowTitle: {
-    ...typography.body,
-    color: colors.foreground,
-  },
-  rowSubtitle: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  rowDuration: {
-    fontSize: 14,
-    fontWeight: "700",
-    fontVariant: ["tabular-nums"],
-    color: colors.foreground,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: colors.overlay,
-    justifyContent: "flex-end",
-  },
-  modalSheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: radii.xl,
-    borderTopRightRadius: radii.xl,
-    padding: spacing.xl,
-    maxHeight: "70%",
-  },
-  modalHandle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    marginBottom: spacing.md,
-  },
-  modalTitle: {
-    ...typography.h2,
-    color: colors.foreground,
-    marginBottom: spacing.md,
-  },
-  modalSectionLabel: {
-    ...typography.label,
-    color: colors.mutedForeground,
-    marginTop: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  modalEmpty: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  chipWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-  },
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md + 2,
-    borderRadius: radii.full,
-    backgroundColor: colors.secondary,
-    borderWidth: 1,
-    borderColor: colors.border,
-    maxWidth: "100%",
-  },
-  chipDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  chipText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.foreground,
-  },
-  modalCloseButton: {
-    marginTop: spacing.lg,
-    alignItems: "center",
-    paddingVertical: spacing.md,
-  },
-  modalCloseText: {
-    ...typography.bodySmall,
-    color: colors.mutedForeground,
   },
 });
