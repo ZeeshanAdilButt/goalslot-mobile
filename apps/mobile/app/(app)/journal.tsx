@@ -14,8 +14,10 @@
 // then either invalidate (success) or restore the snapshot (failure) — no
 // offline-outbox involved, same as every other v1 screen.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
@@ -23,10 +25,18 @@ import { FlashList } from "@shopify/flash-list";
 import { getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
+import { Icon } from "@/components/ui/Icon";
 import { apiClient } from "@/lib/api-client";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, radii, spacing, typography } from "@/theme";
+
+// How long the "Saved" confirmation stays up. Saving used to give no visible
+// feedback at all: this screen is a per-day editor, so the text intentionally
+// stays in the box after a save, which read as "the button did nothing" —
+// "I tried to add my journal entry. It was not clearing the text box."
+const SAVED_CONFIRMATION_MS = 2000;
 
 const RECENT_WINDOW_DAYS = 14;
 const RECENT_SKELETON_ROWS = 4;
@@ -51,6 +61,17 @@ export default function JournalScreen() {
   const [draft, setDraft] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clearing the timeout on unmount stops the "Saved" flag being set on an
+  // unmounted screen if the user navigates away right after saving.
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -107,6 +128,14 @@ export default function JournalScreen() {
       queryClient.setQueryData(entryKey, response.data);
       void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
       setIsDirty(false);
+      // Confirm the save happened. Without this the screen looked inert after
+      // pressing Save — the text deliberately stays put (this is a per-day
+      // editor, not a "new entry" box), so a haptic tick plus a visible
+      // "Saved" state is the only signal that anything occurred.
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setJustSaved(true);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_CONFIRMATION_MS);
       analytics.track({ name: "journalEntrySaved", payload: { date: selectedDate } });
     } catch {
       queryClient.setQueryData(entryKey, previous);
@@ -162,7 +191,7 @@ export default function JournalScreen() {
           setIsDirty(true);
         }}
         placeholder="Write about your day..."
-        placeholderTextColor="#94A3B8"
+        placeholderTextColor={colors.mutedForeground}
         textAlignVertical="top"
         accessibilityLabel={`Journal entry for ${formatDisplayDate(selectedDate)}`}
         accessibilityHint="Multiline text field. Use the Save button below to save your changes."
@@ -197,7 +226,10 @@ export default function JournalScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    // edges={["top"]} matches index.tsx/reports.tsx. Without it this screen's
+    // date navigation rendered underneath the system status bar on devices
+    // with a tall status bar (reported on a Samsung S22).
+    <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.dateNav}>
         <Pressable
           style={styles.navArrow}
@@ -206,7 +238,11 @@ export default function JournalScreen() {
           accessibilityRole="button"
           accessibilityLabel="Previous day"
         >
-          <Text style={styles.navArrowText}>‹</Text>
+          {/* The icon set only ships a right-facing chevron; rotating it keeps
+              this file from having to touch Icon.tsx (owned elsewhere). */}
+          <View style={styles.flipHorizontal}>
+            <Icon name="chevron" size={22} color={colors.foreground} />
+          </View>
         </Pressable>
 
         <Pressable
@@ -231,28 +267,39 @@ export default function JournalScreen() {
           accessibilityLabel="Next day"
           accessibilityState={{ disabled: !canGoForward }}
         >
-          <Text style={[styles.navArrowText, !canGoForward && styles.navArrowTextDisabled]}>›</Text>
+          <Icon
+            name="chevron"
+            size={22}
+            color={canGoForward ? colors.foreground : colors.border}
+          />
         </Pressable>
       </View>
 
       <View style={styles.editorArea}>{editorContent}</View>
 
       <Pressable
-        style={[styles.saveButton, (!isDirty || isSaving) && styles.saveButtonDisabled]}
+        style={[
+          styles.saveButton,
+          justSaved && styles.saveButtonSaved,
+          (!isDirty || isSaving) && !justSaved && styles.saveButtonDisabled,
+        ]}
         onPress={() => void handleSave()}
         disabled={!isDirty || isSaving}
         accessibilityRole="button"
         accessibilityLabel="Save journal entry"
         accessibilityState={{ disabled: !isDirty || isSaving }}
       >
-        <Text style={styles.saveButtonText}>{isSaving ? "Saving…" : "Save"}</Text>
+        {justSaved ? <Icon name="check" size={16} color={colors.successForeground} /> : null}
+        <Text style={[styles.saveButtonText, justSaved && styles.saveButtonTextSaved]}>
+          {isSaving ? "Saving…" : justSaved ? "Saved" : "Save"}
+        </Text>
       </Pressable>
 
       <View style={styles.recentSection}>
         <Text style={styles.recentHeading}>Recent entries</Text>
         <View style={styles.recentListArea}>{recentContent}</View>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -264,8 +311,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
   },
   navArrow: {
     width: 40,
@@ -273,31 +320,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  navArrowText: {
-    fontSize: 26,
-    fontWeight: "400",
-    color: "#1F2933",
-  },
-  navArrowTextDisabled: {
-    color: "#CBD5E1",
+  flipHorizontal: {
+    transform: [{ scaleX: -1 }],
   },
   dateLabelWrap: {
     flex: 1,
     alignItems: "center",
   },
   dateLabel: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0F172A",
+    fontSize: typography.size.md,
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
   },
   dateSublabel: {
-    fontSize: 12,
-    color: "#64748B",
+    fontSize: typography.size.xs,
+    color: colors.mutedForeground,
     marginTop: 2,
   },
   editorArea: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
   },
   editorSkeleton: {
     gap: 10,
@@ -308,42 +350,51 @@ const styles = StyleSheet.create({
   textInput: {
     minHeight: 160,
     maxHeight: 260,
-    borderRadius: 10,
+    borderRadius: radii.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#E2E8F0",
-    backgroundColor: "#FFFFFF",
-    padding: 12,
-    fontSize: 15,
-    color: "#0F172A",
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    padding: spacing.md,
+    fontSize: typography.size.md,
+    color: colors.foreground,
   },
   saveButton: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    paddingVertical: 12,
-    borderRadius: 8,
+    flexDirection: "row",
+    gap: spacing.xs,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: radii.md,
     alignItems: "center",
-    backgroundColor: "#1F2933",
+    justifyContent: "center",
+    backgroundColor: colors.ink,
   },
   saveButtonDisabled: {
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
+  },
+  saveButtonSaved: {
+    backgroundColor: colors.successMuted,
   },
   saveButtonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 14,
+    color: colors.white,
+    fontWeight: typography.weight.semibold,
+    fontSize: typography.size.sm,
+  },
+  saveButtonTextSaved: {
+    color: colors.successForeground,
   },
   recentSection: {
     flex: 1,
     marginTop: 20,
   },
   recentHeading: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#64748B",
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    color: colors.mutedForeground,
     textTransform: "uppercase",
     letterSpacing: 0.4,
-    paddingHorizontal: 16,
-    marginBottom: 4,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.xs,
   },
   recentListArea: {
     flex: 1,
@@ -352,22 +403,22 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   recentRow: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: colors.border,
     gap: 2,
   },
   recentRowActive: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.muted,
   },
   recentRowDate: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#0F172A",
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.semibold,
+    color: colors.foreground,
   },
   recentRowPreview: {
-    fontSize: 12,
-    color: "#64748B",
+    fontSize: typography.size.xs,
+    color: colors.mutedForeground,
   },
 });
