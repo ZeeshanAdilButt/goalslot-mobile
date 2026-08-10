@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
+  ActivityIndicator,
   Alert,
   Pressable,
   RefreshControl,
@@ -787,9 +788,18 @@ export default function NotesScreen() {
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="New page"
+            accessibilityState={{ disabled: isCreating, busy: isCreating }}
           >
-            <Icon name="add" size={16} color={colors.primaryForeground} />
-            <Text style={styles.newButtonText}>New page</Text>
+            {/* Creating a page is a network round-trip before navigation —
+                without this the button just dimmed with no other feedback,
+                so a real (non-local) connection reads as an unresponsive tap
+                for however long the request takes. */}
+            {isCreating ? (
+              <ActivityIndicator size="small" color={colors.primaryForeground} />
+            ) : (
+              <Icon name="add" size={16} color={colors.primaryForeground} />
+            )}
+            <Text style={styles.newButtonText}>{isCreating ? "Creating…" : "New page"}</Text>
           </Pressable>
         }
       />
