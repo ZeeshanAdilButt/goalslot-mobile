@@ -1,15 +1,37 @@
 // Content rendered inside the sliding panel built by AppDrawer.tsx. Pure
 // presentation — no animation/gesture logic here, so it's easy to reason
-// about independently: the GoalSlot mark + wordmark up top, one row per app
-// area, and the signed-in user's name/email + a logout action pinned at the
-// bottom (mirroring the profile block already on the Settings screen).
+// about independently: brand header, grouped nav, signed-in user + logout
+// pinned at the bottom.
 //
 // This is the direct fix for the user feedback that prompted this work —
 // "I can't see notes. There is no way for me to easily go through all the
 // different areas. Should have been the side task bar sidebar." — so every
-// one of the app's nine screens gets a row here, not just the five that fit
-// the tab bar (see app/(app)/_layout.tsx for why those five stayed on the
+// one of the app's screens gets a row here, not just the five that fit the
+// tab bar (see app/(app)/_layout.tsx for why those five stayed on the
 // physical tab bar and the rest didn't).
+//
+// Structure is ported from web's `app-sidebar.tsx`, which is the real
+// product sidebar this is standing in for:
+//   - SidebarHeader: brand mark + wordmark on a bordered header band
+//     (app-sidebar.tsx:141 — `border-b border-zinc-200 p-4`).
+//   - SidebarGroup + SidebarGroupLabel: the nav is GROUPED, not one flat
+//     list of eleven rows. The groups aren't invented here either — they're
+//     the pairs app-sidebar.tsx:56-66 already documents in comments
+//     ("Planning pair: Goals + Schedule", "Execution pair: Tasks + Time
+//     Tracker", "Reflection pair: Journal + Coach", "Auxiliary surfaces"),
+//     just made visible. Eleven undifferentiated rows is the thing that
+//     makes a drawer read as a dump of links rather than as navigation.
+//   - SidebarMenuButton: rounded row, muted label and icon at rest; active
+//     gets a zinc-100 fill, a zinc-200 border, a semibold label and a
+//     brand-yellow icon (sidebar.tsx:443 `data-[active=true]:*` +
+//     app-sidebar.tsx:204 `isActive && 'text-[#f2cc0d]'`).
+//   - SidebarFooter: bordered footer band with the user's avatar (a
+//     zinc-900 circle with a white initial, app-sidebar.tsx:288) and logout.
+//
+// The one mobile addition is the leading 3px brand bar on the active row:
+// on a phone the drawer is dismissed and re-opened constantly, so "where am
+// I" needs to survive a glance, and a fill alone doesn't carry that at arm's
+// length the way a coloured edge does.
 
 import { useCallback } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -17,7 +39,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "@/providers/auth-provider";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
-import { colors, radii, spacing, typography } from "@/theme/tokens";
+import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { Icon, type IconName } from "@/components/ui/Icon";
 
 // Closed set of real app routes, exactly mirroring the literal-union pattern
@@ -44,21 +66,47 @@ interface DrawerNavItem {
   icon: IconName;
 }
 
-// All nine screens. The first five match the tab bar's order; the last four
-// are the ones `href: null` hides from the tab bar but that still need a
-// clearly-labeled way in.
-const NAV_ITEMS: DrawerNavItem[] = [
-  { href: "/", label: "Today", icon: "today" },
-  { href: "/schedule", label: "Schedule", icon: "schedule" },
-  { href: "/goals", label: "Goals", icon: "goals" },
-  { href: "/tasks", label: "Tasks", icon: "tasks" },
-  { href: "/timer", label: "Timer", icon: "timer" },
-  { href: "/coach", label: "Coach AI", icon: "coach" },
-  { href: "/notes", label: "Notes", icon: "notes" },
-  { href: "/journal", label: "Journal", icon: "journal" },
-  { href: "/reports", label: "Reports", icon: "reports" },
-  { href: "/categories", label: "Categories", icon: "categories" },
-  { href: "/settings", label: "Settings", icon: "settings" },
+interface DrawerNavGroup {
+  /** Uppercase group label. Omitted for the first group, which needs no heading. */
+  label?: string;
+  items: DrawerNavItem[];
+}
+
+// Grouping and order both follow web's `navItems` (app-sidebar.tsx:53-70).
+// Timer is web's "Time Tracker" and Coach AI is web's "GoalSlot AI" — same
+// screens, mobile's existing labels kept so the drawer matches the tab bar.
+const NAV_GROUPS: DrawerNavGroup[] = [
+  { items: [{ href: "/", label: "Today", icon: "today" }] },
+  {
+    label: "Plan",
+    items: [
+      { href: "/goals", label: "Goals", icon: "goals" },
+      { href: "/schedule", label: "Schedule", icon: "schedule" },
+    ],
+  },
+  {
+    label: "Do",
+    items: [
+      { href: "/tasks", label: "Tasks", icon: "tasks" },
+      { href: "/timer", label: "Timer", icon: "timer" },
+    ],
+  },
+  {
+    label: "Reflect",
+    items: [
+      { href: "/journal", label: "Journal", icon: "journal" },
+      { href: "/coach", label: "Coach AI", icon: "coach" },
+    ],
+  },
+  {
+    label: "Workspace",
+    items: [
+      { href: "/notes", label: "Notes", icon: "notes" },
+      { href: "/reports", label: "Reports", icon: "reports" },
+      { href: "/categories", label: "Categories", icon: "categories" },
+      { href: "/settings", label: "Settings", icon: "settings" },
+    ],
+  },
 ];
 
 // "/" (Today) only matches the exact root path; every other route also
@@ -93,19 +141,29 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
     ]);
   }, [logout]);
 
+  const displayName = user?.name?.trim() || user?.email || "Signed in";
+  const avatarInitial = (user?.name || user?.email || "?").charAt(0).toUpperCase();
+
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom", "left"]}>
       <View style={styles.header}>
-        <GoalSlotLogo size={30} color={colors.primary} accessibilityLabel="GoalSlot" />
-        <Text style={styles.wordmark}>GoalSlot</Text>
+        <View style={styles.brand}>
+          <GoalSlotLogo size={28} color={colors.primary} accessibilityLabel="GoalSlot" />
+          <View style={styles.brandText}>
+            <Text style={styles.wordmark}>GoalSlot</Text>
+            {/* Web's GoalSlotBrand carries an optional tagline slot; mobile
+                uses it as a quiet orientation line rather than marketing. */}
+            <Text style={styles.tagline}>Plan · Do · Reflect</Text>
+          </View>
+        </View>
         <Pressable
           onPress={onRequestClose}
           accessibilityRole="button"
           accessibilityLabel="Close navigation menu"
-          hitSlop={8}
-          style={styles.closeButton}
+          hitSlop={spacing.sm}
+          style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}
         >
-          <Text style={styles.closeGlyph}>✕</Text>
+          <Icon name="close" size={iconSize.md} color={colors.mutedForeground} />
         </Pressable>
       </View>
 
@@ -114,50 +172,75 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
         contentContainerStyle={styles.navContent}
         showsVerticalScrollIndicator={false}
       >
-        {NAV_ITEMS.map((item) => {
-          const active = isActiveRoute(pathname, item.href);
-          return (
-            <Pressable
-              key={item.href}
-              onPress={() => onNavigate(item.href)}
-              style={[styles.navRow, active && styles.navRowActive]}
-              accessibilityRole="link"
-              accessibilityLabel={item.label}
-              accessibilityState={{ selected: active }}
-            >
-              <Icon name={item.icon} size={20} color={active ? colors.primaryDark : colors.mutedForeground} />
-              <Text style={[styles.navLabel, active && styles.navLabelActive]}>{item.label}</Text>
-            </Pressable>
-          );
-        })}
+        {NAV_GROUPS.map((group, groupIndex) => (
+          <View key={group.label ?? "primary"} style={groupIndex > 0 && styles.groupSpaced}>
+            {group.label ? <Text style={styles.groupLabel}>{group.label}</Text> : null}
+            {group.items.map((item) => {
+              const active = isActiveRoute(pathname, item.href);
+              return (
+                <Pressable
+                  key={item.href}
+                  onPress={() => onNavigate(item.href)}
+                  style={({ pressed }) => [
+                    styles.navRow,
+                    active && styles.navRowActive,
+                    pressed && !active && styles.navRowPressed,
+                  ]}
+                  accessibilityRole="link"
+                  accessibilityLabel={item.label}
+                  accessibilityState={{ selected: active }}
+                >
+                  {active ? <View style={styles.activeBar} /> : null}
+                  <Icon
+                    name={item.icon}
+                    size={iconSize.md}
+                    // app-sidebar.tsx:204 — the active icon, and only the
+                    // icon, turns brand yellow. `primaryPressed` (the darker
+                    // #D9B307) rather than raw #F2CC0D: a 2px yellow stroke
+                    // on a near-white fill is barely visible at this size.
+                    color={active ? colors.primaryPressed : colors.mutedForeground}
+                  />
+                  <Text style={[styles.navLabel, active && styles.navLabelActive]} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
       </ScrollView>
 
       <View style={styles.footer}>
         <View style={styles.profileRow}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarInitial}>{(user?.name || user?.email || "?").charAt(0).toUpperCase()}</Text>
+            <Text style={styles.avatarInitial}>{avatarInitial}</Text>
           </View>
           <View style={styles.profileText}>
             <Text style={styles.profileName} numberOfLines={1}>
-              {user?.name || "—"}
+              {displayName}
             </Text>
-            <Text style={styles.profileEmail} numberOfLines={1}>
-              {user?.email || "—"}
-            </Text>
+            {user?.email ? (
+              <Text style={styles.profileEmail} numberOfLines={1}>
+                {user.email}
+              </Text>
+            ) : null}
           </View>
         </View>
         <Pressable
           onPress={confirmLogout}
-          style={styles.logoutButton}
+          style={({ pressed }) => [styles.logoutButton, pressed && styles.logoutButtonPressed]}
           accessibilityRole="button"
           accessibilityLabel="Log out"
         >
+          <Icon name="logout" size={iconSize.sm} color={colors.destructive} />
           <Text style={styles.logoutButtonText}>Log out</Text>
         </Pressable>
       </View>
     </SafeAreaView>
   );
 }
+
+const ACTIVE_BAR_WIDTH = 3;
 
 const styles = StyleSheet.create({
   container: {
@@ -167,29 +250,40 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg, // app-sidebar.tsx SidebarHeader `p-4`
+    paddingVertical: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  wordmark: {
-    ...typography.h2,
-    color: colors.foreground,
+  brand: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  brandText: {
     flex: 1,
   },
+  wordmark: {
+    ...typography.h1,
+    color: colors.foreground,
+  },
+  tagline: {
+    ...typography.label,
+    color: colors.mutedForegroundLight,
+    marginTop: spacing.xxs,
+  },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.full,
+    width: 36,
+    height: 36,
+    borderRadius: radii.pill,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.secondary,
   },
-  closeGlyph: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: colors.mutedForeground,
+  closeButtonPressed: {
+    backgroundColor: colors.border,
   },
   nav: {
     flex: 1,
@@ -197,35 +291,58 @@ const styles = StyleSheet.create({
   navContent: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.lg,
-    gap: spacing.xxs,
+    paddingBottom: spacing.xxl,
+  },
+  groupSpaced: {
+    marginTop: spacing.xl,
+  },
+  groupLabel: {
+    ...typography.label,
+    color: colors.mutedForegroundLight, // app-sidebar.tsx SidebarGroupLabel `text-zinc-400`
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
   },
   navRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    minHeight: 48,
+    // Web's rows are h-8 (32px); a drawer row is a primary navigation target
+    // on a phone, so it takes the 44pt touch floor plus a little air.
+    minHeight: minTouchTarget + 4,
     paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
+    borderRadius: radii.control,
+    borderWidth: 1,
+    // Transparent (not absent) so the active row's border doesn't shift the
+    // label by a pixel when it appears.
+    borderColor: "transparent",
+    marginBottom: spacing.xxs,
   },
   navRowActive: {
+    // sidebar.tsx:443 — `data-[active=true]:bg-zinc-100 border-zinc-200`.
     backgroundColor: colors.secondary,
+    borderColor: colors.border,
   },
-  navGlyph: {
-    fontSize: 18,
-    width: 24,
-    textAlign: "center",
-    color: colors.mutedForeground,
+  navRowPressed: {
+    backgroundColor: colors.background,
   },
-  navGlyphActive: {
-    color: colors.primaryDark,
+  activeBar: {
+    position: "absolute",
+    left: 0,
+    top: spacing.sm,
+    bottom: spacing.sm,
+    width: ACTIVE_BAR_WIDTH,
+    borderTopRightRadius: ACTIVE_BAR_WIDTH,
+    borderBottomRightRadius: ACTIVE_BAR_WIDTH,
+    backgroundColor: colors.primary,
   },
   navLabel: {
     ...typography.body,
-    color: colors.foreground,
+    color: colors.mutedForeground, // sidebar.tsx:443 resting label is `text-zinc-600`
+    flex: 1,
   },
   navLabelActive: {
-    fontWeight: "700",
-    color: colors.foreground,
+    fontWeight: "600", // `data-[active=true]:font-semibold`
+    color: colors.foreground, // `data-[active=true]:text-zinc-900`
   },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -243,39 +360,48 @@ const styles = StyleSheet.create({
   avatar: {
     width: 40,
     height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.primary,
+    borderRadius: radii.pill,
+    // app-sidebar.tsx:288 — the footer avatar is zinc-900 with white text and
+    // a zinc-100 ring, NOT brand yellow. Yellow here competes with the active
+    // nav row, which is the one thing in the drawer that should own it.
+    backgroundColor: colors.foreground,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 2,
+    borderColor: colors.secondary, // `ring-2 ring-zinc-100`
   },
   avatarInitial: {
-    color: colors.primaryForeground,
-    fontSize: 16,
-    fontWeight: "700",
+    ...typography.title,
+    color: colors.white,
   },
   profileText: {
     flex: 1,
     gap: spacing.xxs,
   },
   profileName: {
-    ...typography.title,
+    ...typography.body,
+    fontWeight: "600",
     color: colors.foreground,
   },
   profileEmail: {
     ...typography.bodySmall,
-    fontWeight: "400",
     color: colors.mutedForeground,
   },
   logoutButton: {
-    minHeight: 44,
-    justifyContent: "center",
+    flexDirection: "row",
     alignItems: "center",
-    borderRadius: radii.md,
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget,
+    borderRadius: radii.control,
     backgroundColor: colors.destructiveMuted,
   },
+  logoutButtonPressed: {
+    opacity: 0.75,
+  },
   logoutButtonText: {
-    fontSize: 15,
-    fontWeight: "700",
+    ...typography.body,
+    fontWeight: "600",
     color: colors.destructive,
   },
 });

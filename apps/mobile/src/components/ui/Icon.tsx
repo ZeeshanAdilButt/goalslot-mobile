@@ -19,26 +19,36 @@
 // has no direct lucide match for web's custom FeatherPenIcon, so it uses the
 // closest stock lucide icon (NotebookPen) rather than pulling in a one-off SVG.
 import {
+  AlertTriangle,
+  ArrowRight,
   BarChart3,
   Calendar,
+  CalendarOff,
   Check,
   CheckSquare,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Eye,
   EyeOff,
   Flag,
+  Inbox,
   LayoutDashboard,
   LogOut,
   MessageSquareText,
   Menu,
   NotebookPen,
   Pencil,
+  RefreshCw,
+  Search,
+  Sparkles,
   StickyNote,
   Plus,
   Settings,
   Tag,
   Trash2,
+  User,
   X,
   type LucideIcon,
 } from "lucide-react-native";
@@ -70,6 +80,23 @@ const ICONS = {
   eye: Eye,
   "eye-off": EyeOff,
   logout: LogOut,
+  // Added for the shared state primitives (EmptyState/ErrorState) and the
+  // navigation drawer, which previously drew their marks as literal text
+  // glyphs ("✕") or fell back to the GoalSlot logo for every empty screen.
+  // Same 1:1-with-web rule as the names above: `sparkles` is what
+  // app-sidebar.tsx uses for What's New, `search`/`inbox`/`user`/
+  // `chevron-down`/`chevron-left`/`arrow-right` are the stock lucide glyphs
+  // web reaches for in the same situations.
+  inbox: Inbox,
+  search: Search,
+  sparkles: Sparkles,
+  alert: AlertTriangle,
+  refresh: RefreshCw,
+  "arrow-right": ArrowRight,
+  "chevron-down": ChevronDown,
+  "chevron-left": ChevronLeft,
+  "calendar-off": CalendarOff,
+  user: User,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

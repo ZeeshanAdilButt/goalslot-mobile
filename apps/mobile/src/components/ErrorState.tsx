@@ -1,7 +1,23 @@
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import Svg, { Circle, Line } from "react-native-svg";
+// The failure counterpart to EmptyState, and deliberately built from the
+// same parts in the same order (illustration -> headline -> supporting line
+// -> action) so a screen that fails looks like the same product as a screen
+// that's merely empty. Only two things change: the tone is `danger` instead
+// of neutral, and the primary action is a retry.
+//
+// The illustration is intentionally quieter than EmptyState's — no dashed
+// rings, no brand specks. An error is not a moment to decorate; the ring
+// treatment here is the same `IconBadge` used everywhere else, tinted red
+// (web's `rose-50 / rose-500` family, badge.tsx:16), and that's it.
 
-import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import type { ReactNode } from "react";
+import { useEffect } from "react";
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+
+import { Button } from "@/components/ui/Button";
+import type { IconName } from "@/components/ui/Icon";
+import { IconBadge } from "@/components/ui/IconBadge";
+import { colors, motion, spacing, typography } from "@/theme/tokens";
 
 export interface ErrorStateProps {
   message: string;
@@ -14,40 +30,71 @@ export interface ErrorStateProps {
    */
   title?: string;
   onRetry?: () => void;
+  /** Label for the retry button. Defaults to "Try again". */
+  retryLabel?: string;
+  /** Illustration glyph. Defaults to an alert triangle. */
+  iconName?: IconName;
+  /** Tightens the composition for an error inside a card or section rather than a whole screen. */
+  compact?: boolean;
+  style?: StyleProp<ViewStyle>;
+  /** Anything extra below the retry action — a support link, a technical detail toggle. */
+  footer?: ReactNode;
 }
 
-const GLYPH_BADGE_SIZE = 64;
+export function ErrorState({
+  message,
+  title = "Something went wrong",
+  onRetry,
+  retryLabel = "Try again",
+  iconName = "alert",
+  compact = false,
+  style,
+  footer,
+}: ErrorStateProps) {
+  // Same hand-rolled entrance as EmptyState — see that file for why this
+  // isn't Reanimated's `entering=` layout animation.
+  const enter = useSharedValue(0);
 
-/** Small alert-circle mark, drawn with react-native-svg (already a dependency via GoalSlotLogo) rather than pulling in an icon library. */
-function AlertGlyph() {
-  return (
-    <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
-      <Circle cx={12} cy={12} r={9} stroke={colors.destructive} strokeWidth={2} />
-      <Line x1={12} y1={7.5} x2={12} y2={13} stroke={colors.destructive} strokeWidth={2} strokeLinecap="round" />
-      <Circle cx={12} cy={16.5} r={1.15} fill={colors.destructive} />
-    </Svg>
-  );
-}
+  useEffect(() => {
+    enter.value = withTiming(1, { duration: motion.duration.slow, easing: Easing.out(Easing.cubic) });
+  }, [enter]);
 
-export function ErrorState({ message, title = "Something went wrong", onRetry }: ErrorStateProps) {
+  const enterStyle = useAnimatedStyle(() => ({
+    opacity: enter.value,
+    transform: [{ translateY: (1 - enter.value) * 12 }],
+  }));
+
   return (
-    <View style={styles.container}>
-      <View style={styles.glyphBadge} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        <AlertGlyph />
+    <Animated.View style={[styles.container, compact && styles.containerCompact, enterStyle, style]}>
+      <IconBadge
+        name={iconName}
+        tone="danger"
+        size={compact ? "lg" : "xl"}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      />
+
+      <View style={styles.copy}>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.message}>{message}</Text>
       </View>
-      <Text style={styles.title}>{title}</Text>
-      <Text style={styles.message}>{message}</Text>
+
       {onRetry ? (
-        <TouchableOpacity
-          style={styles.retryButton}
+        <Button
+          label={retryLabel}
           onPress={onRetry}
-          accessibilityRole="button"
-          accessibilityLabel="Retry"
-        >
-          <Text style={styles.retryText}>Retry</Text>
-        </TouchableOpacity>
+          // Secondary, not destructive: the red belongs to the illustration
+          // that reports the problem, not to the button that fixes it — a red
+          // button reads as "this action is dangerous".
+          variant="secondary"
+          icon="refresh"
+          accessibilityLabel={retryLabel}
+          style={styles.retry}
+        />
       ) : null}
-    </View>
+
+      {footer}
+    </Animated.View>
   );
 }
 
@@ -55,43 +102,30 @@ const styles = StyleSheet.create({
   container: {
     alignItems: "center",
     justifyContent: "center",
-    gap: spacing.sm,
-    padding: spacing.xxl,
+    paddingVertical: spacing.xxxl,
+    paddingHorizontal: spacing.xxl,
+    gap: spacing.xl,
   },
-  glyphBadge: {
-    width: GLYPH_BADGE_SIZE,
-    height: GLYPH_BADGE_SIZE,
-    borderRadius: GLYPH_BADGE_SIZE / 2,
+  containerCompact: {
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  copy: {
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.destructiveMuted,
-    marginBottom: spacing.xs,
+    gap: spacing.sm,
+    maxWidth: 320,
   },
   title: {
-    ...typography.title,
+    ...typography.headline,
     color: colors.foreground,
     textAlign: "center",
   },
   message: {
-    ...typography.bodySmall,
-    fontWeight: "400",
+    ...typography.body,
     color: colors.mutedForeground,
     textAlign: "center",
-    maxWidth: 280,
   },
-  retryButton: {
-    minHeight: minTouchTarget,
-    justifyContent: "center",
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.xl,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.destructive,
-    marginTop: spacing.sm,
-  },
-  retryText: {
-    ...typography.body,
-    fontWeight: "700",
-    color: colors.destructive,
+  retry: {
+    marginTop: spacing.xs,
   },
 });

@@ -1,14 +1,20 @@
-// Loading-placeholder primitive every upcoming list-heavy screen (Today,
-// Schedule, Tasks) reaches for. The pulse runs entirely on the UI thread via
-// Reanimated's `useAnimatedStyle` + `withRepeat`/`withTiming` — no JS-thread
-// `Animated.timing` loop — so it stays smooth even while the JS thread is
-// busy fetching/parsing the data the skeleton is standing in for. Getting
-// this one component right once (UI-thread animation, cancels cleanly on
-// unmount) means every screen's loading state inherits the same behavior
-// instead of five slightly-different reimplementations.
+// Loading-placeholder primitive every list-heavy screen (Today, Schedule,
+// Tasks, Notes) reaches for.
+//
+// Web fakes loading with Tailwind's `animate-pulse` (skeleton.tsx —
+// `animate-pulse rounded-md bg-zinc-100`), which fades the whole block in and
+// out. That reads as a flashing rectangle on a phone, where the placeholder
+// fills much more of the viewport than it does in a desktop column. This
+// version keeps web's zinc-100 fill but animates a highlight SWEEPING across
+// it instead: the block stays put, and the motion travels, which reads as
+// "content is arriving" rather than "something is blinking".
+//
+// Both the sweep and its cleanup run on the UI thread via Reanimated, so the
+// placeholder stays smooth while the JS thread is busy fetching and parsing
+// the very data the skeleton is standing in for.
 
-import { useEffect } from "react";
-import { StyleSheet, View, type DimensionValue } from "react-native";
+import { useEffect, useId, useState } from "react";
+import { StyleSheet, View, type DimensionValue, type LayoutChangeEvent } from "react-native";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -17,6 +23,7 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
@@ -27,41 +34,86 @@ export interface SkeletonProps {
   style?: object;
 }
 
-// Mirrors dw-time-web's `animate-pulse` cadence (Tailwind default: 2s,
-// ease-in-out, alternating 1 <-> ~0.5) rather than a snappier/JS-native
-// feel, so the loading moment reads the same on both platforms.
-const MIN_OPACITY = 0.45;
-const MAX_OPACITY = 1;
-const PULSE_DURATION_MS = 1000;
+// One full traverse per 1.4s, linear. Deliberately slower than a "loading
+// bar" and with no easing at the turnaround, because a sweep that
+// accelerates draws the eye to the placeholder instead of past it.
+const SWEEP_DURATION_MS = 1400;
+// The highlight is 60% of the block's width, so on a short block (a 40%-width
+// subtitle line) the sweep is still visible as a moving band rather than
+// covering the whole thing at once.
+const HIGHLIGHT_RATIO = 0.6;
 
-export function Skeleton({ width = "100%", height = 16, borderRadius = 6, style }: SkeletonProps) {
-  const opacity = useSharedValue(MIN_OPACITY);
+export function Skeleton({ width = "100%", height = 16, borderRadius = radii.chip, style }: SkeletonProps) {
+  // The sweep has to travel a pixel distance, and `width` may be a percentage
+  // string, so the real width comes from layout rather than from the prop.
+  const [measuredWidth, setMeasuredWidth] = useState(0);
+  const progress = useSharedValue(0);
+
+  // react-native-svg resolves `url(#id)` per rendered tree; a shared literal
+  // id makes every skeleton on screen point at whichever gradient mounted
+  // last. `useId` gives each instance its own.
+  const gradientId = `skeleton-sweep-${useId()}`;
 
   useEffect(() => {
-    opacity.value = withRepeat(
-      withTiming(MAX_OPACITY, { duration: PULSE_DURATION_MS, easing: Easing.inOut(Easing.ease) }),
+    if (measuredWidth === 0) {
+      return;
+    }
+
+    progress.value = 0;
+    progress.value = withRepeat(
+      withTiming(1, { duration: SWEEP_DURATION_MS, easing: Easing.linear }),
       -1, // repeat forever
-      true, // reverse each cycle, so it pulses rather than snapping back
+      false, // restart from the left each pass rather than sweeping back
     );
 
-    // Reanimated animations tied to a shared value keep running against a
-    // torn-down component unless explicitly cancelled — this stops the loop
-    // when the skeleton unmounts (e.g. real content replaces it).
+    // A Reanimated loop tied to a shared value keeps running against a
+    // torn-down component unless cancelled — this stops it when the skeleton
+    // unmounts (i.e. when the real content lands).
     return () => {
-      cancelAnimation(opacity);
+      cancelAnimation(progress);
     };
-  }, [opacity]);
+  }, [measuredWidth, progress]);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
+  const highlightWidth = Math.max(measuredWidth * HIGHLIGHT_RATIO, 1);
+
+  const sweepStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        // Travels from fully off the left edge to fully off the right edge.
+        translateX: -highlightWidth + progress.value * (measuredWidth + highlightWidth),
+      },
+    ],
   }));
 
+  const onLayout = (event: LayoutChangeEvent) => {
+    const nextWidth = Math.round(event.nativeEvent.layout.width);
+    if (nextWidth !== measuredWidth) {
+      setMeasuredWidth(nextWidth);
+    }
+  };
+
   return (
-    <Animated.View
-      style={[styles.base, { width, height, borderRadius }, animatedStyle, style]}
+    <View
+      style={[styles.base, { width, height, borderRadius }, style]}
+      onLayout={onLayout}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
-    />
+    >
+      {measuredWidth > 0 ? (
+        <Animated.View style={[styles.sweep, { width: highlightWidth }, sweepStyle]} pointerEvents="none">
+          <Svg width="100%" height="100%">
+            <Defs>
+              <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+                <Stop offset="0" stopColor={colors.white} stopOpacity={0} />
+                <Stop offset="0.5" stopColor={colors.white} stopOpacity={0.85} />
+                <Stop offset="1" stopColor={colors.white} stopOpacity={0} />
+              </LinearGradient>
+            </Defs>
+            <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${gradientId})`} />
+          </Svg>
+        </Animated.View>
+      ) : null}
+    </View>
   );
 }
 
@@ -86,7 +138,9 @@ export interface SkeletonListItemProps {
 export function SkeletonListItem({ showLeading = true }: SkeletonListItemProps) {
   return (
     <View style={styles.row}>
-      {showLeading ? <Skeleton width={LEADING_DOT_SIZE} height={LEADING_DOT_SIZE} borderRadius={LEADING_DOT_SIZE / 2} /> : null}
+      {showLeading ? (
+        <Skeleton width={LEADING_DOT_SIZE} height={LEADING_DOT_SIZE} borderRadius={LEADING_DOT_SIZE / 2} />
+      ) : null}
       <View style={styles.rowText}>
         <Skeleton width="70%" height={14} />
         <Skeleton width="40%" height={12} style={styles.rowSubtitle} />
@@ -119,13 +173,20 @@ export function SkeletonCard() {
 
 const styles = StyleSheet.create({
   base: {
-    backgroundColor: colors.border,
+    backgroundColor: colors.skeleton, // web skeleton.tsx `bg-zinc-100`
+    overflow: "hidden", // clips the sweep to the placeholder's own corners
+  },
+  sweep: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,
   },
   rowText: {
@@ -142,7 +203,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     marginBottom: spacing.md,
     backgroundColor: colors.card,
-    borderRadius: radii.lg,
+    borderRadius: radii.card,
     borderWidth: 1,
     borderColor: colors.border,
     ...shadows.card,
