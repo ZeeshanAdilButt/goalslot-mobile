@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -111,7 +112,7 @@ export default function NoteScreen() {
 function BackButton({ onPress }: { onPress?: () => void }) {
   return (
     <Pressable
-      onPress={onPress ?? (() => router.back())}
+      onPress={onPress ?? (() => router.replace("/notes"))}
       hitSlop={12}
       style={styles.backButton}
       accessibilityRole="button"
@@ -243,6 +244,23 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     }, []),
   );
 
+  // Android hardware/gesture back bypasses the in-header BackButton entirely
+  // and goes straight to the navigator's default handling, which has the
+  // same "hidden tab, not a stack entry" problem BackButton works around
+  // above — it was landing on the Today dashboard instead of Notes. Only
+  // registered while this screen is focused (useFocusEffect, not a bare
+  // useEffect), so it doesn't swallow back presses on other screens.
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+        void flushPendingRef.current();
+        router.replace("/notes");
+        return true;
+      });
+      return () => subscription.remove();
+    }, []),
+  );
+
   // Unmount safety net (navigator teardown, logout).
   useEffect(() => {
     return () => {
@@ -297,7 +315,16 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         <BackButton
           onPress={() => {
             void flushPendingRef.current();
-            router.back();
+            // `router.back()` was unreliable here: this route is a hidden
+            // Tabs.Screen (see the comment on the wrapper above), not a
+            // pushed stack entry, so "back" doesn't reliably resolve to
+            // wherever the note was opened from — it was landing on the
+            // Today dashboard instead of Notes. The label has always said
+            // "Back to notes"; navigate there explicitly instead of relying
+            // on ambiguous history. `replace`, not `push`, so repeatedly
+            // opening notes and backing out doesn't pile up history entries
+            // pointing at notes that may since have been deleted.
+            router.replace("/notes");
           }}
         />
         {readOnly ? (
