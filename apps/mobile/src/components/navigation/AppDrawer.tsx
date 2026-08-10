@@ -136,6 +136,16 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     backgroundColor: colors.card,
-    ...shadows.fab,
+    // The drawer is a layer that takes over the screen, so it sits at the
+    // `raised` step of the elevation ramp (see foundation.ts) rather than
+    // `fab`, which is tuned for a small round button. The shadow is thrown
+    // rightward — the panel's only visible edge — because a symmetric one
+    // wastes its entire left half off-screen.
+    ...shadows.raised,
+    shadowOffset: { width: 4, height: 0 },
+    // Android has no directional shadow control (only scalar `elevation`),
+    // so a hairline edge does the separating work there instead.
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: colors.border,
   },
 });

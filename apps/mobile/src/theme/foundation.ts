@@ -95,6 +95,30 @@ export const colors = {
   warningForeground: '#18181B',
   warningMuted: '#FEF3DD', // tint derived for chip/badge backgrounds (yellow-50-equivalent)
 
+  // Pressed-state fills. Touch has no hover, so every `hover:` color the web
+  // declares is reused here as the PRESSED color rather than being dropped —
+  // see DESIGN.md "No hover states". Without these, pressing a button could
+  // only dim it via opacity, which reads as "disabled" rather than "pressed".
+  foregroundPressed: '#27272A', // button.tsx `default` variant hover:bg-zinc-800
+  primaryPressed: '#D9B307', // button.tsx `brand` variant hover:bg-[#d9b307]
+  destructivePressed: '#E11D48', // button.tsx `destructive` variant hover:bg-rose-600
+  borderStrong: '#D4D4D8', // zinc-300 — glass-card.tsx hover:border-zinc-300, button.tsx secondary hover:border-zinc-300
+
+  // Brand tint family — the yellow chip/ring treatment web uses for a
+  // brand-accented icon container, as opposed to a solid brand-yellow fill.
+  // stat-card.tsx accentRing.brand: `bg-yellow-50 text-yellow-700 border-yellow-200`.
+  primaryMuted: '#FEFCE8', // yellow-50
+  primaryBorder: '#FEF08A', // yellow-200
+  primaryText: '#A16207', // yellow-700 — readable brand-colored TEXT (raw #F2CC0D fails contrast on white)
+
+  // One step lighter than mutedForeground (zinc-500). Web reserves zinc-400
+  // for de-emphasised chrome: sidebar group labels and the empty-state icon.
+  // app-sidebar.tsx SidebarGroupLabel `text-zinc-400`, empty-state.tsx `text-zinc-400`.
+  mutedForegroundLight: '#A1A1AA', // zinc-400
+
+  // Loading-placeholder fill. skeleton.tsx — `animate-pulse rounded-md bg-zinc-100`.
+  skeleton: '#F4F4F5', // zinc-100
+
   // Fixed helpers used a lot in row/fab compositions.
   white: '#FFFFFF',
   black: '#000000',
@@ -109,6 +133,18 @@ export const colors = {
 // against real usage: dw-time-web/src/components/ui/page-shell.tsx:12
 // (`px-4 py-6 md:px-8 md:py-7`) and the gap-2/gap-3/gap-4/gap-6 spacing seen
 // throughout page-header.tsx, section-header.tsx, dashboard-stats.tsx.
+//
+// Rhythm — which step to reach for, so five screens don't each invent one:
+//   xs  (4)  gap between a label and the thing it labels
+//   sm  (8)  gap between icon and text inside one control
+//   md  (12) gap between rows in a list; padding inside a compact card
+//   lg  (16) screen horizontal gutter; padding inside a standard card
+//   xl  (20) gap between a heading and its content
+//   xxl (24) padding inside a content-heavy card; gap between sections
+//   xxxl(32) gap between major blocks on a screen
+//   huge(48) top/bottom breathing room around a full-screen empty state
+// `xxs` (2) exists only for optical nudges (a 2px lift on a badge's text) —
+// it is not a layout step; anything structural belongs on the 4pt grid.
 export const spacing = {
   xxs: 2, // p-0.5
   xs: 4, // p-1
@@ -118,6 +154,11 @@ export const spacing = {
   xl: 20, // p-5
   xxl: 24, // p-6 — page-shell.tsx py-6
   xxxl: 32, // p-8 — page-shell.tsx md:px-8
+  // Added for full-screen compositions (empty states, auth screens), which
+  // have no web analogue — web's equivalents sit inside a dashboard column
+  // that already provides this much surrounding space.
+  xxxxl: 40, // p-10
+  huge: 48, // p-12 — empty-state.tsx's own `py-12`
 } as const
 
 // ---------------------------------------------------------------------------
@@ -128,12 +169,41 @@ export const spacing = {
 // resolves to (NOT Tailwind's own defaults — this app redefines them).
 // `full` added for pill/circular shapes (rounded-full: status-pill.tsx,
 // badge.tsx, avatar circle in app-sidebar.tsx).
+//
+// ROLES — use the semantic name, not the t-shirt size. The t-shirt sizes are
+// the raw scale (kept because existing components import them); the role
+// names below are aliases onto that same scale and are what new code should
+// use, so radius stops being a per-screen judgement call:
+//
+//   radii.chip    (8)  chips, badges' square variants, small inline tags
+//   radii.control (12) buttons, inputs, select rows, drawer nav rows —
+//                      anything a finger presses that isn't a card
+//   radii.card    (16) cards, list rows, tiles, any elevated surface
+//   radii.sheet   (24) bottom sheets and modals, top corners only
+//   radii.pill    (999) pills, avatars, circular icon badges, FABs
+//
+// Why a control is 12 and a card is 16: nesting a 12px control inside a 16px
+// card keeps the corners visually concentric (outer radius > inner radius),
+// which is what makes a stack of surfaces look intentional. Both numbers are
+// the web app's own (`rounded-lg` / `rounded-xl` from tailwind.config.ts) —
+// they are not a mobile invention.
 export const radii = {
   sm: 6, // TW config borderRadius.sm: 0.375rem
-  md: 8, // TW config borderRadius.md: 0.5rem — inputs, most buttons (rounded-lg is `lg` below though; see DESIGN.md)
-  lg: 12, // TW config borderRadius.lg: 0.75rem — buttons (button.tsx uses rounded-lg)
+  md: 8, // TW config borderRadius.md: 0.5rem
+  lg: 12, // TW config borderRadius.lg: 0.75rem — buttons/inputs (button.tsx, input.tsx both use rounded-lg)
   xl: 16, // TW config borderRadius.xl: 1rem — cards (glass-card.tsx uses rounded-xl)
   full: 999,
+  // Sheets/modals. No web source: web's dialog is a centred box with the
+  // same `rounded-xl` as a card, but a bottom sheet is anchored to the screen
+  // edge and needs a larger top radius to read as a separate layer sliding
+  // over the app rather than as a very wide card.
+  xxl: 24,
+  // Role aliases — same numbers, named for the decision they answer.
+  chip: 8,
+  control: 12,
+  card: 16,
+  sheet: 24,
+  pill: 999,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -151,6 +221,12 @@ export const fontSize = {
   lg: 18, // text-lg — page-header.tsx:28 (h1, base size), task-header.tsx:23 (title, sm: size)
   xl: 20, // text-xl — page-header.tsx:28 (h1, sm: breakpoint size)
   xxl: 24, // text-2xl — stat-card.tsx:41 (stat value)
+  xxxl: 30, // text-3xl
+  // Mobile-only step. Web's stat tiles sit in a dense multi-column grid so
+  // `text-2xl` (24px) reads as large there; on a single-column phone layout
+  // the same number looks undersized against the whitespace around it, so
+  // stat values get the next real Tailwind step up (text-4xl).
+  stat: 36, // text-4xl
   display: 72, // text-7xl — timer-display.tsx:67 (big timer digits, base size before its own sm:/md: upscaling)
 } as const
 
@@ -167,12 +243,37 @@ export const fontWeight = {
 // Named usage patterns pulled directly off the primitive scale above, each
 // grounded in a specific real component. `display` is the one mobile-only
 // extension without a literal web source line (see note).
+//
+// THE HIERARCHY, largest to smallest — one role per job, so a screen never
+// has to invent a size:
+//   display   72  the running timer, and nothing else
+//   statValue 36  the single number on a stat tile
+//   headline  20  the heading a full-screen state hangs off (empty/error)
+//   h1        18  screen title in a header bar
+//   title     16  a row's or card's primary line
+//   h2        14  small uppercase group label above a set of rows
+//   body      14  paragraph and row copy
+//   bodySmall 12  secondary/description copy under a title
+//   caption   11  metadata chips
+//   label     10  eyebrows and pill text
+//
+// Every role carries an explicit `lineHeight`. React Native's default line
+// height is font-dependent, so two Texts at the same size can sit on
+// different baselines across iOS and Android; pinning it is what makes a
+// stack of rows line up. The values follow Tailwind's `leading-*` ratios
+// (none 1, tight 1.25, snug 1.375, normal 1.5) rounded to whole pixels, and
+// tracking tightens as size grows — large type set at 0 tracking reads loose.
 export const textStyles = {
   // Big standalone numbers (timer). timer-display.tsx:67 —
   // `text-7xl font-medium leading-none tracking-tight ... tabular-nums`.
-  display: { fontSize: fontSize.display, fontWeight: fontWeight.medium, letterSpacing: -1.8 },
+  display: {
+    fontSize: fontSize.display,
+    fontWeight: fontWeight.medium,
+    letterSpacing: -1.8,
+    lineHeight: 72, // leading-none
+  },
   // Screen/page title. page-header.tsx:28 — `text-lg font-bold ... tracking-tight`.
-  h1: { fontSize: fontSize.lg, fontWeight: fontWeight.bold, letterSpacing: -0.4 },
+  h1: { fontSize: fontSize.lg, fontWeight: fontWeight.bold, letterSpacing: -0.4, lineHeight: 24 },
   // Section/group label (the small uppercase kind, not a big heading).
   // section-header.tsx:14 — `text-sm font-semibold uppercase tracking-wider`.
   h2: {
@@ -180,19 +281,20 @@ export const textStyles = {
     fontWeight: fontWeight.semibold,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.7,
+    lineHeight: 18,
   },
   // Row/card primary title (task title, goal name, list-row heading).
   // task-header.tsx:23 — `font-display text-base font-bold uppercase leading-tight`.
   // NOTE: web bakes uppercase into this one specific usage; treat uppercase
   // as the caller's choice, not an inherent part of the role.
-  title: { fontSize: fontSize.md, fontWeight: fontWeight.bold, letterSpacing: 0 },
+  title: { fontSize: fontSize.md, fontWeight: fontWeight.bold, letterSpacing: -0.2, lineHeight: 20 },
   // Default paragraph/body copy. globals.css:81 body has no weight utility
   // (regular); task-metadata.tsx description text likewise carries no
   // font-weight class.
-  body: { fontSize: fontSize.sm, fontWeight: fontWeight.regular, letterSpacing: 0 },
+  body: { fontSize: fontSize.sm, fontWeight: fontWeight.regular, letterSpacing: 0, lineHeight: 20 },
   // Secondary/description copy. page-header.tsx:44 —
   // `text-xs leading-snug text-zinc-500` (no weight utility = regular).
-  bodySmall: { fontSize: fontSize.xs, fontWeight: fontWeight.regular, letterSpacing: 0 },
+  bodySmall: { fontSize: fontSize.xs, fontWeight: fontWeight.regular, letterSpacing: 0, lineHeight: 16 },
   // Metadata chips (due date, goal tag). task-metadata.tsx:17 —
   // `text-[10px] font-semibold uppercase ... sm:text-[11px]`.
   caption: {
@@ -200,7 +302,18 @@ export const textStyles = {
     fontWeight: fontWeight.semibold,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.3,
+    lineHeight: 14,
   },
+  // Empty/error-state headline and any "moment" heading that owns the middle
+  // of the screen. empty-state.tsx:24 is `text-base font-semibold` (16px) —
+  // stepped up to 20px here because that headline is centred in a full phone
+  // viewport with nothing else competing, where 16px reads as a caption
+  // rather than a heading.
+  headline: { fontSize: fontSize.xl, fontWeight: fontWeight.semibold, letterSpacing: -0.3, lineHeight: 26 },
+  // Big numeric value on a stat tile. stat-card.tsx:41 —
+  // `text-2xl font-bold tabular-nums`, taken to `fontSize.stat` for the
+  // single-column reason documented on that token.
+  statValue: { fontSize: fontSize.stat, fontWeight: fontWeight.bold, letterSpacing: -1, lineHeight: 40 },
   // Tiny eyebrow/pill text. stat-card.tsx:27, page-header.tsx:24,
   // status-pill.tsx:37, badge.tsx:7 — all `text-[10px] font-semibold
   // uppercase tracking-wider`.
@@ -209,6 +322,7 @@ export const textStyles = {
     fontWeight: fontWeight.semibold,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.5,
+    lineHeight: 14,
   },
 } as const
 
@@ -224,7 +338,31 @@ export const textStyles = {
 // `fab` has no web source — the web app is a sidebar layout with no
 // floating action buttons; this is a mobile-only addition for e.g. a
 // floating quick-add button, sized like a native FAB (Material spec).
+//
+// THE RAMP — one level per layer of the interface, in order. Picking by
+// role instead of by taste is what stops a screen from reading as flat
+// white-on-white (every surface at elevation 0) or as noisy (every surface
+// competing at elevation 3):
+//   subtle  — a control seated ON a surface (button, input)
+//   card    — a surface resting on the background (card, list row, tile)
+//   raised  — a surface floating over other content (popover, dropdown,
+//             the pressed/dragged state of a card)
+//   fab     — a control floating over the whole screen (FAB, sticky bar)
+//   modal   — a layer that takes over the screen (bottom sheet, dialog),
+//             always paired with the `overlay` scrim behind it
+// Opacity climbs with offset and blur together: a shadow that gets darker
+// without also getting larger reads as a hard edge, not as height.
 export const shadows = {
+  // The lightest layer — a 1px seat under a control so it separates from the
+  // surface behind it without reading as "floating". button.tsx:14 `default`
+  // variant carries `shadow-sm` (Tailwind: 0 1px 2px rgba(0,0,0,0.05)).
+  subtle: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
   card: {
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
@@ -250,6 +388,16 @@ export const shadows = {
     shadowRadius: 8,
     elevation: 6,
   },
+  // Mobile-only: the sheet/dialog layer. Cast upward (negative Y) because a
+  // bottom sheet's visible edge is its TOP one — a downward shadow on it
+  // falls off-screen and the sheet ends up looking pasted on.
+  modal: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 28,
+    elevation: 16,
+  },
 } as const
 
 // ---------------------------------------------------------------------------
@@ -265,6 +413,51 @@ export const motion = {
     base: 200, // glass-card.tsx transition duration-200
     slow: 400, // globals.css screenEnter 0.4s
   },
+  // Mobile-only. Web expresses press/hover feedback as a CSS transition on
+  // color; touch UIs expect the control to physically give under the finger,
+  // which is a spring, not a duration. These numbers are a critically-damped
+  // -ish spring: it settles in ~150ms with no visible overshoot, so the
+  // button feels responsive rather than bouncy.
+  spring: {
+    damping: 18,
+    stiffness: 320,
+    mass: 0.6,
+  },
+  // How far a pressed control scales down. Small on purpose — the press is
+  // meant to be felt more than seen, and anything below ~0.95 makes text
+  // inside the control visibly resample.
+  pressScale: 0.97,
+} as const
+
+// ---------------------------------------------------------------------------
+// Icon sizing
+// ---------------------------------------------------------------------------
+// Web sets icon size per-context with Tailwind's `size-*` utilities rather
+// than a named scale; these are those literal sizes, named, so mobile stops
+// passing magic numbers to <Icon size={...}>.
+export const iconSize = {
+  xs: 14, // size-3.5 — stat-card.tsx accent ring icon
+  sm: 16, // size-4 — button.tsx `[&_svg]:size-4`, app-sidebar.tsx nav icons
+  md: 20, // size-5 — empty-state.tsx icon slot
+  lg: 24, // size-6 — app-sidebar.tsx coach icon
+  // No web source: mobile-only sizes for the illustrative icon at the centre
+  // of an empty/error state, where the icon IS the artwork rather than a
+  // label's companion.
+  xl: 28,
+  xxl: 36,
+} as const
+
+// ---------------------------------------------------------------------------
+// Control heights
+// ---------------------------------------------------------------------------
+// Web's button heights (button.tsx:22-27 — sm h-8/32, default h-9/36,
+// lg h-11/44) raised so the SMALLEST still clears `minTouchTarget`. See
+// DESIGN.md "Touch targets >= 44pt" — this is the documented, deliberate
+// deviation, not a mismatch.
+export const controlHeight = {
+  sm: 40, // web h-8 (32) — the compact size, still within one thumb press of 44
+  md: 48, // web h-9 (36) — default
+  lg: 56, // web h-11 (44) — prominent CTA
 } as const
 
 // ---------------------------------------------------------------------------
