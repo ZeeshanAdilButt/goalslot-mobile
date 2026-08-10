@@ -18,6 +18,7 @@
     },
     "android": {
       "package": "io.goalslot.mobile",
+      "softwareKeyboardLayoutMode": "resize",
       "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#F2CC0D",

@@ -12,7 +12,7 @@
 // app/_layout.tsx) — @gorhom/bottom-sheet's modal variant doesn't render
 // without the provider.
 
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState, type ComponentRef } from "react";
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import {
   BottomSheetBackdrop,
@@ -60,8 +60,7 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
   const [title, setTitle] = useState("");
   const [dayOfWeek, setDayOfWeek] = useState(() => new Date().getDay());
   const [isTitleFocused, setIsTitleFocused] = useState(false);
-
-  const snapPoints = useMemo(() => ["50%"], []);
+  const titleRef = useRef<ComponentRef<typeof BottomSheetTextInput>>(null);
   const copy = COPY[kind];
   const canSubmit = title.trim().length > 0 && !isSubmitting;
 
@@ -70,6 +69,10 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
       if (index >= 0) {
         hapticLight();
         analytics.track({ name: "quickAddOpened", payload: { kind } });
+        // Focus only once the sheet has settled. With `autoFocus` the keyboard
+        // opened while the sheet was still animating in, so the sheet measured
+        // against the pre-resize window height and came to rest underneath it.
+        titleRef.current?.focus();
       }
     },
     [analytics, kind],
@@ -104,9 +107,16 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
   );
 
   return (
+    // Sized by its content rather than a fixed "50%" snap point. The fixed
+    // point anchored the sheet halfway down the FULL screen, which is exactly
+    // where the soft keyboard sits, so on Android the whole form ended up
+    // behind it ("that new time slot is hiding under keyboard"). A
+    // content-height sheet sits on the bottom of whatever space is left once
+    // the window resizes for the keyboard, which is what BlockDetailSheet
+    // already does without the problem.
     <BottomSheetModal
       ref={sheetRef}
-      snapPoints={snapPoints}
+      enableDynamicSizing
       onChange={handleSheetChange}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
@@ -120,12 +130,12 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
         <Text style={styles.title}>{copy.title}</Text>
 
         <BottomSheetTextInput
+          ref={titleRef}
           style={[styles.input, isTitleFocused && styles.inputFocused]}
           placeholder={copy.placeholder}
           placeholderTextColor={colors.mutedForeground}
           value={title}
           onChangeText={setTitle}
-          autoFocus
           returnKeyType="done"
           onSubmitEditing={handleSubmit}
           onFocus={() => setIsTitleFocused(true)}
@@ -192,7 +202,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
   },
   content: {
-    flex: 1,
+    // No `flex: 1` — with enableDynamicSizing the sheet measures this view to
+    // decide its height, and a flexed child reports the full container instead
+    // of its own content, which collapses the sizing back to a full-height sheet.
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xl,
