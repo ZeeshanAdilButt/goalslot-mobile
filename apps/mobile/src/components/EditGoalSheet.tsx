@@ -29,6 +29,8 @@ import { apiClient } from "../lib/api-client";
 import { goalQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { DatePicker } from "@/components/ui/DatePicker";
+import { Icon } from "@/components/ui/Icon";
 
 export interface EditGoalSheetRef {
   present: (goal: Goal) => void;
@@ -42,8 +44,22 @@ export interface EditGoalSheetRef {
 // with a separate textColor, a different design token than a solid dot).
 const COLOR_OPTIONS = ["#1F2933", "#B3261E", "#0F766E", "#7C3AED", "#EA580C", "#0EA5E9", "#DB2777", "#65A30D"];
 
-/** Loose YYYY-MM-DD check — good enough to catch typos before they hit the server. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * Formats a "YYYY-MM-DD" key as a friendly label, e.g. "Dec 31, 2026". Parsed
+ * via the date parts rather than `new Date(dateStr)` — the bare-date form is
+ * parsed as UTC midnight, which renders as the previous day for anyone
+ * behind UTC (same trap SessionHistory.tsx's formatDayHeading documents, and
+ * the same `{ month, day, year }` option shape it and reports/aggregate.ts
+ * use for other date labels in this app).
+ */
+function formatDeadlineLabel(dateKey: string): string {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
 
 export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditGoalSheet(_props, ref) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -56,7 +72,12 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const [color, setColor] = useState<string>(COLOR_OPTIONS[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | "deadline" | null>(null);
+  const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | null>(null);
+  // Calendar grid stays collapsed behind a summary row by default — it's tall
+  // enough (full month, 6 possible rows) that showing it inline unconditionally
+  // would push title/category/hours/color below the fold on every open, even
+  // though most edits don't touch the deadline.
+  const [deadlinePickerOpen, setDeadlinePickerOpen] = useState(false);
 
   useImperativeHandle(
     ref,
@@ -69,6 +90,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         setDeadline(g.deadline ?? "");
         setColor(g.color || COLOR_OPTIONS[0]);
         setError(null);
+        setDeadlinePickerOpen(false);
         sheetRef.current?.present();
       },
       dismiss: () => sheetRef.current?.dismiss(),
@@ -76,18 +98,25 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     [],
   );
 
-  const snapPoints = useMemo(() => ["70%"], []);
+  // Bumped from 70% -> 85% so the calendar grid (month header + 6 possible
+  // week rows) has room to show without forcing a scroll on every open when
+  // the deadline row is expanded — content still sits in a
+  // BottomSheetScrollView, so nothing is ever hard-clipped, this just cuts
+  // how often that scroll is needed.
+  const snapPoints = useMemo(() => ["85%"], []);
 
   const parsedTargetHours = Number(targetHours);
-  const deadlineValid = deadline.trim().length === 0 || DATE_PATTERN.test(deadline.trim());
+  // No format/validity check needed here anymore: `deadline` is now only
+  // ever set by DatePicker (always a well-formed "YYYY-MM-DD") or cleared to
+  // "" by the "No deadline" action below, unlike the old free-text field
+  // which needed DATE_PATTERN to catch typos.
   const canSubmit =
     !isSubmitting &&
     goal !== null &&
     title.trim().length > 0 &&
     category.trim().length > 0 &&
     Number.isFinite(parsedTargetHours) &&
-    parsedTargetHours >= 1 &&
-    deadlineValid;
+    parsedTargetHours >= 1;
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
@@ -226,18 +255,45 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Deadline (YYYY-MM-DD, optional)</Text>
-          <BottomSheetTextInput
-            style={[styles.input, focusedField === "deadline" && styles.inputFocused]}
-            placeholder="2026-12-31"
-            placeholderTextColor={colors.mutedForeground}
-            value={deadline}
-            onChangeText={setDeadline}
-            onFocus={() => setFocusedField("deadline")}
-            onBlur={() => setFocusedField(null)}
-            accessibilityLabel="Goal deadline"
-          />
-          {!deadlineValid ? <Text style={styles.fieldError}>Use YYYY-MM-DD format.</Text> : null}
+          <Text style={styles.label}>Deadline (optional)</Text>
+          <TouchableOpacity
+            style={styles.deadlineRow}
+            onPress={() => setDeadlinePickerOpen((open) => !open)}
+            accessibilityRole="button"
+            accessibilityLabel={deadline ? `Change deadline, currently ${formatDeadlineLabel(deadline)}` : "Set a deadline"}
+            accessibilityState={{ expanded: deadlinePickerOpen }}
+          >
+            <Icon name="schedule" size={18} color={colors.mutedForeground} />
+            <Text style={styles.deadlineRowText}>{deadline ? formatDeadlineLabel(deadline) : "No deadline"}</Text>
+            <Icon name={deadlinePickerOpen ? "chevron-down" : "chevron"} size={16} color={colors.mutedForeground} />
+          </TouchableOpacity>
+
+          {deadlinePickerOpen ? (
+            <View style={styles.deadlinePicker}>
+              {/*
+                No `minDate` here: dw-time-web's goal-modal.tsx renders the
+                deadline as a plain `<input type="date">` with no `min`
+                attribute (src/features/goals/components/goal-modal.tsx,
+                ~line 293), and updateGoalSchema's `deadline` is an
+                unconstrained optional string (packages/shared/src/
+                validation/goal.ts) — so the web form lets you set or keep a
+                past deadline on an existing goal, and this picker matches
+                that rather than inventing a stricter mobile-only rule.
+              */}
+              <DatePicker value={deadline || null} onChange={setDeadline} />
+              {deadline ? (
+                <TouchableOpacity
+                  style={styles.clearDeadlineButton}
+                  onPress={() => setDeadline("")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear deadline"
+                >
+                  <Icon name="calendar-off" size={16} color={colors.destructive} />
+                  <Text style={styles.clearDeadlineText}>No deadline</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.field}>
@@ -330,6 +386,44 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     borderWidth: 2,
   },
+  deadlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.md,
+  },
+  deadlineRowText: {
+    ...typography.body,
+    color: colors.foreground,
+    flex: 1,
+  },
+  deadlinePicker: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.card,
+    gap: spacing.sm,
+  },
+  clearDeadlineButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: minTouchTarget,
+    borderRadius: radii.md,
+  },
+  clearDeadlineText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.destructive,
+  },
   colorRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -344,10 +438,6 @@ const styles = StyleSheet.create({
   },
   colorSwatchSelected: {
     borderColor: colors.primary,
-  },
-  fieldError: {
-    color: colors.destructive,
-    fontSize: 12,
   },
   error: {
     color: colors.destructive,
