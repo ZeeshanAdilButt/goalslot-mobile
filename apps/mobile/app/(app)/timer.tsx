@@ -268,7 +268,7 @@ export default function TimerScreen() {
         ) : (
           <SessionHistory
             entries={recentQuery.data}
-            refreshing={recentQuery.isFetching}
+            refreshing={recentQuery.isFetching && !recentQuery.isPending}
             onRefresh={() => void recentQuery.refetch()}
           />
         )}

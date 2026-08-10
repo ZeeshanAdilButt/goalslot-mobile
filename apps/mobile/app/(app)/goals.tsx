@@ -223,7 +223,10 @@ export default function GoalsScreen() {
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         ListHeaderComponent={listHeader}
-        refreshing={isFetching}
+        // `&& !isPending` so the initial load shows the skeleton alone; without
+        // it the pull-to-refresh spinner rides on top of the skeleton and the
+        // screen reads as loading twice.
+        refreshing={isFetching && !isPending}
         onRefresh={() => void refetch()}
         contentContainerStyle={styles.listContent}
       />
