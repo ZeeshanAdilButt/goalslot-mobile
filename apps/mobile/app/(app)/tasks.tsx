@@ -5,35 +5,103 @@
 // this task is scoped to touch) instead of factored into a shared hook. The
 // row-tap edit flow (title/category/due date/estimated minutes) opens
 // src/components/EditTaskSheet.tsx, which follows the same shape itself.
+//
+// Layout is ported from dw-time-web's task list:
+//   - src/features/tasks/components/task-list.tsx:18-32 — the list is GROUPED
+//     BY STATUS with a header carrying the group name and a count pill, and
+//     the DONE group is visually demoted. That replaces the flat
+//     "incomplete first, DONE sinks to the bottom" sort this screen used to
+//     do by hand; grouping keeps that ordering property (DONE is the last
+//     group) and adds the structure the web has.
+//   - src/features/tasks/components/task-list-item/task-list-item.tsx:47 —
+//     card with a status-colored left border.
+//   - .../task-header.tsx:16-30 — status dot beside a bold title.
+//   - .../task-metadata.tsx — the row of category / goal / schedule / due-date
+//     chips, including the goal chip tinted from the goal's own color.
+//   - .../task-complete-button.tsx — completion as a first-class control.
+//     On web that's a full-width footer button; here it's the springy
+//     checkbox on the left of the row (see components/lists/CompleteCheckbox),
+//     because a thumb scanning a list needs the primary action under it, not
+//     at the bottom of each card.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { BottomSheetModal, BottomSheetView } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
 import { useFocusEffect } from "expo-router";
 
-import { getLocalDateString, type CompleteTaskInput, type Task, type UpdateTaskInput } from "@goalslot/shared";
+import {
+  formatDuration,
+  formatTime12h,
+  getLocalDateString,
+  type CompleteTaskInput,
+  type Task,
+  type TaskStatus,
+  type UpdateTaskInput,
+} from "@goalslot/shared";
 
 import { EditTaskSheet, type EditTaskSheetRef } from "@/components/EditTaskSheet";
-import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { SkeletonListItem } from "@/components/Skeleton";
+import { Icon, type IconName } from "@/components/ui/Icon";
+import {
+  CompleteCheckbox,
+  ListCard,
+  ListEmptyState,
+  MetaChip,
+  ScreenHeader,
+  SectionHeader,
+  taskStatusLabel,
+  taskStatusTone,
+  TONES,
+} from "@/components/lists";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { taskQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const SKELETON_ROW_COUNT = 6;
 const SWIPE_ACTION_WIDTH = 92;
 
-/** Incomplete tasks first, DONE tasks sink to the bottom; stable otherwise. */
-function sortTasks(tasks: Task[]): Task[] {
-  return [...tasks].sort((a, b) => Number(a.status === "DONE") - Number(b.status === "DONE"));
+/**
+ * Horizontal rail the completion checkbox occupies, so the metadata chips on
+ * the second line start exactly under the title rather than under the
+ * checkbox. The checkbox is a `minTouchTarget`-wide hit area pulled `spacing.sm`
+ * into the card's padding, then `spacing.md` of gap before the title.
+ */
+const CHECKBOX_RAIL = minTouchTarget - spacing.sm + spacing.md;
+
+/**
+ * Group order, copied verbatim from dw-time-web's `groupTasksByStatus`
+ * (src/features/tasks/utils/utils.ts:6-19) — the object literal's key order IS
+ * the render order there. DONE last preserves this screen's previous
+ * "completed tasks sink to the bottom" behaviour.
+ */
+const STATUS_ORDER: TaskStatus[] = ["BACKLOG", "TODO", "DOING", "DONE"];
+
+/** One flattened FlashList row: either a group header or a task card. */
+type TaskListRow =
+  | { type: "header"; key: string; status: TaskStatus; count: number }
+  | { type: "task"; key: string; task: Task; indexInGroup: number };
+
+/** Web `groupTasksByStatus` returns only non-empty groups; same here. */
+function buildRows(tasks: Task[]): TaskListRow[] {
+  const rows: TaskListRow[] = [];
+  for (const status of STATUS_ORDER) {
+    const inGroup = tasks.filter((task) => task.status === status);
+    if (inGroup.length === 0) continue;
+    rows.push({ type: "header", key: `header-${status}`, status, count: inGroup.length });
+    inGroup.forEach((task, indexInGroup) => {
+      rows.push({ type: "task", key: task.id, task, indexInGroup });
+    });
+  }
+  return rows;
 }
 
 function addDays(date: Date, days: number): Date {
@@ -42,11 +110,18 @@ function addDays(date: Date, days: number): Date {
   return result;
 }
 
-const RESCHEDULE_OPTIONS: Array<{ label: string; daysFromToday: number }> = [
-  { label: "Today", daysFromToday: 0 },
-  { label: "Tomorrow", daysFromToday: 1 },
-  { label: "Next week", daysFromToday: 7 },
+const RESCHEDULE_OPTIONS: Array<{ label: string; daysFromToday: number; icon: IconName }> = [
+  { label: "Today", daysFromToday: 0, icon: "today" },
+  { label: "Tomorrow", daysFromToday: 1, icon: "schedule" },
+  { label: "Next week", daysFromToday: 7, icon: "chevron" },
 ];
+
+/** Due dates as "Mar 4" — web renders `formatDate(task.dueDate, 'MMM d')`. */
+function formatDueDate(dueDate: string): string {
+  const parsed = new Date(dueDate);
+  if (Number.isNaN(parsed.getTime())) return dueDate;
+  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 export default function TasksScreen() {
   const analytics = useAnalytics();
@@ -54,7 +129,7 @@ export default function TasksScreen() {
 
   const { data: tasks, isPending, isError, error, isFetching, refetch } = useQuery(taskQueries.list());
 
-  const sortedTasks = useMemo(() => sortTasks(tasks ?? []), [tasks]);
+  const rows = useMemo(() => buildRows(tasks ?? []), [tasks]);
 
   const quickAddSheetRef = useRef<BottomSheetModal>(null);
   const rescheduleSheetRef = useRef<BottomSheetModal>(null);
@@ -180,101 +255,134 @@ export default function TasksScreen() {
   }, []);
 
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<Task>) => (
-      <TaskRow
-        task={item}
-        onComplete={handleComplete}
-        onDelete={handleDelete}
-        onReschedule={openReschedule}
-        onEdit={openEdit}
-      />
-    ),
+    ({ item }: ListRenderItemInfo<TaskListRow>) => {
+      if (item.type === "header") {
+        return (
+          <SectionHeader
+            label={taskStatusLabel(item.status)}
+            count={item.count}
+            tone={taskStatusTone(item.status)}
+            dimmed={item.status === "DONE"}
+          />
+        );
+      }
+      return (
+        <TaskRow
+          task={item.task}
+          index={item.indexInGroup}
+          onComplete={handleComplete}
+          onDelete={handleDelete}
+          onReschedule={openReschedule}
+          onEdit={openEdit}
+        />
+      );
+    },
     [handleComplete, handleDelete, openEdit, openReschedule],
   );
 
+  let content: React.ReactNode;
   if (isPending) {
-    return (
-      <View style={styles.container}>
+    content = (
+      <View style={styles.skeletonWrap}>
         {Array.from({ length: SKELETON_ROW_COUNT }).map((_, index) => (
           <SkeletonListItem key={index} showLeading={false} />
         ))}
       </View>
     );
-  }
-
-  if (isError && !tasks) {
-    return (
-      <View style={styles.container}>
-        <ErrorState message={error instanceof Error ? error.message : "Couldn't load tasks."} onRetry={refetch} />
-      </View>
+  } else if (isError && !tasks) {
+    content = <ErrorState message={error instanceof Error ? error.message : "Couldn't load tasks."} onRetry={refetch} />;
+  } else if (rows.length === 0) {
+    content = (
+      <ListEmptyState
+        variant="tasks"
+        title="No tasks yet"
+        description="Add a task to link it to your schedule and goals — the hours you log against it roll up automatically."
+        actionLabel="Add task"
+        onAction={openQuickAdd}
+        hint="Swipe a task right to complete it, left to reschedule or delete."
+      />
+    );
+  } else {
+    content = (
+      <FlashList
+        data={rows}
+        renderItem={renderItem}
+        keyExtractor={(row) => row.key}
+        // Headers and cards are structurally different; separate recycling
+        // pools stop FlashList reusing one as the other.
+        getItemType={(row) => row.type}
+        refreshing={isFetching && !isPending}
+        onRefresh={refetch}
+        contentContainerStyle={styles.listContent}
+      />
     );
   }
 
   return (
-    <View style={styles.container}>
-      {sortedTasks.length === 0 ? (
-        <EmptyState message="No tasks yet — add one" actionLabel="Add task" onAction={openQuickAdd} />
-      ) : (
-        <FlashList
-          data={sortedTasks}
-          renderItem={renderItem}
-          keyExtractor={(task) => task.id}
-          refreshing={isFetching && !isPending}
-          onRefresh={refetch}
-          contentContainerStyle={styles.listContent}
-        />
-      )}
+    // edges={["top"]} — the layout renders `headerShown: false` for every
+    // route, so this is what keeps the title out of the status bar.
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <ScreenHeader eyebrow="Do" title="Tasks" subtitle="Everything on deck, grouped by where it stands." />
 
-      <TouchableOpacity
+      <View style={styles.listArea}>{content}</View>
+
+      <Pressable
         style={styles.fab}
         onPress={openQuickAdd}
+        hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Add task"
       >
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
+        <Icon name="add" size={26} color={colors.primaryForeground} />
+      </Pressable>
 
       <QuickAddSheet ref={quickAddSheetRef} kind="task" />
       <EditTaskSheet ref={editTaskRef} />
 
       <BottomSheetModal ref={rescheduleSheetRef} snapPoints={RESCHEDULE_SNAP_POINTS} enablePanDownToClose>
         <BottomSheetView style={styles.rescheduleContent}>
-          <Text style={styles.rescheduleTitle}>Reschedule {rescheduleTarget?.title ?? "task"}</Text>
+          <Text style={styles.rescheduleEyebrow}>Reschedule</Text>
+          <Text style={styles.rescheduleTitle} numberOfLines={2}>
+            {rescheduleTarget?.title ?? "task"}
+          </Text>
           {RESCHEDULE_OPTIONS.map((option) => (
-            <TouchableOpacity
+            <Pressable
               key={option.label}
               style={styles.rescheduleOption}
               onPress={() => pickRescheduleDate(option.daysFromToday)}
               accessibilityRole="button"
               accessibilityLabel={`Reschedule to ${option.label}`}
             >
+              <Icon name={option.icon} size={18} color={colors.mutedForeground} />
               <Text style={styles.rescheduleOptionText}>{option.label}</Text>
-            </TouchableOpacity>
+            </Pressable>
           ))}
         </BottomSheetView>
       </BottomSheetModal>
-    </View>
+    </SafeAreaView>
   );
 }
 
-const RESCHEDULE_SNAP_POINTS = ["35%"];
+const RESCHEDULE_SNAP_POINTS = ["40%"];
 
 interface TaskRowProps {
   task: Task;
+  index: number;
   onComplete: (task: Task) => void;
   onDelete: (task: Task) => void;
   onReschedule: (task: Task) => void;
   onEdit: (task: Task) => void;
 }
 
-function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
+function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
   const swipeableRef = useRef<Swipeable>(null);
   const isDone = task.status === "DONE";
+  const tone = taskStatusTone(task.status);
 
   const renderLeftActions = useCallback(() => {
     if (isDone) return null;
     return (
-      <TouchableOpacity
+      <Pressable
         style={[styles.swipeAction, styles.completeAction]}
         onPress={() => {
           swipeableRef.current?.close();
@@ -283,15 +391,16 @@ function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowPr
         accessibilityRole="button"
         accessibilityLabel={`Complete "${task.title}"`}
       >
+        <Icon name="check" size={18} color={colors.successForeground} />
         <Text style={styles.swipeActionText}>Complete</Text>
-      </TouchableOpacity>
+      </Pressable>
     );
   }, [isDone, onComplete, task]);
 
   const renderRightActions = useCallback(
     () => (
       <View style={styles.swipeActionsRow}>
-        <TouchableOpacity
+        <Pressable
           style={[styles.swipeAction, styles.rescheduleAction]}
           onPress={() => {
             swipeableRef.current?.close();
@@ -300,9 +409,10 @@ function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowPr
           accessibilityRole="button"
           accessibilityLabel={`Reschedule "${task.title}"`}
         >
+          <Icon name="schedule" size={18} color={colors.white} />
           <Text style={styles.swipeActionText}>Reschedule</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
+        </Pressable>
+        <Pressable
           style={[styles.swipeAction, styles.deleteAction]}
           onPress={() => {
             swipeableRef.current?.close();
@@ -311,31 +421,75 @@ function TaskRow({ task, onComplete, onDelete, onReschedule, onEdit }: TaskRowPr
           accessibilityRole="button"
           accessibilityLabel={`Delete "${task.title}"`}
         >
+          <Icon name="trash" size={18} color={colors.destructiveForeground} />
           <Text style={styles.swipeActionText}>Delete</Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
     ),
     [onDelete, onReschedule, task],
   );
 
   return (
-    <Swipeable ref={swipeableRef} renderLeftActions={renderLeftActions} renderRightActions={renderRightActions}>
-      <TouchableOpacity
-        style={styles.row}
-        onPress={() => onEdit(task)}
-        accessibilityRole="button"
-        accessibilityLabel={`Edit "${task.title}"`}
-      >
-        <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={1}>
-          {task.title}
-        </Text>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {[task.category, task.dueDate, task.estimatedMinutes ? `${task.estimatedMinutes}m` : null]
-            .filter(Boolean)
-            .join(" · ") || "No details"}
-        </Text>
-      </TouchableOpacity>
-    </Swipeable>
+    // marginBottom lives on the wrapper, not the card, so the Swipeable's own
+    // height matches the card exactly and the revealed action colours don't
+    // bleed into the gap between rows.
+    <View style={styles.rowWrap}>
+      <Swipeable ref={swipeableRef} renderLeftActions={renderLeftActions} renderRightActions={renderRightActions}>
+        <ListCard
+          accentColor={TONES[tone].accent}
+          index={index}
+          dimmed={isDone}
+          onPress={() => onEdit(task)}
+          accessibilityLabel={`Edit "${task.title}"`}
+          contentStyle={styles.cardContent}
+        >
+          <View style={styles.rowTop}>
+            <CompleteCheckbox
+              checked={isDone}
+              disabled={isDone}
+              onPress={() => onComplete(task)}
+              accessibilityLabel={`Complete "${task.title}"`}
+            />
+
+            {/* No status pill on the row itself: the group header above
+                already names the status for every card under it, and the
+                card's left stripe carries the same tone. Repeating it a third
+                time per row was pure noise and stole width from the title. */}
+            <Text style={[styles.rowTitle, isDone && styles.rowTitleDone]} numberOfLines={2}>
+              {task.title}
+            </Text>
+          </View>
+
+          <TaskMeta task={task} />
+        </ListCard>
+      </Swipeable>
+    </View>
+  );
+}
+
+/**
+ * The chip row — a direct port of task-metadata.tsx's four chips. Renders
+ * nothing at all when a task has no metadata, so bare tasks stay a single
+ * compact line instead of reserving empty space.
+ */
+function TaskMeta({ task }: { task: Task }) {
+  const hasMeta =
+    !!task.category || !!task.goal || !!task.scheduleBlock || !!task.dueDate || !!task.estimatedMinutes;
+  if (!hasMeta) return null;
+
+  return (
+    <View style={styles.chipRow}>
+      {task.category ? <MetaChip label={task.category.replace("_", " ")} /> : null}
+      {task.goal ? <MetaChip icon="goals" label={task.goal.title} accentColor={task.goal.color} /> : null}
+      {task.scheduleBlock ? (
+        <MetaChip
+          icon="timer"
+          label={`${formatTime12h(task.scheduleBlock.startTime)} – ${formatTime12h(task.scheduleBlock.endTime)}`}
+        />
+      ) : null}
+      {task.dueDate ? <MetaChip icon="schedule" tone="warning" label={`Due ${formatDueDate(task.dueDate)}`} /> : null}
+      {task.estimatedMinutes ? <MetaChip icon="timer" label={formatDuration(task.estimatedMinutes)} /> : null}
+    </View>
   );
 }
 
@@ -344,33 +498,49 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  listContent: {
-    paddingVertical: spacing.sm,
+  listArea: {
+    flex: 1,
   },
-  row: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    minHeight: 44,
-    justifyContent: "center",
-    backgroundColor: colors.card,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    gap: spacing.xxs,
+  listContent: {
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xxxl * 3,
+  },
+  skeletonWrap: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+  },
+
+  // --- Row ---
+  rowWrap: {
+    marginBottom: spacing.md,
+  },
+  cardContent: {
+    gap: spacing.md,
+  },
+  rowTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
   },
   rowTitle: {
     ...typography.body,
-    fontWeight: "600",
+    fontWeight: "700",
     color: colors.foreground,
+    flex: 1,
+    lineHeight: 19,
   },
   rowTitleDone: {
     textDecorationLine: "line-through",
-    opacity: 0.5,
-  },
-  rowSubtitle: {
-    ...typography.bodySmall,
-    fontWeight: "400",
     color: colors.mutedForeground,
   },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    paddingLeft: CHECKBOX_RAIL,
+  },
+
+  // --- Swipe actions ---
   swipeActionsRow: {
     flexDirection: "row",
   },
@@ -378,6 +548,9 @@ const styles = StyleSheet.create({
     width: SWIPE_ACTION_WIDTH,
     alignItems: "center",
     justifyContent: "center",
+    gap: spacing.xs,
+    borderRadius: radii.lg,
+    marginHorizontal: spacing.xxs,
   },
   completeAction: {
     backgroundColor: colors.success,
@@ -389,47 +562,54 @@ const styles = StyleSheet.create({
     backgroundColor: colors.destructive,
   },
   swipeActionText: {
+    ...typography.label,
     color: colors.white,
-    fontWeight: "600",
-    fontSize: 13,
   },
+
   fab: {
     position: "absolute",
     right: spacing.xl,
     bottom: spacing.xxl,
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: radii.full,
     backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
     ...shadows.fab,
   },
-  fabText: {
-    color: colors.primaryForeground,
-    fontSize: 28,
-    lineHeight: 30,
-  },
+
+  // --- Reschedule sheet ---
   rescheduleContent: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
-    gap: spacing.md,
+    paddingBottom: spacing.xxl,
+    gap: spacing.sm,
+  },
+  rescheduleEyebrow: {
+    ...typography.label,
+    color: colors.mutedForeground,
   },
   rescheduleTitle: {
-    ...typography.h2,
+    ...typography.title,
     color: colors.foreground,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.md,
   },
   rescheduleOption: {
-    paddingVertical: spacing.md,
-    minHeight: 44,
-    justifyContent: "center",
-    borderRadius: radii.md,
-    backgroundColor: colors.secondary,
+    flexDirection: "row",
     alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    minHeight: minTouchTarget,
+    borderRadius: radii.lg,
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   rescheduleOptionText: {
     ...typography.body,
+    fontWeight: "600",
     color: colors.foreground,
   },
 });
