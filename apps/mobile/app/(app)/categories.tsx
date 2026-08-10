@@ -25,24 +25,44 @@
 // `UpdateLabelForm` has no `isDefault` field at all, so the two types would
 // behave inconsistently if only one got an editable toggle. Kept read-only
 // on both until a real "set default" flow is designed.
+//
+// Presentation mirrors dw-time-web/src/features/categories/components/
+// category-management.tsx: a section title with an "Add Category" button on
+// the right, then rows of {large round color swatch, bold name, the
+// lowercase `value` slug underneath, a Default pill, icon-only edit/delete}.
+// The swatch is the whole point of the screen — it's the color the category
+// then wears everywhere else in the product — so it leads each row and also
+// tints that row's left accent stripe.
 
 import { useCallback, useState } from "react";
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { genId, type Category, type CreateCategoryForm, type CreateLabelForm, type Label } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { ErrorState, SkeletonListItem } from "@/components";
+import { Icon } from "@/components/ui/Icon";
+import {
+  ColorSwatch,
+  DEFAULT_SWATCH,
+  ListCard,
+  ListEmptyState,
+  PRESET_COLORS,
+  safeColor,
+  ScreenHeader,
+  SectionHeader,
+  StatusPill,
+  withAlpha,
+} from "@/components/lists";
 import { apiClient } from "@/lib/api-client";
 import { categoryQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 const SKELETON_ROWS = 3;
-
-/** Small fixed swatch — no color-picker dependency, just tappable presets. */
-const PRESET_COLORS = ["#EF4444", "#F97316", "#F59E0B", "#22C55E", "#0EA5E9", "#6366F1", "#A855F7", "#EC4899"];
 
 /**
  * Pulls a server-side error message out of an axios-shaped error (the API
@@ -67,13 +87,19 @@ export default function CategoriesScreen() {
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.sectionHeading}>Categories</Text>
-      <CategoriesSection />
-
-      <Text style={styles.sectionHeading}>Labels</Text>
-      <LabelsSection />
-    </ScrollView>
+    // edges={["top"]} — this route renders with `headerShown: false` like
+    // every other tab, so nothing else keeps the title clear of the status bar.
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <ScreenHeader
+        eyebrow="Organize"
+        title="Categories"
+        subtitle="The colors your goals, tasks and reports are grouped by."
+      />
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <CategoriesSection />
+        <LabelsSection />
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -83,12 +109,12 @@ function CategoriesSection() {
 
   const [isAdding, setIsAdding] = useState(false);
   const [name, setName] = useState("");
-  const [color, setColor] = useState(PRESET_COLORS[0]);
+  const [color, setColor] = useState<string>(DEFAULT_SWATCH);
   const [isSaving, setIsSaving] = useState(false);
 
   const resetForm = useCallback(() => {
     setName("");
-    setColor(PRESET_COLORS[0]);
+    setColor(DEFAULT_SWATCH);
     setIsAdding(false);
   }, []);
 
@@ -155,88 +181,67 @@ function CategoriesSection() {
     [listKey],
   );
 
-  if (isPending) {
-    return (
-      <View>
-        {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
-          <SkeletonListItem key={index} />
-        ))}
-      </View>
-    );
-  }
-
-  if (isError) {
-    return <ErrorState message="Couldn't load categories." onRetry={() => void refetch()} />;
-  }
-
   return (
-    <View style={styles.sectionBody}>
-      {!data || data.length === 0 ? (
-        <EmptyState message="No categories yet — add one" />
+    <View>
+      <SectionHeader
+        label="Categories"
+        count={data?.length}
+        action={
+          !isAdding ? (
+            <AddButton label="Add category" onPress={() => setIsAdding(true)} />
+          ) : undefined
+        }
+      />
+
+      {isPending ? (
+        <View>
+          {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
+            <SkeletonListItem key={index} />
+          ))}
+        </View>
+      ) : isError ? (
+        <ErrorState message="Couldn't load categories." onRetry={() => void refetch()} />
+      ) : !data || data.length === 0 ? (
+        <ListEmptyState
+          compact
+          variant="categories"
+          title="No categories yet"
+          description="Categories are the colors your goals and tasks group by. Add your first one."
+          actionLabel="Add category"
+          onAction={() => setIsAdding(true)}
+        />
       ) : (
-        data.map((category) => (
-          <View key={category.id} style={styles.row}>
-            <View style={[styles.colorDot, { backgroundColor: category.color }]} />
-            <View style={styles.rowBody}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {category.name}
-              </Text>
-              {category.isDefault ? <Text style={styles.defaultBadge}>Default</Text> : null}
-            </View>
-            <TouchableOpacity
-              onPress={() => handleDelete(category)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete "${category.name}" category`}
-            >
-              <Text style={styles.deleteText}>Delete</Text>
-            </TouchableOpacity>
-          </View>
-        ))
+        <View style={styles.rows}>
+          {data.map((category, index) => (
+            <EntityRow
+              key={category.id}
+              index={index}
+              color={category.color}
+              name={category.name}
+              slug={category.value}
+              isDefault={category.isDefault}
+              onDelete={() => handleDelete(category)}
+              deleteAccessibilityLabel={`Delete "${category.name}" category`}
+            />
+          ))}
+        </View>
       )}
 
       {isAdding ? (
-        <View style={styles.form}>
-          <TextInput
-            style={styles.input}
-            placeholder="Category name"
-            value={name}
-            onChangeText={setName}
-            autoFocus
-            returnKeyType="done"
-            onSubmitEditing={() => void handleCreate()}
-            accessibilityLabel="Category name"
-          />
-          <SwatchPicker selected={color} onSelect={(next) => setColor(next ?? PRESET_COLORS[0])} />
-          <View style={styles.formActions}>
-            <TouchableOpacity
-              onPress={resetForm}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel adding category"
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.saveButton, (!name.trim() || isSaving) && styles.saveButtonDisabled]}
-              onPress={() => void handleCreate()}
-              disabled={!name.trim() || isSaving}
-              accessibilityRole="button"
-              accessibilityLabel="Save category"
-            >
-              <Text style={styles.saveButtonText}>{isSaving ? "Saving…" : "Save"}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <TouchableOpacity
-          style={styles.addRow}
-          onPress={() => setIsAdding(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Add category"
-        >
-          <Text style={styles.addRowText}>+ Add category</Text>
-        </TouchableOpacity>
-      )}
+        <CreateForm
+          placeholder="Category name"
+          accessibilityLabel="Category name"
+          name={name}
+          onChangeName={setName}
+          color={color}
+          onSelectColor={(next) => setColor(next ?? DEFAULT_SWATCH)}
+          isSaving={isSaving}
+          onCancel={resetForm}
+          onSave={() => void handleCreate()}
+          cancelAccessibilityLabel="Cancel adding category"
+          saveAccessibilityLabel="Save category"
+        />
+      ) : null}
     </View>
   );
 }
@@ -267,7 +272,7 @@ function LabelsSection() {
       id: optimisticId,
       name: payload.name,
       value: payload.name.toLowerCase(),
-      color: payload.color ?? PRESET_COLORS[0],
+      color: payload.color ?? DEFAULT_SWATCH,
       isDefault: false,
       order: previous?.length ?? 0,
     };
@@ -316,84 +321,197 @@ function LabelsSection() {
     [listKey],
   );
 
-  if (isPending) {
-    return (
-      <View>
-        {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
-          <SkeletonListItem key={index} />
-        ))}
-      </View>
-    );
-  }
-
-  if (isError) {
-    return <ErrorState message="Couldn't load labels." onRetry={() => void refetch()} />;
-  }
-
   return (
-    <View style={styles.sectionBody}>
-      {!data || data.length === 0 ? (
-        <EmptyState message="No labels yet — add one" />
+    <View>
+      <SectionHeader
+        label="Labels"
+        count={data?.length}
+        action={!isAdding ? <AddButton label="Add label" onPress={() => setIsAdding(true)} /> : undefined}
+      />
+
+      {isPending ? (
+        <View>
+          {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
+            <SkeletonListItem key={index} />
+          ))}
+        </View>
+      ) : isError ? (
+        <ErrorState message="Couldn't load labels." onRetry={() => void refetch()} />
+      ) : !data || data.length === 0 ? (
+        <ListEmptyState
+          compact
+          variant="categories"
+          title="No labels yet"
+          description="Labels are the free-form tags you can stack on a goal alongside its category."
+          actionLabel="Add label"
+          onAction={() => setIsAdding(true)}
+        />
       ) : (
-        data.map((label) => (
-          <View key={label.id} style={styles.row}>
-            <View style={[styles.colorDot, { backgroundColor: label.color || "#94A3B8" }]} />
-            <View style={styles.rowBody}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {label.name}
-              </Text>
-              {label.isDefault ? <Text style={styles.defaultBadge}>Default</Text> : null}
-            </View>
-            <TouchableOpacity
-              onPress={() => handleDelete(label)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete "${label.name}" label`}
-            >
-              <Text style={styles.deleteText}>Delete</Text>
-            </TouchableOpacity>
-          </View>
-        ))
+        <View style={styles.rows}>
+          {data.map((label, index) => (
+            <EntityRow
+              key={label.id}
+              index={index}
+              // Label.color is optional in the shared type; fall back to the
+              // theme's muted ink rather than inventing a color for it.
+              color={label.color || colors.mutedForeground}
+              name={label.name}
+              slug={label.value}
+              isDefault={label.isDefault}
+              onDelete={() => handleDelete(label)}
+              deleteAccessibilityLabel={`Delete "${label.name}" label`}
+            />
+          ))}
+        </View>
       )}
 
       {isAdding ? (
-        <View style={styles.form}>
-          <TextInput
-            style={styles.input}
-            placeholder="Label name"
-            value={name}
-            onChangeText={setName}
-            autoFocus
-            returnKeyType="done"
-            onSubmitEditing={() => void handleCreate()}
-            accessibilityLabel="Label name"
-          />
-          <SwatchPicker selected={color} onSelect={setColor} allowClear />
-          <View style={styles.formActions}>
-            <TouchableOpacity onPress={resetForm} accessibilityRole="button" accessibilityLabel="Cancel adding label">
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.saveButton, (!name.trim() || isSaving) && styles.saveButtonDisabled]}
-              onPress={() => void handleCreate()}
-              disabled={!name.trim() || isSaving}
-              accessibilityRole="button"
-              accessibilityLabel="Save label"
-            >
-              <Text style={styles.saveButtonText}>{isSaving ? "Saving…" : "Save"}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <TouchableOpacity
-          style={styles.addRow}
-          onPress={() => setIsAdding(true)}
+        <CreateForm
+          placeholder="Label name"
+          accessibilityLabel="Label name"
+          name={name}
+          onChangeName={setName}
+          color={color}
+          onSelectColor={setColor}
+          allowClearColor
+          isSaving={isSaving}
+          onCancel={resetForm}
+          onSave={() => void handleCreate()}
+          cancelAccessibilityLabel="Cancel adding label"
+          saveAccessibilityLabel="Save label"
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * One category or label row. Both types render identically — same swatch,
+ * name, slug, Default pill and delete affordance — which is exactly how the
+ * web treats them, so they share a component rather than being copy-pasted.
+ */
+function EntityRow({
+  index,
+  color,
+  name,
+  slug,
+  isDefault,
+  onDelete,
+  deleteAccessibilityLabel,
+}: {
+  index: number;
+  color: string;
+  name: string;
+  slug: string;
+  isDefault: boolean;
+  onDelete: () => void;
+  deleteAccessibilityLabel: string;
+}) {
+  return (
+    <ListCard accentColor={safeColor(color, colors.mutedForeground)} index={index} contentStyle={styles.rowContent}>
+      <ColorSwatch color={color} size={38} />
+
+      <View style={styles.rowBody}>
+        <Text style={styles.rowName} numberOfLines={1}>
+          {name}
+        </Text>
+        {/* web renders `category.value` in a mono face under the name */}
+        <Text style={styles.rowSlug} numberOfLines={1}>
+          {slug}
+        </Text>
+      </View>
+
+      {isDefault ? <StatusPill label="Default" tone="brand" showDot={false} /> : null}
+
+      <Pressable
+        style={styles.iconButton}
+        onPress={onDelete}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={deleteAccessibilityLabel}
+      >
+        <Icon name="trash" size={16} color={colors.destructive} />
+      </Pressable>
+    </ListCard>
+  );
+}
+
+function AddButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable style={styles.addButton} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
+      <Icon name="add" size={15} color={colors.primaryForeground} />
+      <Text style={styles.addButtonText}>Add</Text>
+    </Pressable>
+  );
+}
+
+interface CreateFormProps {
+  placeholder: string;
+  accessibilityLabel: string;
+  name: string;
+  onChangeName: (value: string) => void;
+  color: string | undefined;
+  onSelectColor: (color: string | undefined) => void;
+  allowClearColor?: boolean;
+  isSaving: boolean;
+  onCancel: () => void;
+  onSave: () => void;
+  cancelAccessibilityLabel: string;
+  saveAccessibilityLabel: string;
+}
+
+function CreateForm({
+  placeholder,
+  accessibilityLabel,
+  name,
+  onChangeName,
+  color,
+  onSelectColor,
+  allowClearColor,
+  isSaving,
+  onCancel,
+  onSave,
+  cancelAccessibilityLabel,
+  saveAccessibilityLabel,
+}: CreateFormProps) {
+  const disabled = !name.trim() || isSaving;
+
+  return (
+    <View style={styles.form}>
+      <TextInput
+        style={styles.input}
+        placeholder={placeholder}
+        placeholderTextColor={colors.mutedForeground}
+        value={name}
+        onChangeText={onChangeName}
+        autoFocus
+        returnKeyType="done"
+        onSubmitEditing={onSave}
+        accessibilityLabel={accessibilityLabel}
+      />
+
+      <Text style={styles.formLabel}>Color</Text>
+      <SwatchPicker selected={color} onSelect={onSelectColor} allowClear={allowClearColor} />
+
+      <View style={styles.formActions}>
+        <Pressable
+          style={styles.secondaryButton}
+          onPress={onCancel}
           accessibilityRole="button"
-          accessibilityLabel="Add label"
+          accessibilityLabel={cancelAccessibilityLabel}
         >
-          <Text style={styles.addRowText}>+ Add label</Text>
-        </TouchableOpacity>
-      )}
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.saveButton, disabled && styles.saveButtonDisabled]}
+          onPress={onSave}
+          disabled={disabled}
+          accessibilityRole="button"
+          accessibilityLabel={saveAccessibilityLabel}
+        >
+          <Text style={styles.saveButtonText}>{isSaving ? "Saving…" : "Save"}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -411,14 +529,23 @@ function SwatchPicker({ selected, onSelect, allowClear }: SwatchPickerProps) {
       {PRESET_COLORS.map((swatch) => {
         const isSelected = swatch === selected;
         return (
-          <TouchableOpacity
+          <Pressable
             key={swatch}
-            style={[styles.swatch, { backgroundColor: swatch }, isSelected && styles.swatchSelected]}
+            style={[
+              styles.swatchTarget,
+              isSelected && { backgroundColor: withAlpha(swatch, 0.18, colors.secondary) },
+            ]}
             onPress={() => onSelect(allowClear && isSelected ? undefined : swatch)}
             accessibilityRole="button"
             accessibilityLabel={`Color ${swatch}${isSelected ? ", selected" : ""}`}
             accessibilityState={{ selected: isSelected }}
-          />
+          >
+            <View style={[styles.swatch, { backgroundColor: swatch }]}>
+              {/* A check inside the swatch reads at a glance; a ring around it
+                  disappears against same-hue neighbours. */}
+              {isSelected ? <Icon name="check" size={16} color={colors.white} /> : null}
+            </View>
+          </Pressable>
         );
       })}
     </View>
@@ -428,114 +555,132 @@ function SwatchPicker({ selected, onSelect, allowClear }: SwatchPickerProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
   },
   content: {
-    padding: 16,
-    gap: 8,
-    paddingBottom: 40,
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xxxl * 2,
   },
-  sectionHeading: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0F172A",
-    marginTop: 16,
-    marginBottom: 4,
+  rows: {
+    gap: spacing.md,
   },
-  sectionBody: {
-    gap: 4,
-  },
-  row: {
+
+  // --- Entity row ---
+  rowContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E2E8F0",
-  },
-  colorDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    gap: spacing.md,
+    paddingVertical: spacing.md,
   },
   rowBody: {
     flex: 1,
-    gap: 2,
+    gap: spacing.xxs,
   },
-  rowTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#0F172A",
+  rowName: {
+    ...typography.title,
+    color: colors.foreground,
   },
-  defaultBadge: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#64748B",
+  rowSlug: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
   },
-  deleteText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#B3261E",
+  iconButton: {
+    width: minTouchTarget - spacing.md,
+    height: minTouchTarget - spacing.md,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.full,
   },
-  addRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 4,
+
+  // --- Add button (web: the "Add Category" header button) ---
+  addButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    backgroundColor: colors.primary,
   },
-  addRowText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#1F2933",
+  addButtonText: {
+    ...typography.caption,
+    color: colors.primaryForeground,
   },
+
+  // --- Create form ---
   form: {
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
+    gap: spacing.md,
+    marginTop: spacing.md,
+    padding: spacing.lg,
+    borderRadius: radii.xl,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  formLabel: {
+    ...typography.label,
+    color: colors.mutedForeground,
   },
   input: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
+    ...typography.body,
+    color: colors.foreground,
+    minHeight: minTouchTarget,
+    borderWidth: 1,
+    borderColor: colors.input,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.background,
   },
   swatchRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: spacing.xs,
+  },
+  swatchTarget: {
+    width: minTouchTarget,
+    height: minTouchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.full,
   },
   swatch: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-  },
-  swatchSelected: {
-    borderWidth: 3,
-    borderColor: "#0F172A",
+    width: 30,
+    height: 30,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
   },
   formActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
     alignItems: "center",
-    gap: 16,
+    gap: spacing.sm,
   },
-  cancelText: {
-    fontSize: 14,
+  secondaryButton: {
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.lg,
+  },
+  secondaryButtonText: {
+    ...typography.body,
     fontWeight: "600",
-    color: "#64748B",
+    color: colors.mutedForeground,
   },
   saveButton: {
-    backgroundColor: "#1F2933",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    backgroundColor: colors.foreground,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.xl,
   },
   saveButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
   },
   saveButtonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 14,
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.white,
   },
 });

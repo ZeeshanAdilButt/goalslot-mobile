@@ -62,7 +62,15 @@ import {
   type NoteTreeItem,
 } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { ErrorState, SkeletonListItem } from "@/components";
+import { Icon } from "@/components/ui/Icon";
+import { ListEmptyState, ScreenHeader } from "@/components/lists";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+// `shadows.raised` (the lifted-row elevation) is only surfaced by the theme's
+// other entry point — `@/theme/tokens` re-exports just {card, fab}. Both files
+// read from the same src/theme/foundation.ts, so this is one token source, not
+// two; see the header comment in foundation.ts for why the split exists.
+import { shadows } from "@/theme";
 import { apiClient } from "@/lib/api-client";
 import {
   hapticCompletion,
@@ -84,6 +92,9 @@ const ROW_H = 48;
  *  layout indent. Wide enough that thumb jitter doesn't flicker the
  *  projected depth. */
 const INDENT_W = 24;
+/** Width of the chevron / spacer slot that leads every row. Also positions
+ *  the depth guide hairlines so they run through the middle of that slot. */
+const CHEVRON_SIZE = 24;
 /** Vertical padding above/below the rows inside the scroll content. */
 const LIST_PAD = 8;
 /** Start autoscrolling when the lifted row is within this of an edge. */
@@ -696,10 +707,13 @@ export default function NotesScreen() {
     body = <ErrorState message="Couldn't load your notes." onRetry={() => void refetch()} />;
   } else if (visibleItems.length === 0) {
     body = (
-      <EmptyState
-        message="No pages yet — create your first note"
+      <ListEmptyState
+        variant="notes"
+        title="No pages yet"
+        description="Notes are a OneNote-style tree — every page can hold subpages, as deep as you like."
         actionLabel="New page"
         onAction={() => void createNote(null)}
+        hint="Long-press a page to drag it; drag right to nest it under the page above."
       />
     );
   } else {
@@ -761,19 +775,24 @@ export default function NotesScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Notes</Text>
-        <Pressable
-          style={[styles.newButton, isCreating && styles.newButtonDisabled]}
-          onPress={() => void createNote(null)}
-          disabled={isCreating}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="New page"
-        >
-          <Text style={styles.newButtonText}>+ New</Text>
-        </Pressable>
-      </View>
+      <ScreenHeader
+        eyebrow="Write"
+        title="Notes"
+        subtitle="Pages and subpages, nested however you think."
+        action={
+          <Pressable
+            style={[styles.newButton, isCreating && styles.newButtonDisabled]}
+            onPress={() => void createNote(null)}
+            disabled={isCreating}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="New page"
+          >
+            <Icon name="add" size={16} color={colors.primaryForeground} />
+            <Text style={styles.newButtonText}>New page</Text>
+          </Pressable>
+        }
+      />
       <View style={styles.listArea}>{body}</View>
     </SafeAreaView>
   );
@@ -951,7 +970,10 @@ function NoteRow({
     return actions;
   }, [collapsed, item.childCount]);
 
-  const accessibilityLabel = `"${item.title}", level ${item.depth + 1}, page ${siblingInfo?.position ?? 1} of ${siblingInfo?.count ?? 1}`;
+  // Favourite is a coloured dot now rather than a "★" baked into the title
+  // string, so it has to be announced here or it becomes invisible to
+  // screen readers.
+  const accessibilityLabel = `"${item.title}", level ${item.depth + 1}, page ${siblingInfo?.position ?? 1} of ${siblingInfo?.count ?? 1}${item.isFavorite ? ", favorite" : ""}`;
 
   const renderLeftActions = useCallback(
     () => (
@@ -964,6 +986,7 @@ function NoteRow({
         accessibilityRole="button"
         accessibilityLabel={`Delete "${item.title}"`}
       >
+        <Icon name="trash" size={18} color={colors.destructiveForeground} />
         <Text style={styles.swipeActionText}>Delete</Text>
       </Pressable>
     ),
@@ -982,7 +1005,8 @@ function NoteRow({
           accessibilityRole="button"
           accessibilityLabel={`New subpage inside "${item.title}"`}
         >
-          <Text style={styles.swipeActionText}>New subpage</Text>
+          <Icon name="add" size={18} color={colors.white} />
+          <Text style={styles.swipeActionText}>Subpage</Text>
         </Pressable>
         <Pressable
           style={[styles.swipeAction, styles.favoriteAction]}
@@ -995,7 +1019,8 @@ function NoteRow({
             item.isFavorite ? `Remove "${item.title}" from favorites` : `Add "${item.title}" to favorites`
           }
         >
-          <Text style={styles.swipeActionText}>{item.isFavorite ? "Unfavorite" : "Favorite"}</Text>
+          <Icon name={item.isFavorite ? "close" : "check"} size={18} color={colors.primaryForeground} />
+          <Text style={styles.swipeActionFavoriteText}>{item.isFavorite ? "Unpin" : "Pin"}</Text>
         </Pressable>
       </View>
     ),
@@ -1025,6 +1050,20 @@ function NoteRow({
               accessibilityActions={accessibilityActions}
               onAccessibilityAction={(event) => onAccessibilityAction(item, event)}
             >
+              {/* Depth guides: one hairline per ancestor level, so a subpage
+                  four deep still reads as "under that one". The web gets this
+                  for free from the sidebar's narrow column; on a full-width
+                  phone row, indentation alone stops being legible past depth
+                  two. Absolutely positioned, so the fixed ROW_H the drag math
+                  depends on is untouched. */}
+              {Array.from({ length: item.depth }).map((_, level) => (
+                <View
+                  key={level}
+                  pointerEvents="none"
+                  style={[styles.depthGuide, { left: 16 + level * INDENT_W + CHEVRON_SIZE / 2 }]}
+                />
+              ))}
+
               {item.childCount > 0 ? (
                 <Pressable
                   style={styles.chevronButton}
@@ -1035,14 +1074,37 @@ function NoteRow({
                     collapsed ? `Expand subpages of "${item.title}"` : `Collapse subpages of "${item.title}"`
                   }
                 >
-                  <Animated.Text style={[styles.chevron, chevronStyle]}>›</Animated.Text>
+                  <Animated.View style={chevronStyle}>
+                    <Icon name="chevron" size={16} color={colors.mutedForeground} />
+                  </Animated.View>
                 </Pressable>
               ) : (
                 <View style={styles.chevronSpacer} />
               )}
 
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {item.isFavorite ? "★ " : ""}
+              {/* Page glyph: a parent shows the notebook mark, a leaf the page
+                  mark — the OneNote distinction the web sidebar draws with its
+                  own icon slot (notes-sidebar.tsx:191). */}
+              <Icon
+                name={item.childCount > 0 ? "journal" : "notes"}
+                size={15}
+                color={item.childCount > 0 ? colors.foreground : colors.mutedForeground}
+              />
+
+              {/* Favourite marker. The web uses a filled lucide <Star/>
+                  (notes-sidebar.tsx:248); Icon.tsx has no `star` name and this
+                  task may not add one, so it's a brand-yellow dot instead —
+                  same "this one is pinned" read, no invented iconography.
+                  The gap is flagged in the handover. */}
+              {item.isFavorite ? (
+                <View
+                  style={styles.favoriteDot}
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                />
+              ) : null}
+
+              <Text style={[styles.rowTitle, item.depth === 0 && styles.rowTitleRoot]} numberOfLines={1}>
                 {item.title || "Untitled page"}
               </Text>
 
@@ -1066,34 +1128,30 @@ function NoteRow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#1F2933",
+    // The tree is one continuous white sheet, like the web's notes sidebar
+    // panel — rows are separated by indentation and depth guides, not by
+    // gaps, so a card-per-row treatment would fight the hierarchy.
+    backgroundColor: colors.card,
   },
   newButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    backgroundColor: "#1F2933",
+    flexDirection: "row",
+    // Hugs the right edge; ScreenHeader leaves that choice to the caller.
+    alignSelf: "flex-end",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: minTouchTarget - spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.full,
+    backgroundColor: colors.primary,
   },
   newButtonDisabled: {
     opacity: 0.5,
   },
   newButtonText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 14,
+    ...typography.caption,
+    // Dark ink on brand yellow, never white.
+    color: colors.primaryForeground,
   },
   listArea: {
     flex: 1,
@@ -1105,75 +1163,90 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   rowSurface: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.card,
   },
   rowSurfaceActive: {
-    elevation: 8,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 8,
-    borderRadius: 8,
+    borderRadius: radii.lg,
+    ...shadows.raised,
   },
   row: {
     height: ROW_H,
     flexDirection: "row",
     alignItems: "center",
-    paddingRight: 16,
-    gap: 4,
+    paddingRight: spacing.lg,
+    gap: spacing.sm,
+  },
+  depthGuide: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: colors.border,
   },
   chevronButton: {
-    width: 24,
-    height: 24,
+    width: CHEVRON_SIZE,
+    height: CHEVRON_SIZE,
     alignItems: "center",
     justifyContent: "center",
   },
   chevronSpacer: {
-    width: 24,
+    width: CHEVRON_SIZE,
   },
-  chevron: {
-    fontSize: 18,
-    lineHeight: 22,
-    color: "#64748B",
-    fontWeight: "600",
+  favoriteDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
   },
   rowTitle: {
     flex: 1,
-    fontSize: 15,
+    ...typography.body,
     fontWeight: "500",
-    color: "#1F2933",
+    color: colors.foreground,
+  },
+  rowTitleRoot: {
+    // Top-level pages carry more weight than their subpages — the one
+    // typographic cue that survives at 48pt row height.
+    fontWeight: "700",
   },
   countBadge: {
     minWidth: 22,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 11,
-    backgroundColor: "#F1F5F9",
+    paddingHorizontal: spacing.sm - 2,
+    paddingVertical: 1,
+    borderRadius: radii.full,
+    backgroundColor: colors.secondary,
+    borderWidth: 1,
+    borderColor: colors.border,
     alignItems: "center",
   },
   countBadgeText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#475569",
+    ...typography.label,
+    color: colors.mutedForeground,
   },
   dropIndicator: {
     position: "absolute",
     top: 0,
-    right: 16,
+    right: spacing.lg,
     flexDirection: "row",
     alignItems: "center",
   },
+  // Brand yellow with a dot terminal — the exact insertion-line treatment
+  // the web uses (notes-sidebar.tsx:314-315: a ring-bordered dot and a line,
+  // both in the literal brand yellow). It was blue here, matching nothing in
+  // the product.
   dropIndicatorDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#2563EB",
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
   },
   dropIndicatorLine: {
     flex: 1,
     height: 2,
     borderRadius: 1,
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.primary,
   },
   swipeActionsRow: {
     flexDirection: "row",
@@ -1182,21 +1255,26 @@ const styles = StyleSheet.create({
     width: 96,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
   },
   deleteAction: {
-    backgroundColor: "#B3261E",
+    backgroundColor: colors.destructive,
   },
   subpageAction: {
-    backgroundColor: "#334155",
+    backgroundColor: colors.foreground,
   },
   favoriteAction: {
-    backgroundColor: "#B45309",
+    backgroundColor: colors.primary,
   },
   swipeActionText: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 13,
+    ...typography.label,
+    color: colors.white,
+    textAlign: "center",
+  },
+  swipeActionFavoriteText: {
+    ...typography.label,
+    color: colors.primaryForeground,
     textAlign: "center",
   },
 });

@@ -3,23 +3,49 @@
 // goal row (not the Done/Delete buttons) opens EditGoalSheet for full edit
 // (title/category/target hours/deadline/color) — see
 // src/components/EditGoalSheet.tsx.
+//
+// Visual language is ported from dw-time-web's goals page:
+//   - src/features/goals/components/goal-item.tsx — the card itself: a
+//     `border-l-[5px]` stripe in `goal.color`, a category eyebrow preceded by
+//     a status dot, the title, and a progress block pinned to the bottom
+//     showing `loggedHours.toFixed(1)h / targetHoursh` beside a big percent.
+//     The bar + number pair is folded into one ProgressRing here (see
+//     src/components/lists/ProgressRing.tsx for why).
+//   - src/features/goals/components/goals-stats.tsx — the StatCard strip above
+//     the list, reproduced as a scroll-away summary row.
+//   - src/features/goals/components/goals-filters.tsx — the status filter,
+//     which is a <Select> on web and a segmented control here.
+//   - src/features/goals/components/goals-list.tsx:32-54 — the empty state's
+//     title/description/CTA structure.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View, type DimensionValue } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 
 import { calculateProgressPercent, updateGoalSchema, type Goal, type GoalStatus } from "@goalslot/shared";
 
-import { EditGoalSheet, EmptyState, ErrorState, QuickAddSheet, SkeletonListItem, type EditGoalSheetRef } from "@/components";
+import { EditGoalSheet, ErrorState, QuickAddSheet, SkeletonListItem, type EditGoalSheetRef } from "@/components";
+import { Icon } from "@/components/ui/Icon";
+import {
+  ListCard,
+  ListEmptyState,
+  MetaChip,
+  ProgressRing,
+  safeColor,
+  ScreenHeader,
+  SegmentedControl,
+  StatusPill,
+} from "@/components/lists";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { goalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 // The two tabs this screen offers. PAUSED goals (the third GoalStatus value)
 // have no tab of their own in v1 — out of scope per the project brief.
@@ -35,7 +61,21 @@ const EMPTY_MESSAGE: Record<GoalTab, string> = {
   COMPLETED: "No completed goals yet",
 };
 
+/** Supporting line under the empty-state headline — web goals-list.tsx:38-42. */
+const EMPTY_DESCRIPTION: Record<GoalTab, string> = {
+  ACTIVE: "Create your first goal to start tracking your progress. Log hours against it and watch the ring fill up.",
+  COMPLETED: "Goals you finish will be archived here, with the hours you put into each one.",
+};
+
 const SKELETON_ROWS = 6;
+
+/** Deadline as "Mar 4" — web formats with date-fns `MMM d, yyyy`; the year is
+ *  dropped here because a phone chip has no room for it. */
+function formatDeadline(deadline: string): string {
+  const parsed = new Date(deadline);
+  if (Number.isNaN(parsed.getTime())) return deadline;
+  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 export default function GoalsScreen() {
   const [tab, setTab] = useState<GoalTab>("ACTIVE");
@@ -117,17 +157,48 @@ export default function GoalsScreen() {
     editGoalRef.current?.present(goal);
   }, []);
 
+  const openQuickAdd = useCallback(() => {
+    quickAddRef.current?.present();
+  }, []);
+
   const renderItem = useCallback(
-    ({ item }: { item: Goal }) => (
-      <GoalRow goal={item} onComplete={handleComplete} onDelete={confirmDelete} onEdit={openEdit} />
+    ({ item, index }: ListRenderItemInfo<Goal>) => (
+      <GoalRow goal={item} index={index} onComplete={handleComplete} onDelete={confirmDelete} onEdit={openEdit} />
     ),
     [confirmDelete, handleComplete, openEdit],
   );
 
+  // Mirrors goals-stats.tsx's StatCard strip: the three numbers worth knowing
+  // before you read any individual row. Scrolls away with the list rather
+  // than permanently eating vertical space on a phone.
+  const summary = useMemo(() => {
+    if (!data || data.length === 0) return null;
+    const logged = data.reduce((total, goal) => total + goal.loggedHours, 0);
+    const target = data.reduce((total, goal) => total + goal.targetHours, 0);
+    const averageProgress = Math.round(
+      data.reduce((total, goal) => total + calculateProgressPercent(goal.loggedHours, goal.targetHours), 0) /
+        data.length,
+    );
+    return { count: data.length, logged, target, averageProgress };
+  }, [data]);
+
+  const listHeader = useMemo(() => {
+    if (!summary) return null;
+    return (
+      <View style={styles.summaryRow}>
+        <SummaryStat label={summary.count === 1 ? "Goal" : "Goals"} value={String(summary.count)} />
+        <View style={styles.summaryDivider} />
+        <SummaryStat label="Logged" value={`${summary.logged.toFixed(1)}h`} />
+        <View style={styles.summaryDivider} />
+        <SummaryStat label="Avg" value={`${summary.averageProgress}%`} accent />
+      </View>
+    );
+  }, [summary]);
+
   let content: React.ReactNode;
   if (isPending) {
     content = (
-      <View>
+      <View style={styles.skeletonWrap}>
         {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
           <SkeletonListItem key={index} />
         ))}
@@ -136,13 +207,22 @@ export default function GoalsScreen() {
   } else if (isError) {
     content = <ErrorState message="Couldn't load goals." onRetry={() => void refetch()} />;
   } else if (!data || data.length === 0) {
-    content = <EmptyState message={EMPTY_MESSAGE[tab]} />;
+    content = (
+      <ListEmptyState
+        variant="goals"
+        title={EMPTY_MESSAGE[tab]}
+        description={EMPTY_DESCRIPTION[tab]}
+        actionLabel={tab === "ACTIVE" ? "Create goal" : undefined}
+        onAction={tab === "ACTIVE" ? openQuickAdd : undefined}
+      />
+    );
   } else {
     content = (
       <FlashList
         data={data}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
+        ListHeaderComponent={listHeader}
         refreshing={isFetching}
         onRefresh={() => void refetch()}
         contentContainerStyle={styles.listContent}
@@ -151,78 +231,109 @@ export default function GoalsScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.tabRow}>
-        {TABS.map((t) => (
-          <Pressable
-            key={t.value}
-            style={[styles.tabButton, tab === t.value && styles.tabButtonActive]}
-            onPress={() => setTab(t.value)}
-            accessibilityRole="tab"
-            accessibilityLabel={t.label}
-            accessibilityState={{ selected: tab === t.value }}
-          >
-            <Text style={[styles.tabLabel, tab === t.value && styles.tabLabelActive]}>{t.label}</Text>
-          </Pressable>
-        ))}
-      </View>
+    // edges={["top"]} — every route in app/(app)/_layout.tsx sets
+    // `headerShown: false`, so without this the segmented control renders
+    // underneath the status bar / notch.
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <ScreenHeader
+        eyebrow="Track"
+        title="Goals"
+        subtitle="Hours logged against what you said mattered."
+        action={<SegmentedControl options={TABS} value={tab} onChange={setTab} />}
+      />
 
       <View style={styles.listArea}>{content}</View>
 
       <Pressable
         style={styles.fab}
-        onPress={() => quickAddRef.current?.present()}
+        onPress={openQuickAdd}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Add goal"
       >
-        <Text style={styles.fabIcon}>+</Text>
+        <Icon name="add" size={26} color={colors.primaryForeground} />
       </Pressable>
 
       <QuickAddSheet ref={quickAddRef} kind="goal" />
       <EditGoalSheet ref={editGoalRef} />
+    </SafeAreaView>
+  );
+}
+
+function SummaryStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <View style={styles.summaryStat}>
+      <Text style={[styles.summaryValue, accent && styles.summaryValueAccent]}>{value}</Text>
+      <Text style={styles.summaryLabel}>{label}</Text>
     </View>
   );
 }
 
 interface GoalRowProps {
   goal: Goal;
+  index: number;
   onComplete: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
   onEdit: (goal: Goal) => void;
 }
 
-function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
+function GoalRow({ goal, index, onComplete, onDelete, onEdit }: GoalRowProps) {
   const progress = calculateProgressPercent(goal.loggedHours, goal.targetHours);
-  const progressWidth: DimensionValue = `${progress}%`;
+  const accent = safeColor(goal.color, colors.primary);
+  const isActive = goal.status === "ACTIVE";
 
   return (
-    <Pressable
-      style={styles.row}
+    <ListCard
+      accentColor={accent}
+      index={index}
+      dimmed={!isActive}
       onPress={() => onEdit(goal)}
-      accessibilityRole="button"
       accessibilityLabel={`Edit "${goal.title}"`}
     >
-      <View style={[styles.colorDot, { backgroundColor: goal.color || colors.mutedForeground }]} />
+      <View style={styles.rowTop}>
+        <ProgressRing
+          progress={progress}
+          color={accent}
+          accessibilityLabel={`${progress} percent of "${goal.title}" complete`}
+        />
 
-      <View style={styles.rowBody}>
-        <Text style={styles.title} numberOfLines={1}>
-          {goal.title}
-        </Text>
-        <Text style={styles.category} numberOfLines={1}>
-          {goal.category}
-        </Text>
+        <View style={styles.rowBody}>
+          {/* Eyebrow: status dot + category, exactly the pairing in
+              goal-item.tsx:66-79. */}
+          <View style={styles.eyebrowRow}>
+            <View
+              style={[styles.statusDot, { backgroundColor: isActive ? colors.success : colors.mutedForeground }]}
+            />
+            <Text style={styles.category} numberOfLines={1}>
+              {goal.category}
+            </Text>
+          </View>
 
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: progressWidth }]} />
+          <Text style={styles.title} numberOfLines={2}>
+            {goal.title}
+          </Text>
+
+          {/* goal-item.tsx:132-135 — logged hours bold, target muted beside it. */}
+          <Text style={styles.hours}>
+            {goal.loggedHours.toFixed(1)}h<Text style={styles.hoursTarget}> / {goal.targetHours}h</Text>
+          </Text>
         </View>
-        <Text style={styles.progressLabel}>
-          {goal.loggedHours}h / {goal.targetHours}h &middot; {progress}%
-        </Text>
       </View>
 
-      <View style={styles.actions}>
-        {goal.status === "ACTIVE" ? (
+      {goal.deadline || (goal.labels && goal.labels.length > 0) ? (
+        <View style={styles.chipRow}>
+          {goal.deadline ? (
+            <MetaChip icon="schedule" tone="warning" label={`Due ${formatDeadline(goal.deadline)}`} />
+          ) : null}
+          {/* goal-item.tsx:108-120 caps the label list at four. */}
+          {(goal.labels ?? []).slice(0, 4).map((goalLabel) => (
+            <MetaChip key={goalLabel.label.id} label={goalLabel.label.name} accentColor={goalLabel.label.color} />
+          ))}
+        </View>
+      ) : null}
+
+      <View style={styles.actionRow}>
+        {isActive ? (
           <Pressable
             style={styles.completeButton}
             onPress={() => onComplete(goal)}
@@ -230,13 +341,13 @@ function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
             accessibilityRole="button"
             accessibilityLabel={`Mark "${goal.title}" complete`}
           >
+            <Icon name="check" size={15} color={colors.success} />
             <Text style={styles.completeButtonText}>Done</Text>
           </Pressable>
         ) : (
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusBadgeText}>Completed</Text>
-          </View>
+          <StatusPill label="Completed" tone="success" />
         )}
+
         <Pressable
           style={styles.deleteButton}
           onPress={() => onDelete(goal)}
@@ -244,10 +355,10 @@ function GoalRow({ goal, onComplete, onDelete, onEdit }: GoalRowProps) {
           accessibilityRole="button"
           accessibilityLabel={`Delete "${goal.title}"`}
         >
-          <Text style={styles.deleteButtonText}>Delete</Text>
+          <Icon name="trash" size={16} color={colors.destructive} />
         </Pressable>
       </View>
-    </Pressable>
+    </ListCard>
   );
 }
 
@@ -256,121 +367,127 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  tabRow: {
-    flexDirection: "row",
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xs,
-    gap: spacing.sm,
-  },
-  tabButton: {
-    flex: 1,
-    minHeight: 44,
-    justifyContent: "center",
-    borderRadius: radii.md,
-    alignItems: "center",
-    backgroundColor: colors.secondary,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  tabButtonActive: {
-    backgroundColor: colors.foreground,
-    borderColor: colors.foreground,
-  },
-  tabLabel: {
-    ...typography.bodySmall,
-    color: colors.foreground,
-  },
-  tabLabelActive: {
-    color: colors.white,
-  },
   listArea: {
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    // Clears the tab bar and the FAB.
+    paddingBottom: spacing.xxxl * 3,
   },
-  row: {
+  skeletonWrap: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+  },
+
+  // --- Summary strip (web: goals-stats.tsx StatCard row) ---
+  summaryRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
-    padding: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
     marginBottom: spacing.md,
-    backgroundColor: colors.card,
     borderRadius: radii.lg,
+    backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
-    ...shadows.card,
   },
-  colorDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+  summaryStat: {
+    flex: 1,
+    alignItems: "center",
+    gap: spacing.xxs,
+  },
+  summaryValue: {
+    ...typography.title,
+    color: colors.foreground,
+  },
+  summaryValueAccent: {
+    color: colors.primaryDark,
+  },
+  summaryLabel: {
+    ...typography.label,
+    color: colors.mutedForeground,
+  },
+  summaryDivider: {
+    width: 1,
+    height: 26,
+    backgroundColor: colors.border,
+  },
+
+  // --- Goal card ---
+  rowTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.lg,
   },
   rowBody: {
     flex: 1,
     gap: spacing.xxs,
   },
+  eyebrowRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  category: {
+    ...typography.label,
+    color: colors.mutedForeground,
+    flexShrink: 1,
+  },
   title: {
     ...typography.title,
     color: colors.foreground,
+    lineHeight: 21,
   },
-  category: {
+  hours: {
     ...typography.bodySmall,
+    fontWeight: "700",
+    color: colors.foreground,
+    marginTop: spacing.xxs,
+  },
+  hoursTarget: {
     fontWeight: "400",
     color: colors.mutedForeground,
   },
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.secondary,
-    overflow: "hidden",
-    marginTop: spacing.xxs,
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
   },
-  progressFill: {
-    height: "100%",
-    borderRadius: 3,
-    backgroundColor: colors.primary,
-  },
-  progressLabel: {
-    fontSize: 11,
-    color: colors.mutedForeground,
-  },
-  actions: {
-    alignItems: "flex-end",
-    gap: spacing.xs,
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   completeButton: {
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget - spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.full,
     backgroundColor: colors.successMuted,
   },
   completeButtonText: {
-    fontSize: 12,
-    fontWeight: "600",
+    ...typography.caption,
     color: colors.success,
   },
-  statusBadge: {
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.sm,
-    backgroundColor: colors.secondary,
-  },
-  statusBadgeText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: colors.mutedForeground,
-  },
   deleteButton: {
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
-  },
-  deleteButtonText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: colors.destructive,
+    width: minTouchTarget - spacing.xs,
+    height: minTouchTarget - spacing.xs,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.full,
   },
   fab: {
     position: "absolute",
@@ -378,16 +495,10 @@ const styles = StyleSheet.create({
     bottom: spacing.xxl,
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: radii.full,
     backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
     ...shadows.fab,
-  },
-  fabIcon: {
-    fontSize: 28,
-    lineHeight: 28,
-    color: colors.primaryForeground,
-    fontWeight: "400",
   },
 });
