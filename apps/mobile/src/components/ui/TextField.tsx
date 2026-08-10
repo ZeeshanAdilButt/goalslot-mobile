@@ -7,19 +7,21 @@
 // did with the bare `<TextInput>` this replaces.
 //
 // `secureToggle` layers a reveal/hide affordance on top of `secureTextEntry`
-// — pass both to get a password field the user can unmask. No icon library
-// is installed, so the toggle is a plain text button ("Show"/"Hide") rather
-// than an eye icon.
+// — pass both to get a password field the user can unmask. The affordance is
+// the standard eye / eye-off icon, matching the web app and what users expect
+// from a password field (an earlier revision used a "Show"/"Hide" text label
+// only because no icon library was installed yet).
 
 import { forwardRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from "react-native";
+import { Pressable, StyleSheet, TextInput, Text, View, type TextInputProps } from "react-native";
 
+import { Icon } from "@/components/ui/Icon";
 import { colors, radii, spacing, typography } from "@/theme";
 
 export interface TextFieldProps extends TextInputProps {
   label?: string;
   error?: string | null;
-  /** Adds a "Show"/"Hide" toggle that flips `secureTextEntry` on and off. */
+  /** Adds an eye / eye-off toggle that flips `secureTextEntry` on and off. */
   secureToggle?: boolean;
 }
 
@@ -66,7 +68,7 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
             accessibilityRole="button"
             accessibilityLabel={revealed ? "Hide password" : "Show password"}
           >
-            <Text style={styles.toggleLabel}>{revealed ? "Hide" : "Show"}</Text>
+            <Icon name={revealed ? "eye-off" : "eye"} size={20} color={colors.mutedForeground} />
           </Pressable>
         ) : null}
       </View>
@@ -98,9 +100,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   inputWithToggle: {
-    // Room for the "Show"/"Hide" affordance so typed text never runs
-    // underneath it.
-    paddingRight: spacing.xxl + spacing.lg,
+    // Room for the eye icon so typed text never runs underneath it.
+    paddingRight: spacing.xxl + spacing.md,
   },
   inputFocused: {
     borderColor: colors.primaryDark,
@@ -111,11 +112,6 @@ const styles = StyleSheet.create({
   toggle: {
     position: "absolute",
     right: spacing.lg,
-  },
-  toggleLabel: {
-    fontSize: typography.size.sm,
-    fontWeight: typography.weight.semibold,
-    color: colors.primaryDark,
   },
   error: {
     fontSize: typography.size.xs,
