@@ -1,0 +1,142 @@
+// One active goal with its logged-vs-target progress.
+//
+// Port of dw-time-web's src/features/dashboard/components/dashboard-goals.tsx
+// (lines 45-100): colored left rail keyed to `goal.color`, category chip,
+// title, a thin track filled in brand yellow, and the percentage set in
+// tabular numerals on the right. Same clamp and same rounding as web:
+//   `Math.min(100, Math.round(loggedHours / targetHours * 100))`, and 0 when
+//   the target is 0 so a goal with no target can't divide by zero.
+//
+// Why it's on Today at all: the web dashboard treats "Active Goals" as the
+// largest block on the page (it spans 2 of 3 columns). Dropping it from
+// mobile is a big part of why Today read as empty — the schedule and task
+// lists are both genuinely empty on a fresh day, but goals usually aren't.
+
+import { StyleSheet, Text, View } from "react-native";
+
+import type { Goal } from "@goalslot/shared";
+
+import { colors, radii, spacing, typography } from "@/theme/tokens";
+
+export interface GoalProgressRowProps {
+  goal: Goal;
+  isLast: boolean;
+}
+
+export function GoalProgressRow({ goal, isLast }: GoalProgressRowProps) {
+  const progress =
+    goal.targetHours > 0 ? Math.min(100, Math.round((goal.loggedHours / goal.targetHours) * 100)) : 0;
+
+  return (
+    <View
+      style={[styles.row, isLast && styles.rowLast]}
+      accessible
+      accessibilityRole="progressbar"
+      accessibilityLabel={`${goal.title}, ${goal.category}`}
+      accessibilityValue={{ min: 0, max: 100, now: progress, text: `${progress} percent` }}
+    >
+      <View style={[styles.rail, { backgroundColor: goal.color }]} />
+
+      <View style={styles.body}>
+        <View style={styles.titleRow}>
+          <Text style={styles.title} numberOfLines={1}>
+            {goal.title}
+          </Text>
+          <Text style={styles.percent}>{progress}%</Text>
+        </View>
+
+        <View style={styles.metaRow}>
+          <View style={styles.categoryChip}>
+            <Text style={styles.categoryText} numberOfLines={1}>
+              {goal.category}
+            </Text>
+          </View>
+          <Text style={styles.hours}>
+            {Math.round(goal.loggedHours)}h of {Math.round(goal.targetHours)}h
+          </Text>
+        </View>
+
+        <View style={styles.track}>
+          <View style={[styles.fill, { width: `${progress}%` }]} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  rowLast: {
+    borderBottomWidth: 0,
+  },
+  rail: {
+    width: 4,
+    alignSelf: "stretch",
+    borderRadius: radii.full,
+  },
+  body: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.xs,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  title: {
+    fontSize: 15,
+    fontWeight: "600",
+    letterSpacing: -0.2,
+    color: colors.foreground,
+    flexShrink: 1,
+  },
+  percent: {
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+    color: colors.foreground,
+  },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  categoryChip: {
+    backgroundColor: colors.secondary,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 1,
+    flexShrink: 1,
+  },
+  categoryText: {
+    ...typography.label,
+    fontSize: 9,
+    color: colors.mutedForeground,
+  },
+  hours: {
+    ...typography.bodySmall,
+    fontWeight: "400",
+    color: colors.mutedForeground,
+  },
+  track: {
+    height: 6,
+    borderRadius: radii.full,
+    backgroundColor: colors.secondary,
+    overflow: "hidden",
+    marginTop: spacing.xxs,
+  },
+  fill: {
+    height: "100%",
+    borderRadius: radii.full,
+    backgroundColor: colors.primary,
+  },
+});
