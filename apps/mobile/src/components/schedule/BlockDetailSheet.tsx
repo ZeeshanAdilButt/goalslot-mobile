@@ -35,11 +35,12 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 export interface BlockDetailSheetProps {
   block: ScheduleBlock | null;
   onDelete: (block: ScheduleBlock) => void;
+  onEdit: (block: ScheduleBlock) => void;
   onDismiss: () => void;
 }
 
 export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetProps>(function BlockDetailSheet(
-  { block, onDelete, onDismiss },
+  { block, onDelete, onEdit, onDismiss },
   ref,
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -72,6 +73,12 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
     if (!block) return "";
     return formatDuration(timeToMinutes(block.endTime) - timeToMinutes(block.startTime));
   }, [block]);
+
+  const handleEdit = useCallback(() => {
+    if (!block) return;
+    sheetRef.current?.dismiss();
+    onEdit(block);
+  }, [block, onEdit]);
 
   return (
     <BottomSheetModal
@@ -113,15 +120,26 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
               </View>
             ) : null}
 
-            <Pressable
-              style={styles.deleteButton}
-              onPress={handleDelete}
-              accessibilityRole="button"
-              accessibilityLabel="Delete"
-            >
-              <Icon name="trash" size={16} color={colors.destructive} />
-              <Text style={styles.deleteText}>Delete</Text>
-            </Pressable>
+            <View style={styles.actionRow}>
+              <Pressable
+                style={styles.editButton}
+                onPress={handleEdit}
+                accessibilityRole="button"
+                accessibilityLabel="Edit"
+              >
+                <Icon name="edit" size={16} color={colors.foreground} />
+                <Text style={styles.editText}>Edit</Text>
+              </Pressable>
+              <Pressable
+                style={styles.deleteButton}
+                onPress={handleDelete}
+                accessibilityRole="button"
+                accessibilityLabel="Delete"
+              >
+                <Icon name="trash" size={16} color={colors.destructive} />
+                <Text style={styles.deleteText}>Delete</Text>
+              </Pressable>
+            </View>
           </>
         ) : null}
       </BottomSheetView>
@@ -220,7 +238,27 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.foreground,
   },
+  actionRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  editButton: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget,
+    borderRadius: radii.lg,
+    backgroundColor: colors.muted,
+  },
+  editText: {
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.foreground,
+  },
   deleteButton: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
