@@ -5,6 +5,7 @@
 export { BlockDetailSheet, type BlockDetailSheetProps } from "./BlockDetailSheet";
 export { DayStrip, type DayStripProps } from "./DayStrip";
 export { NowIndicator, type NowIndicatorProps } from "./NowIndicator";
+export { ScheduleBlockSheet, type ScheduleBlockSheetPresentOptions, type ScheduleBlockSheetRef } from "./ScheduleBlockSheet";
 export { ScheduleEmptyState, type ScheduleEmptyStateProps } from "./ScheduleEmptyState";
 export { Timeline, type TimelineProps } from "./Timeline";
 export { TimelineBlock, type TimelineBlockProps } from "./TimelineBlock";

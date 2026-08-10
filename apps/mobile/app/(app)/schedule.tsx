@@ -30,16 +30,18 @@ import {
   type WeekSchedule,
 } from "@goalslot/shared";
 
-import { ErrorState, QuickAddSheet } from "@/components";
+import { ErrorState } from "@/components";
 import {
   BlockDetailSheet,
   DayStrip,
   getDayWindow,
   minuteToY,
   positionBlocks,
+  ScheduleBlockSheet,
   ScheduleEmptyState,
   Timeline,
   TimelineSkeleton,
+  type ScheduleBlockSheetRef,
 } from "@/components/schedule";
 import { Icon } from "@/components/ui/Icon";
 import { apiClient } from "@/lib/api-client";
@@ -71,7 +73,7 @@ export default function ScheduleScreen() {
   const [now, setNow] = useState(() => new Date());
   const [detailBlock, setDetailBlock] = useState<ScheduleBlock | null>(null);
 
-  const quickAddRef = useRef<BottomSheetModal>(null);
+  const blockSheetRef = useRef<ScheduleBlockSheetRef>(null);
   const detailRef = useRef<BottomSheetModal>(null);
   const scrollRef = useRef<ScrollView>(null);
 
@@ -176,14 +178,26 @@ export default function ScheduleScreen() {
     [analytics],
   );
 
-  const openQuickAdd = useCallback(() => {
+  // Every "+" affordance on this screen (FAB, an empty hour row, the
+  // empty-state CTA) opens the full create sheet directly rather than
+  // QuickAddSheet's title-only flow — QuickAddSheet has no start/end time or
+  // multi-day selection (see its own header comment on why it stays that
+  // way), which is exactly the gap this screen exists to close ("cant even
+  // add a slot at proper time... cant select that a slot can be for multiple
+  // days"). QuickAddSheet itself is untouched and still used by Today/Goals/
+  // Tasks for their own kind="goal"/"task"/"slot" quick-adds.
+  const openCreateSheet = useCallback(() => {
     hapticLight();
-    quickAddRef.current?.present();
-  }, []);
+    blockSheetRef.current?.present({ mode: "create", dayOfWeek: selectedDay });
+  }, [selectedDay]);
 
   const handleSelectBlock = useCallback((block: ScheduleBlock) => {
     setDetailBlock(block);
     detailRef.current?.present();
+  }, []);
+
+  const handleEditBlock = useCallback((block: ScheduleBlock) => {
+    blockSheetRef.current?.present({ mode: "edit", block });
   }, []);
 
   const dayLabel = DAYS_OF_WEEK_FULL[selectedDay];
@@ -239,7 +253,7 @@ export default function ScheduleScreen() {
             }}
           />
         ) : blockCount === 0 ? (
-          <ScheduleEmptyState dayLabel={dayLabel} onAddBlock={openQuickAdd} />
+          <ScheduleEmptyState dayLabel={dayLabel} onAddBlock={openCreateSheet} />
         ) : (
           <Timeline
             // Remounting on day change re-runs each block's entrance stagger,
@@ -250,20 +264,21 @@ export default function ScheduleScreen() {
             entries={entries}
             nowMinutes={nowMinutes}
             onSelectBlock={handleSelectBlock}
-            onPressEmptyHour={openQuickAdd}
+            onPressEmptyHour={openCreateSheet}
           />
         )}
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={openQuickAdd} accessibilityRole="button" accessibilityLabel="Add time slot">
+      <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
         <Icon name="add" size={26} color={colors.primaryForeground} />
       </Pressable>
 
-      <QuickAddSheet ref={quickAddRef} kind="slot" />
+      <ScheduleBlockSheet ref={blockSheetRef} />
       <BlockDetailSheet
         ref={detailRef}
         block={detailBlock}
         onDelete={handleDeleteBlock}
+        onEdit={handleEditBlock}
         onDismiss={() => setDetailBlock(null)}
       />
     </SafeAreaView>
