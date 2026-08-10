@@ -42,6 +42,7 @@ import {
 import type { Note, NoteDetailResponse } from "@goalslot/shared";
 
 import { ErrorState, LoadingState } from "@/components";
+import { colors } from "@/theme";
 import { apiClient } from "@/lib/api-client";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -312,7 +313,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         onChangeText={handleTitleChange}
         editable={!readOnly}
         placeholder="Untitled page"
-        placeholderTextColor="#94A3B8"
+        placeholderTextColor={colors.mutedForeground}
         returnKeyType="done"
         accessibilityLabel="Page title"
       />
@@ -353,7 +354,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.card,
   },
   headerRow: {
     flexDirection: "row",
@@ -370,24 +371,24 @@ const styles = StyleSheet.create({
   backButtonText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1F2933",
+    color: colors.foreground,
   },
   readOnlyBadge: {
     marginRight: 8,
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 6,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.muted,
   },
   readOnlyBadgeText: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#475569",
+    color: colors.mutedForeground,
   },
   titleInput: {
     fontSize: 22,
     fontWeight: "700",
-    color: "#1F2933",
+    color: colors.foreground,
     paddingHorizontal: 20,
     paddingTop: 4,
     paddingBottom: 12,
@@ -398,11 +399,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 6,
-    backgroundColor: "#FEF2F2",
+    backgroundColor: colors.destructiveMuted,
   },
   saveFailedText: {
     fontSize: 12,
-    color: "#B3261E",
+    color: colors.destructive,
   },
   toolbarContainer: {
     position: "absolute",
@@ -420,15 +421,15 @@ const styles = StyleSheet.create({
   fallbackNotice: {
     padding: 12,
     borderRadius: 8,
-    backgroundColor: "#FFFBEB",
+    backgroundColor: colors.warningMuted,
   },
   fallbackNoticeText: {
     fontSize: 13,
-    color: "#92400E",
+    color: colors.warningForeground,
   },
   fallbackBody: {
     fontSize: 15,
     lineHeight: 22,
-    color: "#1F2933",
+    color: colors.foreground,
   },
 });
