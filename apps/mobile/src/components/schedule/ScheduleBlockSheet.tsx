@@ -56,6 +56,7 @@ import {
   createScheduleBlockSchema,
   DAYS_OF_WEEK_FULL,
   genId,
+  minutesToTime,
   timeToMinutes,
   updateScheduleBlockSchema,
   type CreateScheduleBlockInput,
@@ -75,7 +76,15 @@ import { TimePicker } from "@/components/ui/TimePicker";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export type ScheduleBlockSheetPresentOptions =
-  | { mode: "create"; dayOfWeek: number }
+  | {
+      mode: "create";
+      dayOfWeek: number;
+      /**
+       * "HH:mm" to open on, for callers that pressed a specific point on the
+       * time axis. Omitted by the FAB, which has no time in mind.
+       */
+      startTime?: string;
+    }
   | { mode: "edit"; block: ScheduleBlock };
 
 export interface ScheduleBlockSheetRef {
@@ -92,6 +101,10 @@ const PLACEHOLDER_COLOR = "#94A3B8";
 // Same defaults dw-time-web's ScheduleBlockModal starts a new block with.
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_END_TIME = "10:00";
+/** Length of the block a time-anchored create starts with, matching the defaults above. */
+const DEFAULT_DURATION_MIN = 60;
+/** Last representable minute of a day — a 23:00 press can't run an hour long. */
+const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
 
 const DAY_SHORT_LABELS = DAYS_OF_WEEK_FULL.map((d) => d.slice(0, 3));
 
@@ -142,8 +155,17 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
           setMode("create");
           setEditingBlock(null);
           setTitle("");
-          setStartTime(DEFAULT_START_TIME);
-          setEndTime(DEFAULT_END_TIME);
+          // A press on the timeline's 3 PM row said "Add a block at 3 PM" and
+          // then opened on 09:00 — the affordance and the form disagreed.
+          // Without an anchor (the FAB) the web's own defaults still stand.
+          if (options.startTime) {
+            const startMin = Math.min(timeToMinutes(options.startTime), LAST_MINUTE_OF_DAY);
+            setStartTime(minutesToTime(startMin));
+            setEndTime(minutesToTime(Math.min(startMin + DEFAULT_DURATION_MIN, LAST_MINUTE_OF_DAY)));
+          } else {
+            setStartTime(DEFAULT_START_TIME);
+            setEndTime(DEFAULT_END_TIME);
+          }
           setCategory("");
           setSelectedDays([options.dayOfWeek]);
           setGoalId("");

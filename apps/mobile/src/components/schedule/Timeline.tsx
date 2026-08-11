@@ -43,8 +43,12 @@ export interface TimelineProps {
   /** Minute-of-day for "now", or null when the selected day isn't today. */
   nowMinutes: number | null;
   onSelectBlock: (block: ScheduleBlock) => void;
-  /** Press on an empty hour row — the web's click-empty-space-to-create. */
-  onPressEmptyHour: () => void;
+  /**
+   * Press on an empty hour row — the web's click-empty-space-to-create. Gets
+   * the hour that was pressed (0-23) so the create sheet can open on the time
+   * the row's own label already promises.
+   */
+  onPressEmptyHour: (hour: number) => void;
 }
 
 export const Timeline = memo(function Timeline({
@@ -69,7 +73,7 @@ export const Timeline = memo(function Timeline({
         <Pressable
           key={hour}
           style={[styles.hourRow, { top: minuteToY(hour * 60, window) }]}
-          onPress={onPressEmptyHour}
+          onPress={() => onPressEmptyHour(hour)}
           accessibilityRole="button"
           accessibilityLabel={`Add a block at ${formatHourLabel(hour)}`}
         />

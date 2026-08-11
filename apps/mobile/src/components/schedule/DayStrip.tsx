@@ -38,11 +38,28 @@ export interface DayStripProps {
   onSelectDay: (day: number) => void;
 }
 
-export function DayStrip({ selectedDay, todayIndex, weekDates, blockCounts, onSelectDay }: DayStripProps) {
+// Memoised because the screen above re-renders once a minute off its clock
+// ticker, and nothing in this strip changes on a minute boundary — only on a
+// day selection, a data change, or midnight.
+export const DayStrip = memo(function DayStrip({
+  selectedDay,
+  todayIndex,
+  weekDates,
+  blockCounts,
+  onSelectDay,
+}: DayStripProps) {
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
+      // MUST stay: RN composes every ScrollView's own `baseHorizontal` style
+      // (flexGrow: 1, flexShrink: 1 — see ScrollView.js) under whatever `style`
+      // is passed. In a `flex: 1` column that grow makes this strip fight the
+      // timeline's ScrollView for the leftover height and take half of it,
+      // opening hundreds of dp of dead space under the pills. Pinning it to
+      // its content height is the only thing that makes a horizontal strip
+      // behave like a row instead of a panel.
+      style={styles.scroll}
       contentContainerStyle={styles.strip}
       // Snapping makes the strip feel like a control rather than a scroll area.
       decelerationRate="fast"
@@ -61,7 +78,7 @@ export function DayStrip({ selectedDay, todayIndex, weekDates, blockCounts, onSe
       ))}
     </ScrollView>
   );
-}
+});
 
 interface DayPillProps {
   index: number;
@@ -102,7 +119,17 @@ const DayPill = memo(function DayPill({
         scale.value = withSpring(1, PRESS_SPRING);
       }}
       accessibilityRole="button"
-      accessibilityLabel={DAYS_OF_WEEK_FULL[index]}
+      // The pill shows three things visually — weekday, date, and whether it's
+      // today (the brand ring). A label of just "Tuesday" dropped the other
+      // two, leaving a screen reader user unable to tell which Tuesday they
+      // were on or where today sat in the week.
+      accessibilityLabel={[
+        DAYS_OF_WEEK_FULL[index],
+        date ? String(date.getDate()) : null,
+        isToday ? "today" : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
       accessibilityHint={count === 1 ? "1 block scheduled" : `${count} blocks scheduled`}
       accessibilityState={{ selected: isSelected }}
     >
@@ -148,6 +175,13 @@ function LoadDots({ count, isSelected }: { count: number; isSelected: boolean })
 }
 
 const styles = StyleSheet.create({
+  scroll: {
+    // Neutralises RN's baseHorizontal flex defaults (see the ScrollView above).
+    // flexShrink is 0 too: on a short screen the day selector is the last thing
+    // that should be squeezed — the timeline below it already absorbs.
+    flexGrow: 0,
+    flexShrink: 0,
+  },
   strip: {
     flexDirection: "row",
     gap: spacing.sm,
