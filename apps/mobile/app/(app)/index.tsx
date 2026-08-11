@@ -23,16 +23,28 @@
 // than new endpoints.
 //
 // Top-level is a plain ScrollView, not a FlashList: these are heterogeneous
-// sections, not one long list. The "due today" list underneath IS a FlashList
-// since it can plausibly grow long (see isDueToday below — it includes all
-// undated active tasks, not just ones explicitly due today).
+// sections, not one long list. Every section under it renders a bounded
+// PREVIEW via plain `.map()` — see TASK_PREVIEW_COUNT / GOAL_PREVIEW_COUNT
+// and the "+N more" rows. The due-today list used to be a FlashList nested
+// in this ScrollView, which is the one arrangement FlashList itself warns
+// about (node_modules/@shopify/flash-list/dist/errors/WarningMessages.js:6 —
+// "your list is nested in a ScrollView causing a lot of items to render at
+// once"): with an unbounded parent height nothing virtualises, so it paid
+// for a recycler and got none of the benefit. A capped `.map()` is both
+// cheaper and consistent with the sibling sections.
+//
+// Every section is also guarded against its own query FAILING. Previously a
+// failed fetch fell through to the section's empty state, so a dropped
+// connection rendered a confident "No time blocks today" / "Nothing due
+// today" / "No active goals" — the screen inventing an empty day out of an
+// error. Sections now distinguish "loaded, and it's empty" from "we don't
+// know".
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Link, useFocusEffect, useRouter, type Href } from "expo-router";
+import { useFocusEffect, useRouter, type Href } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { FlashList } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
@@ -48,6 +60,7 @@ import {
 import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet, type QuickAddKind } from "@/components/QuickAddSheet";
 import { Skeleton, SkeletonListItem } from "@/components/Skeleton";
+import { describeCountdown } from "@/components/today/countdown";
 import { FocusNowCard } from "@/components/today/FocusNowCard";
 import { GoalProgressRow } from "@/components/today/GoalProgressRow";
 import { PressableScale } from "@/components/today/PressableScale";
@@ -62,7 +75,7 @@ import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/l
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { motion } from "@/theme";
-import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 // There's no user-configured-timezone concept wired up yet (per the project
 // brief) — the device's own zone is the best available approximation of
@@ -79,6 +92,17 @@ const HAMBURGER_CLEARANCE = 64;
 // without pushing the nav tiles off the bottom of a plausible scroll.
 const GOAL_PREVIEW_COUNT = 3;
 
+// Same reasoning for tasks, which needed it more: `isDueToday` deliberately
+// counts every undated TODO/DOING task, so on an account with a real backlog
+// this section was rendering the entire task list inside the page scroll.
+// Five rows is a glance; the count badge and "View all" carry the rest.
+const TASK_PREVIEW_COUNT = 5;
+
+// Shown in place of a stat whose query failed. A stat tile has no room for
+// an error, and printing "0m" for "we couldn't fetch it" is worse than
+// printing nothing.
+const UNKNOWN_STAT = "—";
+
 // Entrance stagger. Sections resolve top-to-bottom so the eye lands on the
 // hero first; ~60ms apart is enough to read as a cascade without the last
 // section feeling late. Same FadeInDown vocabulary the auth screens use.
@@ -90,6 +114,8 @@ const ROUTES = {
   goals: "/goals" as Href,
   timer: "/timer" as Href,
   journal: "/journal" as Href,
+  notes: "/notes" as Href,
+  reports: "/reports" as Href,
   settings: "/settings" as Href,
 };
 
@@ -117,14 +143,6 @@ function sortByStatusThenTitle(a: Task, b: Task): number {
   return a.title.localeCompare(b.title);
 }
 
-// Purely a label for a time already known to the caller (an
-// UpcomingScheduleBlock's `startsAtUtc`) — no new data, just phrased the way
-// dw-time-web's focus-now-bar.tsx phrases its "Up next" countdown.
-function describeCountdown(now: Date, startsAt: Date): string {
-  const diffMin = Math.max(0, Math.round((startsAt.getTime() - now.getTime()) / 60_000));
-  return diffMin <= 0 ? "starting now" : `in ${formatDuration(diffMin)}`;
-}
-
 export default function TodayScreen() {
   const { user } = useAuth();
   const analytics = useAnalytics();
@@ -132,7 +150,6 @@ export default function TodayScreen() {
   const reduceMotion = useReduceMotion();
 
   const [now, setNow] = useState(() => new Date());
-  const [refreshing, setRefreshing] = useState(false);
   const [addPickerOpen, setAddPickerOpen] = useState(false);
 
   const goalSheetRef = useRef<BottomSheetModal>(null);
@@ -150,13 +167,38 @@ export default function TodayScreen() {
   const timeEntriesQuery = useQuery(timeEntryQueries.recent());
 
   // Keeps "right now" honest while the screen sits open — a schedule block
-  // that was active a minute ago can silently become stale otherwise. Not
-  // wall-clock precise (60s granularity), which is fine for a coarse
-  // "what's happening" view.
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  // that was active a minute ago can silently become stale otherwise.
+  //
+  // Three things this has to get right that a bare `setInterval(60_000)` on
+  // mount did not:
+  //   1. Resync on focus. Today is a tab; it stays mounted while the user is
+  //      on Timer or Goals. Coming back after twenty minutes showed
+  //      twenty-minute-old "Xm left" until the next tick happened to fire.
+  //   2. Stop while blurred. An unfocused screen re-rendering itself once a
+  //      minute forever is pure battery and JS-thread cost.
+  //   3. Align to the wall-clock minute. An interval anchored to mount time
+  //      flips the displayed minute up to 59s late, so a block that ended at
+  //      10:00 could still read "1m left" at 10:00:58.
+  useFocusEffect(
+    useCallback(() => {
+      setNow(new Date());
+
+      let interval: ReturnType<typeof setInterval> | undefined;
+      // Epoch ms modulo a minute IS the offset into the current wall-clock
+      // minute in every timezone — even the :30/:45 ones, whose offsets are
+      // whole minutes.
+      const msToNextMinute = 60_000 - (Date.now() % 60_000);
+      const timeout = setTimeout(() => {
+        setNow(new Date());
+        interval = setInterval(() => setNow(new Date()), 60_000);
+      }, msToNextMinute);
+
+      return () => {
+        clearTimeout(timeout);
+        if (interval) clearInterval(interval);
+      };
+    }, []),
+  );
 
   // useFocusEffect (not a mount-only useEffect) because Today is the tab
   // users bounce back to constantly — each return to it is a real "viewed
@@ -167,34 +209,63 @@ export default function TodayScreen() {
     }, [analytics]),
   );
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await Promise.all([
-        scheduleQuery.refetch(),
-        tasksQuery.refetch(),
-        activeGoalsQuery.refetch(),
-        timeEntriesQuery.refetch(),
-      ]);
-    } finally {
-      setRefreshing(false);
-    }
+  const onRefresh = useCallback(() => {
+    void Promise.all([
+      scheduleQuery.refetch(),
+      tasksQuery.refetch(),
+      activeGoalsQuery.refetch(),
+      timeEntriesQuery.refetch(),
+    ]);
   }, [scheduleQuery, tasksQuery, activeGoalsQuery, timeEntriesQuery]);
+
+  // Derived from the queries rather than tracked in local state (the pattern
+  // notes.tsx:731 and schedule.tsx:274 already use). A hand-managed
+  // `refreshing` flag only knew about refreshes THIS screen started, so a
+  // background refetch — a cache invalidation after a quick-add, a
+  // reconnect — spun no indicator, and the flag had to be unwound in a
+  // `finally` that could outlive the screen.
+  const isRefreshing =
+    (scheduleQuery.isFetching && !scheduleQuery.isPending) ||
+    (tasksQuery.isFetching && !tasksQuery.isPending) ||
+    (activeGoalsQuery.isFetching && !activeGoalsQuery.isPending) ||
+    (timeEntriesQuery.isFetching && !timeEntriesQuery.isPending);
+
+  // "The request failed AND we have nothing cached to show instead." A stale
+  // cached list is still worth rendering; an error with no data is not, and
+  // must never fall through to an empty state (see the file header).
+  const scheduleFailed = scheduleQuery.isError && !scheduleQuery.data;
+  const tasksFailed = tasksQuery.isError && !tasksQuery.data;
+  const goalsFailed = activeGoalsQuery.isError && !activeGoalsQuery.data;
+  const timeEntriesFailed = timeEntriesQuery.isError && !timeEntriesQuery.data;
+
+  // Minute-resolution scalars pulled off `now` once, so downstream memos can
+  // depend on a stable primitive instead of on a Date instance that is
+  // replaced wholesale every tick.
+  const dayOfWeek = now.getDay();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   const activeBlock = useMemo(
     () => resolveActiveBlock(scheduleQuery.data, now, DEVICE_TIMEZONE),
     [scheduleQuery.data, now],
   );
 
+  // Computed whether or not something is active. dw-time-web's focus bar does
+  // the same (focus-now-bar.tsx:76-80 runs unconditionally, and :138-155
+  // renders the "Up next" chip beside the running block). Gating this on
+  // `!activeBlock` hid "what's next" during the one stretch of the day when
+  // the user is most likely to be asking.
   const nextUp = useMemo(
-    () => (activeBlock ? [] : findUpcomingScheduleBlocks(scheduleQuery.data, now, DEVICE_TIMEZONE, 1)),
-    [activeBlock, scheduleQuery.data, now],
+    () => findUpcomingScheduleBlocks(scheduleQuery.data, now, DEVICE_TIMEZONE, 1),
+    [scheduleQuery.data, now],
   );
 
   const todaysBlocks = useMemo(() => {
-    const blocks = scheduleQuery.data?.[now.getDay()] ?? [];
+    // Keyed on the weekday number, not on `now`: the day's block list can
+    // only change at midnight, but a `now` dependency rebuilt this array —
+    // and re-rendered the whole timeline — once a minute.
+    const blocks = scheduleQuery.data?.[dayOfWeek] ?? [];
     return [...blocks].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
-  }, [scheduleQuery.data, now]);
+  }, [scheduleQuery.data, dayOfWeek]);
 
   const todayStr = useMemo(() => getLocalDateString(now), [now]);
 
@@ -243,6 +314,8 @@ export default function TodayScreen() {
     [activeGoalsQuery.data],
   );
 
+  const previewTasks = useMemo(() => dueTodayTasks.slice(0, TASK_PREVIEW_COUNT), [dueTodayTasks]);
+
   // Derived-only display data for the hero card — computed the same way
   // dw-time-web's focus-now-bar.tsx computes its elapsed-progress bar and
   // "Xm left" chip, from data this screen already has (activeBlock, now).
@@ -251,11 +324,10 @@ export default function TodayScreen() {
     if (!activeBlock) return null;
     const startMin = timeToMinutes(activeBlock.startTime);
     const endMin = timeToMinutes(activeBlock.endTime);
-    const nowMin = now.getHours() * 60 + now.getMinutes();
     const totalLen = Math.max(1, endMin - startMin);
-    const elapsed = Math.max(0, Math.min(totalLen, nowMin - startMin));
-    return { pct: elapsed / totalLen, minutesLeft: Math.max(0, endMin - nowMin) };
-  }, [activeBlock, now]);
+    const elapsed = Math.max(0, Math.min(totalLen, nowMinutes - startMin));
+    return { pct: elapsed / totalLen, minutesLeft: Math.max(0, endMin - nowMinutes) };
+  }, [activeBlock, nowMinutes]);
 
   const nextUpLabel = useMemo(
     () => (nextUp.length > 0 ? describeCountdown(now, nextUp[0].startsAtUtc) : null),
@@ -273,6 +345,15 @@ export default function TodayScreen() {
 
   const go = useCallback((href: Href) => router.push(href), [router]);
 
+  // Stable per-destination handlers so the memoised rows below aren't handed
+  // a brand-new closure on every one-minute tick, which would defeat the
+  // memo entirely.
+  const goSchedule = useCallback(() => go(ROUTES.schedule), [go]);
+  const goTasks = useCallback(() => go(ROUTES.tasks), [go]);
+  const goGoals = useCallback(() => go(ROUTES.goals), [go]);
+
+  const firstName = user?.name ? user.name.split(" ")[0] : null;
+
   // Genuinely first load: no cached data at all for either of the two
   // queries this screen has always depended on, so there's nothing
   // meaningful to render behind a skeleton. Once either has data (even
@@ -282,13 +363,17 @@ export default function TodayScreen() {
   // of this gate — they're supplementary, and waiting on them would make
   // Today slower than it is today.
   const initialLoad = scheduleQuery.isPending && tasksQuery.isPending;
-  const initialError =
-    scheduleQuery.isError && !scheduleQuery.data && tasksQuery.isError && !tasksQuery.data;
+  const initialError = scheduleFailed && tasksFailed;
 
   if (initialLoad) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
-        <View style={styles.header}>
+        <View
+          style={styles.header}
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel="Loading today"
+        >
           <Skeleton width="35%" height={11} />
           <Skeleton width="65%" height={30} style={styles.headerSkeletonLine} />
           <Skeleton width="45%" height={14} style={styles.headerSkeletonLine} />
@@ -306,7 +391,13 @@ export default function TodayScreen() {
 
   if (initialError) {
     return (
+      // Keeps the greeting/date header above the error rather than dropping
+      // the user onto a bare centred glyph. It also restores the header's
+      // HAMBURGER_CLEARANCE: ErrorState lays itself out from the top of the
+      // container (its root has no `flex: 1`), so its illustration and title
+      // previously rendered right up beside the floating menu button.
       <SafeAreaView style={styles.container} edges={["top"]}>
+        <TodayHeader now={now} firstName={firstName} />
         <ErrorState
           message="Couldn't load today's agenda."
           onRetry={() => {
@@ -323,30 +414,23 @@ export default function TodayScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />}
       >
         <Stagger index={0} reduceMotion={reduceMotion}>
-          <View style={styles.header}>
-            <Text style={styles.eyebrow}>Today</Text>
-            <Text style={styles.greeting}>
-              {greetingFor(now.getHours())}
-              {user?.name ? `, ${user.name.split(" ")[0]}` : ""}
-            </Text>
-            <Text style={styles.date}>
-              {now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
-            </Text>
-          </View>
+          <TodayHeader now={now} firstName={firstName} />
         </Stagger>
 
         <Stagger index={1} reduceMotion={reduceMotion}>
           <View style={styles.heroWrap}>
             <FocusNowCard
               loading={scheduleQuery.isPending}
+              error={scheduleFailed}
+              onRetry={() => void scheduleQuery.refetch()}
               activeBlock={activeBlock}
               activeProgress={activeProgress}
               nextBlock={nextUp.length > 0 ? nextUp[0].block : null}
               nextLabel={nextUpLabel}
-              onOpenSchedule={() => go(ROUTES.schedule)}
+              onOpenSchedule={goSchedule}
             />
           </View>
         </Stagger>
@@ -358,13 +442,18 @@ export default function TodayScreen() {
         <Stagger index={2} reduceMotion={reduceMotion}>
           <View style={styles.statGrid}>
             <View style={styles.statRow}>
+              {/* Each value collapses to UNKNOWN_STAT when its query failed
+                  outright — "0m tracked" and "0 active goals" are claims,
+                  and a fetch that never landed can't support them. */}
               <StatCard
                 label="Tracked today"
-                value={formatDuration(trackedToday)}
+                value={timeEntriesFailed ? UNKNOWN_STAT : formatDuration(trackedToday)}
                 detail={
-                  plannedMinutesToday > 0
-                    ? `of ${formatDuration(plannedMinutesToday)} planned`
-                    : "nothing planned yet"
+                  scheduleFailed
+                    ? "couldn't load plan"
+                    : plannedMinutesToday > 0
+                      ? `of ${formatDuration(plannedMinutesToday)} planned`
+                      : "nothing planned yet"
                 }
                 icon="timer"
                 accent="brand"
@@ -372,7 +461,7 @@ export default function TodayScreen() {
               />
               <StatCard
                 label="Tasks done"
-                value={`${doneTodayCount}/${doneTodayCount + dueTodayTasks.length}`}
+                value={tasksFailed ? UNKNOWN_STAT : `${doneTodayCount}/${doneTodayCount + dueTodayTasks.length}`}
                 detail="due today"
                 icon="check"
                 accent="success"
@@ -382,7 +471,7 @@ export default function TodayScreen() {
             <View style={styles.statRow}>
               <StatCard
                 label="Active goals"
-                value={String(activeGoalsQuery.data?.length ?? 0)}
+                value={goalsFailed ? UNKNOWN_STAT : String(activeGoalsQuery.data?.length ?? 0)}
                 detail="in progress"
                 icon="goals"
                 accent="neutral"
@@ -390,7 +479,7 @@ export default function TodayScreen() {
               />
               <StatCard
                 label="Last 7 days"
-                value={formatDuration(trackedRecent)}
+                value={timeEntriesFailed ? UNKNOWN_STAT : formatDuration(trackedRecent)}
                 detail="time tracked"
                 icon="reports"
                 accent="neutral"
@@ -404,7 +493,7 @@ export default function TodayScreen() {
           <Section
             title="Today's schedule"
             count={todaysBlocks.length}
-            viewAllHref={ROUTES.schedule}
+            onViewAll={goSchedule}
             viewAllLabel="schedule"
           >
             {scheduleQuery.isPending ? (
@@ -412,13 +501,20 @@ export default function TodayScreen() {
                 <SkeletonListItem />
                 <SkeletonListItem />
               </>
+            ) : scheduleFailed ? (
+              <ErrorState
+                compact
+                title="Couldn't load your schedule"
+                message="Your day may not be as empty as this looks."
+                onRetry={() => void scheduleQuery.refetch()}
+              />
             ) : todaysBlocks.length === 0 ? (
               <SectionEmpty
                 icon="schedule"
                 headline="No time blocks today"
                 description="Blocking out even one hour makes the rest of the day easier to defend."
                 actionLabel="Open schedule"
-                onAction={() => go(ROUTES.schedule)}
+                onAction={goSchedule}
               />
             ) : (
               <View style={styles.timeline}>
@@ -428,6 +524,7 @@ export default function TodayScreen() {
                     block={block}
                     isLast={index === todaysBlocks.length - 1}
                     isNow={block.id === activeBlock?.id}
+                    onPress={goSchedule}
                   />
                 ))}
               </View>
@@ -436,13 +533,20 @@ export default function TodayScreen() {
         </Stagger>
 
         <Stagger index={4} reduceMotion={reduceMotion}>
-          <Section title="Due today" count={dueTodayTasks.length} viewAllHref={ROUTES.tasks} viewAllLabel="tasks">
+          <Section title="Due today" count={dueTodayTasks.length} onViewAll={goTasks} viewAllLabel="tasks">
             {tasksQuery.isPending ? (
               <>
                 <SkeletonListItem showLeading={false} />
                 <SkeletonListItem showLeading={false} />
               </>
-            ) : dueTodayTasks.length === 0 ? (
+            ) : tasksFailed ? (
+              <ErrorState
+                compact
+                title="Couldn't load your tasks"
+                message="There may still be something due today."
+                onRetry={() => void tasksQuery.refetch()}
+              />
+            ) : previewTasks.length === 0 ? (
               <SectionEmpty
                 icon="tasks"
                 headline={doneTodayCount > 0 ? "All clear for today" : "Nothing due today"}
@@ -451,23 +555,28 @@ export default function TodayScreen() {
                     ? `You closed out ${doneTodayCount} ${doneTodayCount === 1 ? "task" : "tasks"} today. Nothing else is on the hook.`
                     : "Pull something forward from the backlog, or enjoy the quiet day."
                 }
-                actionLabel="Browse tasks"
-                onAction={() => go(ROUTES.tasks)}
+                // Quick-add rather than "browse": the section is empty
+                // because there is nothing to browse. Same reasoning as the
+                // goals empty state right below.
+                actionLabel="Add a task"
+                onAction={() => openQuickAdd("task")}
               />
             ) : (
-              <View style={styles.taskListContainer}>
-                <FlashList
-                  data={dueTodayTasks}
-                  keyExtractor={(task) => task.id}
-                  renderItem={({ item, index }) => (
-                    <TaskRow task={item} isLast={index === dueTodayTasks.length - 1} />
-                  )}
-                  // Nested inside the outer ScrollView, which already owns
-                  // the page's scrolling — this list only needs to lay out
-                  // its (potentially long) content, not scroll on its own.
-                  scrollEnabled={false}
+              <>
+                {previewTasks.map((task, index) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    isLast={index === previewTasks.length - 1 && dueTodayTasks.length <= TASK_PREVIEW_COUNT}
+                    onPress={goTasks}
+                  />
+                ))}
+                <MoreRow
+                  hidden={dueTodayTasks.length - previewTasks.length}
+                  noun="task"
+                  onPress={goTasks}
                 />
-              </View>
+              </>
             )}
           </Section>
         </Stagger>
@@ -476,7 +585,7 @@ export default function TodayScreen() {
           <Section
             title="Goal progress"
             count={activeGoalsQuery.data?.length ?? 0}
-            viewAllHref={ROUTES.goals}
+            onViewAll={goGoals}
             viewAllLabel="goals"
           >
             {activeGoalsQuery.isPending ? (
@@ -484,6 +593,13 @@ export default function TodayScreen() {
                 <SkeletonListItem showLeading={false} />
                 <SkeletonListItem showLeading={false} />
               </>
+            ) : goalsFailed ? (
+              <ErrorState
+                compact
+                title="Couldn't load your goals"
+                message="Your progress is still there — we just can't read it right now."
+                onRetry={() => void activeGoalsQuery.refetch()}
+              />
             ) : previewGoals.length === 0 ? (
               <SectionEmpty
                 icon="goals"
@@ -493,9 +609,26 @@ export default function TodayScreen() {
                 onAction={() => openQuickAdd("goal")}
               />
             ) : (
-              previewGoals.map((goal, index) => (
-                <GoalProgressRow key={goal.id} goal={goal} isLast={index === previewGoals.length - 1} />
-              ))
+              <>
+                {previewGoals.map((goal, index) => (
+                  <GoalProgressRow
+                    key={goal.id}
+                    goal={goal}
+                    isLast={
+                      index === previewGoals.length - 1 &&
+                      (activeGoalsQuery.data?.length ?? 0) <= GOAL_PREVIEW_COUNT
+                    }
+                    onPress={goGoals}
+                  />
+                ))}
+                {/* The count badge shows the true total but the list is
+                    capped, so without this the two silently disagree. */}
+                <MoreRow
+                  hidden={(activeGoalsQuery.data?.length ?? 0) - previewGoals.length}
+                  noun="goal"
+                  onPress={goGoals}
+                />
+              </>
             )}
           </Section>
         </Stagger>
@@ -506,7 +639,9 @@ export default function TodayScreen() {
             (see the note in app/(app)/_layout.tsx). */}
         <Stagger index={6} reduceMotion={reduceMotion}>
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Jump back in</Text>
+            <Text style={styles.sectionTitle} accessibilityRole="header">
+              Jump back in
+            </Text>
             <View style={styles.actionGrid}>
               <View style={styles.actionRow}>
                 <QuickActionCard
@@ -515,7 +650,7 @@ export default function TodayScreen() {
                   icon="schedule"
                   tone="brand"
                   accessibilityLabel="Open schedule"
-                  onPress={() => go(ROUTES.schedule)}
+                  onPress={goSchedule}
                 />
                 <QuickActionCard
                   title="Timer"
@@ -525,6 +660,10 @@ export default function TodayScreen() {
                   onPress={() => go(ROUTES.timer)}
                 />
               </View>
+              {/* Reports and Notes are drawer-only, which is the exact
+                  discoverability failure this grid exists to answer — they
+                  belong here more than Settings does, and every tab-bar
+                  destination (Goals/Tasks) deliberately stays out. */}
               <View style={styles.actionRow}>
                 <QuickActionCard
                   title="Journal"
@@ -532,6 +671,22 @@ export default function TodayScreen() {
                   icon="journal"
                   accessibilityLabel="Open journal"
                   onPress={() => go(ROUTES.journal)}
+                />
+                <QuickActionCard
+                  title="Notes"
+                  subtitle="Capture a thought"
+                  icon="notes"
+                  accessibilityLabel="Open notes"
+                  onPress={() => go(ROUTES.notes)}
+                />
+              </View>
+              <View style={styles.actionRow}>
+                <QuickActionCard
+                  title="Reports"
+                  subtitle="See the trend"
+                  icon="reports"
+                  accessibilityLabel="Open reports"
+                  onPress={() => go(ROUTES.reports)}
                 />
                 <QuickActionCard
                   title="Settings"
@@ -545,6 +700,19 @@ export default function TodayScreen() {
           </View>
         </Stagger>
       </ScrollView>
+
+      {/* Tap-anywhere-to-dismiss for the quick-add menu. Without it the only
+          way out of the expanded menu was to find and hit the FAB again,
+          which is not how any other dismissible surface in the app behaves.
+          Sits under the FAB in z-order so the FAB itself stays tappable. */}
+      {addPickerOpen ? (
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => setAddPickerOpen(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Close quick add menu"
+        />
+      ) : null}
 
       <QuickAddFab open={addPickerOpen} onToggle={() => setAddPickerOpen((v) => !v)} onPick={openQuickAdd} />
 
@@ -586,23 +754,72 @@ function StatValueSkeleton() {
   return <Skeleton width="60%" height={30} borderRadius={8} />;
 }
 
+/**
+ * Greeting block. Extracted because the loading, error and loaded branches
+ * all need it — the error branch previously rendered without it, dropping
+ * the user onto a bare centred glyph with no HAMBURGER_CLEARANCE.
+ */
+function TodayHeader({ now, firstName }: { now: Date; firstName: string | null }) {
+  const greeting = `${greetingFor(now.getHours())}${firstName ? `, ${firstName}` : ""}`;
+  const date = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+
+  return (
+    // One a11y node, announced as a header: three separate stops for
+    // "Today" / the greeting / the date is noise at the top of every visit.
+    <View style={styles.header} accessible accessibilityRole="header" accessibilityLabel={`${greeting}. ${date}`}>
+      <Text style={styles.eyebrow}>Today</Text>
+      <Text style={styles.greeting}>{greeting}</Text>
+      <Text style={styles.date}>{date}</Text>
+    </View>
+  );
+}
+
+/**
+ * "+N more" footer for a capped section preview. Renders nothing when the
+ * section fits, so callers don't have to guard the call site.
+ */
+function MoreRow({ hidden, noun, onPress }: { hidden: number; noun: string; onPress: () => void }) {
+  if (hidden <= 0) return null;
+
+  const label = `${hidden} more ${noun}${hidden === 1 ? "" : "s"}`;
+
+  return (
+    <PressableScale
+      style={styles.moreRow}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Show ${label}`}
+    >
+      <Text style={styles.moreRowText}>{label}</Text>
+      <Icon name="chevron" size={14} color={colors.mutedForeground} />
+    </PressableScale>
+  );
+}
+
 function Section({
   title,
   count,
-  viewAllHref,
+  onViewAll,
   viewAllLabel,
   children,
 }: {
   title: string;
   count: number;
-  viewAllHref: Href;
+  onViewAll: () => void;
   viewAllLabel: string;
   children: ReactNode;
 }) {
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <View style={styles.sectionHeaderLeft}>
+        {/* Title + count as one node: a screen reader otherwise stops on a
+            naked "3" with nothing to attach it to. */}
+        <View
+          style={styles.sectionHeaderLeft}
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel={count > 0 ? `${title}, ${count}` : title}
+        >
           <Text style={styles.sectionTitle}>{title}</Text>
           {count > 0 ? (
             <View style={styles.countBadge}>
@@ -610,17 +827,24 @@ function Section({
             </View>
           ) : null}
         </View>
-        <Link href={viewAllHref} asChild>
-          <TouchableOpacity
-            style={styles.viewAllButton}
-            accessibilityRole="button"
-            accessibilityLabel={`View all ${viewAllLabel}`}
-            hitSlop={{ top: spacing.sm, bottom: spacing.sm, left: spacing.sm, right: spacing.sm }}
-          >
-            <Text style={styles.viewAllText}>View all</Text>
-            <Icon name="chevron" size={14} color={colors.mutedForeground} />
-          </TouchableOpacity>
-        </Link>
+        {/* Was `<Link asChild><TouchableOpacity>`. Two reasons it isn't:
+            (1) expo-router's asChild path renders through a Slot shim
+            (node_modules/expo-router/build/ui/Slot.js) that THROWS in dev
+            the moment the direct child's `style` is an array — a live
+            tripwire under any future conditional style here, on the one
+            control in this file that wasn't already using `go()`;
+            (2) every other tappable on this screen is a PressableScale, so
+            this was also the only navigation that gave no press feedback. */}
+        <PressableScale
+          style={styles.viewAllButton}
+          onPress={onViewAll}
+          accessibilityRole="button"
+          accessibilityLabel={`View all ${viewAllLabel}`}
+          hitSlop={{ top: spacing.sm, bottom: spacing.sm, left: spacing.sm, right: spacing.sm }}
+        >
+          <Text style={styles.viewAllText}>View all</Text>
+          <Icon name="chevron" size={14} color={colors.mutedForeground} />
+        </PressableScale>
       </View>
       <View style={styles.card}>{children}</View>
     </View>
@@ -765,6 +989,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
+    // 32 + the 8pt hitSlop on each side clears the 44pt floor without the
+    // label sitting visually low against the section title beside it.
     minHeight: 32,
   },
   viewAllText: {
@@ -783,11 +1009,18 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingRight: spacing.sm,
   },
-  taskListContainer: {
-    // FlashList needs a layout pass; with scrollEnabled=false it sizes to
-    // its content, but a min-height keeps the loading/empty transition from
-    // visibly jumping.
-    minHeight: 1,
+  moreRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: minTouchTarget,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  moreRowText: {
+    ...typography.caption,
+    color: colors.mutedForeground,
   },
 
   actionGrid: {

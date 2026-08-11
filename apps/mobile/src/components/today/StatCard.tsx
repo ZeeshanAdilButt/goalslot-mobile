@@ -36,7 +36,9 @@ export interface StatCardProps {
 const ACCENTS: Record<StatAccent, { puck: string; ink: string }> = {
   // Brand yellow is an accent, not a surface: the puck is the pale tint and
   // the glyph is near-black, never white-on-yellow (unreadable at 3.6:1).
-  brand: { puck: colors.warningMuted, ink: colors.primaryForeground },
+  // `primaryMuted` is the brand tint; `warningMuted` (used here before) is
+  // the warning tint and belongs to a different semantic.
+  brand: { puck: colors.primaryMuted, ink: colors.primaryForeground },
   success: { puck: colors.successMuted, ink: colors.success },
   neutral: { puck: colors.secondary, ink: colors.mutedForeground },
 };

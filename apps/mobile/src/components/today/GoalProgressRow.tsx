@@ -12,29 +12,44 @@
 // mobile is a big part of why Today read as empty — the schedule and task
 // lists are both genuinely empty on a fresh day, but goals usually aren't.
 
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import type { Goal } from "@goalslot/shared";
 
+import { PressableScale } from "@/components/today/PressableScale";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 export interface GoalProgressRowProps {
   goal: Goal;
   isLast: boolean;
+  /** Opens the Goals tab. Omit to render the row as static content. */
+  onPress?: () => void;
 }
 
-export function GoalProgressRow({ goal, isLast }: GoalProgressRowProps) {
+export const GoalProgressRow = memo(function GoalProgressRow({ goal, isLast, onPress }: GoalProgressRowProps) {
   const progress =
     goal.targetHours > 0 ? Math.min(100, Math.round((goal.loggedHours / goal.targetHours) * 100)) : 0;
 
+  const Container = onPress ? PressableScale : View;
+  // The percentage moves from `accessibilityValue` into the label when the
+  // row becomes a button: VoiceOver reads a value for `progressbar`, but not
+  // for `button`, so leaving it there would silently drop the number.
+  const pressProps = onPress
+    ? ({
+        onPress,
+        accessibilityRole: "button",
+        accessibilityHint: "Opens your goals",
+        accessibilityLabel: `${goal.title}, ${goal.category}, ${progress} percent`,
+      } as const)
+    : ({
+        accessibilityRole: "progressbar",
+        accessibilityLabel: `${goal.title}, ${goal.category}`,
+        accessibilityValue: { min: 0, max: 100, now: progress, text: `${progress} percent` },
+      } as const);
+
   return (
-    <View
-      style={[styles.row, isLast && styles.rowLast]}
-      accessible
-      accessibilityRole="progressbar"
-      accessibilityLabel={`${goal.title}, ${goal.category}`}
-      accessibilityValue={{ min: 0, max: 100, now: progress, text: `${progress} percent` }}
-    >
+    <Container style={[styles.row, isLast && styles.rowLast]} accessible {...pressProps}>
       <View style={[styles.rail, { backgroundColor: goal.color }]} />
 
       <View style={styles.body}>
@@ -60,9 +75,9 @@ export function GoalProgressRow({ goal, isLast }: GoalProgressRowProps) {
           <View style={[styles.fill, { width: `${progress}%` }]} />
         </View>
       </View>
-    </View>
+    </Container>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: {
@@ -120,7 +135,9 @@ const styles = StyleSheet.create({
   categoryText: {
     ...typography.label,
     fontSize: 9,
-    color: colors.mutedForeground,
+    // `mutedForeground` on `secondary` is 4.40:1 — fine for the 12px body
+    // copy it was borrowed from, under the 4.5:1 floor at 9px.
+    color: colors.foreground,
   },
   hours: {
     ...typography.bodySmall,

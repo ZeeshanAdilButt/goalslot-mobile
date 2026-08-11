@@ -29,6 +29,7 @@ import Animated, {
 
 import { formatDuration, formatTime12h, type ScheduleBlock } from "@goalslot/shared";
 
+import { ErrorState } from "@/components/ErrorState";
 import { Icon } from "@/components/ui/Icon";
 import { PressableScale } from "@/components/today/PressableScale";
 import { ProgressRing } from "@/components/today/ProgressRing";
@@ -41,6 +42,15 @@ const RING_SIZE = 86;
 
 export interface FocusNowCardProps {
   loading: boolean;
+  /**
+   * The schedule request failed with nothing cached to fall back on. Without
+   * this the card would render its "Your day is wide open" empty state on a
+   * network error — telling the user they have nothing scheduled when the
+   * truth is we don't know. See the same guard on every section in
+   * app/(app)/index.tsx.
+   */
+  error?: boolean;
+  onRetry?: () => void;
   activeBlock: ScheduleBlock | null;
   /** Elapsed fraction + minutes remaining for `activeBlock`. Derived by the caller. */
   activeProgress: { pct: number; minutesLeft: number } | null;
@@ -53,6 +63,8 @@ export interface FocusNowCardProps {
 
 export function FocusNowCard({
   loading,
+  error = false,
+  onRetry,
   activeBlock,
   activeProgress,
   nextBlock,
@@ -61,7 +73,14 @@ export function FocusNowCard({
 }: FocusNowCardProps) {
   if (loading) {
     return (
-      <View style={styles.shellNeutral}>
+      // Labelled rather than left as three anonymous grey blocks: a screen
+      // reader landing here mid-fetch otherwise announces nothing at all.
+      <View
+        style={styles.shellNeutral}
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel="Loading what's happening now"
+      >
         <View style={styles.loadingRow}>
           <Skeleton width={RING_SIZE} height={RING_SIZE} borderRadius={RING_SIZE / 2} />
           <View style={styles.loadingText}>
@@ -70,6 +89,19 @@ export function FocusNowCard({
             <Skeleton width="60%" height={12} style={styles.loadingLine} />
           </View>
         </View>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.shellNeutral}>
+        <ErrorState
+          compact
+          title="Can't reach your schedule"
+          message="We couldn't check what's happening right now."
+          onRetry={onRetry}
+        />
       </View>
     );
   }
@@ -85,7 +117,7 @@ export function FocusNowCard({
         accessibilityRole="button"
         accessibilityLabel={`Focus now: ${activeBlock.title}, ${pct} percent elapsed${
           remaining ? `, ${remaining} left` : ""
-        }. Open schedule.`}
+        }${nextBlock ? `. Up next: ${nextBlock.title}${nextLabel ? `, ${nextLabel}` : ""}` : ""}. Open schedule.`}
       >
         <View style={styles.heroRow}>
           <ProgressRing
@@ -135,6 +167,22 @@ export function FocusNowCard({
             ) : null}
           </View>
         </View>
+
+        {/* The web bar shows the live block AND the "Up next" chip at the
+            same time (focus-now-bar.tsx:76-80 computes `upcomingList`
+            unconditionally, and :138-155 renders the chip beside the active
+            block). Mobile previously suppressed "next" whenever anything was
+            running, which hid it in exactly the moment a user asks "how much
+            longer, and what then?". */}
+        {nextBlock ? (
+          <View style={styles.nextUpFooter} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <Text style={styles.nextUpLabel}>Up next</Text>
+            <Text style={styles.nextUpTitle} numberOfLines={1}>
+              {nextBlock.title}
+            </Text>
+            {nextLabel ? <Text style={styles.nextUpWhen}>{nextLabel}</Text> : null}
+          </View>
+        ) : null}
       </PressableScale>
     );
   }
@@ -186,6 +234,11 @@ export function FocusNowCard({
       <SectionEmpty
         icon="schedule"
         emphasis="brand"
+        // `compact` exists for exactly this case ("empty states that sit
+        // inside an already-padded card") and this — the only such call
+        // site — wasn't passing it, stacking the shell's 16pt onto the
+        // block's own 24pt for 40pt of dead vertical space.
+        compact
         headline="Your day is wide open"
         description="Block out the hours that matter and GoalSlot will keep you pointed at them."
         actionLabel="Plan your day"
@@ -233,11 +286,17 @@ const styles = StyleSheet.create({
   // (`bg-[#fffbea]`, `border-[#f2cc0d]/30`, `text-[#8a7307]`). Mobile has no
   // alpha-blend helper and the theme owns every color in the app, so the
   // closest existing tokens stand in rather than re-hardcoding those values:
-  // pale warm fill -> `warningMuted`, brand hairline -> `primary`, warm ink
+  // pale brand fill -> `primaryMuted`, brand hairline -> `primary`, warm ink
   // -> `primaryForeground` (which is exactly what the web uses for text
   // sitting on solid brand yellow, e.g. its "Xm left" chip).
+  //
+  // The fill was `warningMuted` (#FEF3DD). That is the theme's WARNING tint,
+  // not its brand tint — it made the hero read as an alert, and it collided
+  // with the same token doing real warning duty elsewhere. `primaryMuted`
+  // (#FEFCE8, yellow-50) is the token foundation.ts documents for a
+  // brand-accented container and is the near-exact match for web's #fffbea.
   shellBrand: {
-    backgroundColor: colors.warningMuted,
+    backgroundColor: colors.primaryMuted,
     borderRadius: radii.xl,
     borderWidth: 1,
     borderColor: colors.primary,
@@ -356,6 +415,34 @@ const styles = StyleSheet.create({
     ...typography.caption,
     fontSize: 10,
     color: colors.foreground,
+  },
+  // Separated by a rule rather than another chip row: "what's after this" is
+  // a different question from "what is this", and the hairline is what stops
+  // the two block titles from reading as one list.
+  nextUpFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.primary,
+  },
+  nextUpLabel: {
+    ...typography.label,
+    color: colors.primaryText,
+  },
+  nextUpTitle: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.foreground,
+    flexShrink: 1,
+  },
+  nextUpWhen: {
+    ...typography.caption,
+    fontSize: 11,
+    color: colors.primaryText,
+    marginLeft: "auto",
   },
   goalRow: {
     flexDirection: "row",

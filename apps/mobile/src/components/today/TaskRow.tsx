@@ -11,11 +11,13 @@
 // the Tasks tab's job. The marker is therefore drawn, not pressable, and is
 // hidden from assistive tech (the status is already in the row's label).
 
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { formatDuration, type Task } from "@goalslot/shared";
 
 import { Icon } from "@/components/ui/Icon";
+import { PressableScale } from "@/components/today/PressableScale";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 const STATUS_COPY: Record<Task["status"], string> = {
@@ -28,20 +30,30 @@ const STATUS_COPY: Record<Task["status"], string> = {
 export interface TaskRowProps {
   task: Task;
   isLast: boolean;
+  /** Opens the Tasks tab. Omit to render the row as static content. */
+  onPress?: () => void;
 }
 
-export function TaskRow({ task, isLast }: TaskRowProps) {
+// Memoised: the Today screen ticks once a minute and would otherwise
+// re-render every task row on every tick for no reason.
+export const TaskRow = memo(function TaskRow({ task, isLast, onPress }: TaskRowProps) {
   const isDoing = task.status === "DOING";
   const isDone = task.status === "DONE";
   const meta = [task.category, task.estimatedMinutes ? formatDuration(task.estimatedMinutes) : null]
     .filter(Boolean)
     .join(" · ");
 
+  const Container = onPress ? PressableScale : View;
+  const pressProps = onPress
+    ? ({ onPress, accessibilityRole: "button", accessibilityHint: "Opens your tasks" } as const)
+    : null;
+
   return (
-    <View
+    <Container
       style={[styles.row, isLast && styles.rowLast]}
       accessible
       accessibilityLabel={`${task.title}, ${STATUS_COPY[task.status]}${meta ? `, ${meta}` : ""}`}
+      {...pressProps}
     >
       <View
         style={[styles.marker, isDone && styles.markerDone, isDoing && styles.markerDoing]}
@@ -66,9 +78,9 @@ export function TaskRow({ task, isLast }: TaskRowProps) {
       <View style={[styles.pill, isDoing && styles.pillDoing]}>
         <Text style={[styles.pillText, isDoing && styles.pillTextDoing]}>{STATUS_COPY[task.status]}</Text>
       </View>
-    </View>
+    </Container>
   );
-}
+});
 
 const MARKER_SIZE = 22;
 
@@ -102,15 +114,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.success,
     borderColor: colors.success,
   },
+  // "In progress" is the app's brand-accent moment (same as the timeline's
+  // "Now" pill), not a warning. It was drawn in `warning` (#F59F0A), which
+  // is also a contrast failure: #F59F0A on `warningMuted` measures 1.94:1
+  // and on white 2.13:1 — under the 4.5:1 floor for the 9px pill text and
+  // under the 3:1 floor for the marker ring. `primaryText` (#A16207) clears
+  // both (4.8:1 on the tint, 4.9:1 on white).
   markerDoing: {
-    borderColor: colors.warning,
-    backgroundColor: colors.warningMuted,
+    borderColor: colors.primaryText,
+    backgroundColor: colors.primaryMuted,
   },
   markerPulse: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.warning,
+    backgroundColor: colors.primaryText,
   },
   body: {
     flex: 1,
@@ -141,7 +159,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   pillDoing: {
-    backgroundColor: colors.warningMuted,
+    backgroundColor: colors.primaryMuted,
   },
   pillText: {
     ...typography.label,
@@ -149,6 +167,6 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
   },
   pillTextDoing: {
-    color: colors.warning,
+    color: colors.primaryText,
   },
 });

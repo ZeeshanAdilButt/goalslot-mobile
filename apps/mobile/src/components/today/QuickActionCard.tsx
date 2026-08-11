@@ -78,9 +78,11 @@ const styles = StyleSheet.create({
   cardBrand: {
     // Matches the web CTA's `border-yellow-200 bg-yellow-50` treatment — the
     // one tile in the grid that gets to be tinted, so it reads as the
-    // recommended next step rather than as four equal options.
-    backgroundColor: colors.warningMuted,
-    borderColor: colors.primary,
+    // recommended next step rather than as four equal options. `primaryMuted`
+    // /`primaryBorder` ARE that yellow-50/yellow-200 pair; the previous
+    // `warningMuted` fill was the theme's warning tint standing in for it.
+    backgroundColor: colors.primaryMuted,
+    borderColor: colors.primaryBorder,
   },
   topRow: {
     flexDirection: "row",
