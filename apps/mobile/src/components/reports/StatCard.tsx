@@ -17,6 +17,9 @@ import Svg, { Path, Rect } from "react-native-svg";
 import type { Trend, TrendDirection } from "@/components/reports/aggregate";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
+/** Above this the delta chip shows ">999%" instead of the literal figure. */
+const MAX_TREND_PERCENT = 999;
+
 const TREND_TONE: Record<TrendDirection, { foreground: string; background: string }> = {
   up: { foreground: colors.success, background: colors.successMuted },
   down: { foreground: colors.destructive, background: colors.destructiveMuted },
@@ -57,7 +60,12 @@ export function StatCard({ label, value, sublabel, trend, comparisonLabel }: Sta
       ? "New"
       : trend.direction === "flat"
         ? "No change"
-        : `${trend.percent}%`
+        : // Clamped, because `computeTrend` divides by the previous period and
+          // small denominators are routine: two minutes last week against two
+          // hours this week is a literal 5900%, which is both meaningless and
+          // wide enough to push the chip past the tile's edge on a half-width
+          // card. Past this point the only readable statement is "a lot more".
+          `${trend.percent > MAX_TREND_PERCENT ? `>${MAX_TREND_PERCENT}` : trend.percent}%`
     : null;
 
   return (

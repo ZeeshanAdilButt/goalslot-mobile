@@ -53,6 +53,11 @@ import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const CHART_BLOCK_HEIGHT = 150;
 const MAX_DONUT_SIZE = 200;
+/**
+ * Gutter kept clear for the floating menu button app/(app)/_layout.tsx pins
+ * top-right over every screen. Same 64pt index.tsx and schedule.tsx use.
+ */
+const HAMBURGER_CLEARANCE = 64;
 /** Screen padding (spacing.xl) + card padding (spacing.lg), both sides. */
 const DONUT_HORIZONTAL_INSET = 2 * spacing.xl + 2 * spacing.lg + spacing.xxl;
 
@@ -69,20 +74,31 @@ function countDays(range: PeriodRange): number {
 export default function ReportsScreen() {
   const analytics = useAnalytics();
   const { width } = useWindowDimensions();
-  const [refreshing, setRefreshing] = useState(false);
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [chartWidth, setChartWidth] = useState(0);
+
+  // The wall-clock instant every period boundary is measured from. Held in
+  // state rather than read inline because `getPeriodRanges` and
+  // `buildDayBuckets` must agree on where "today" is within a single render —
+  // and because memoising the ranges on `period` alone (what this did before)
+  // froze them at mount: an app left open past midnight kept highlighting
+  // yesterday's bar as today, and one left open past Sunday night went on
+  // charting the previous reporting week indefinitely.
+  const [periodAnchor, setPeriodAnchor] = useState(() => new Date());
 
   useFocusEffect(
     useCallback(() => {
       analytics.track({ name: "screenViewed", payload: { screenName: "reports" } });
+      // Re-anchor only when the calendar day has actually turned over.
+      // Replacing it on every focus would churn the query key (it feeds
+      // `ranges.fetch`) and refetch for nothing.
+      setPeriodAnchor((previous) =>
+        getLocalDateString(previous) === getLocalDateString() ? previous : new Date(),
+      );
     }, [analytics]),
   );
 
-  // Recomputed per period, not per render — `getPeriodRanges` reads the wall
-  // clock, and a range that silently shifts mid-render would make the charts
-  // and the stat deltas disagree about where the period ends.
-  const ranges = useMemo(() => getPeriodRanges(period), [period]);
+  const ranges = useMemo(() => getPeriodRanges(period, periodAnchor), [period, periodAnchor]);
 
   const timeEntriesQuery = useQuery({
     queryKey: timeEntryQueries.timeEntryQueries.range(ranges.fetch.start, ranges.fetch.end),
@@ -95,19 +111,25 @@ export default function ReportsScreen() {
   const tasksQuery = useQuery(taskQueries.list());
   const categoriesQuery = useQuery(categoryQueries.list());
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await Promise.all([
-        timeEntriesQuery.refetch(),
-        activeGoalsQuery.refetch(),
-        tasksQuery.refetch(),
-        categoriesQuery.refetch(),
-      ]);
-    } finally {
-      setRefreshing(false);
-    }
+  const onRefresh = useCallback(() => {
+    void timeEntriesQuery.refetch();
+    void activeGoalsQuery.refetch();
+    void tasksQuery.refetch();
+    void categoriesQuery.refetch();
   }, [activeGoalsQuery, categoriesQuery, tasksQuery, timeEntriesQuery]);
+
+  // Derived from the queries rather than a local boolean the handler flips.
+  // A local flag only ever knows about refetches *this* handler started, so a
+  // refetch kicked off anywhere else — the timer screen invalidating
+  // `time-entries` after a session is logged, a reconnect — updated the
+  // numbers under the user with no indication anything had happened. The
+  // `!isPending` half keeps the spinner off a genuine first load, which is
+  // the skeleton's job.
+  const isRefreshing =
+    (timeEntriesQuery.isFetching && !timeEntriesQuery.isPending) ||
+    (activeGoalsQuery.isFetching && !activeGoalsQuery.isPending) ||
+    (tasksQuery.isFetching && !tasksQuery.isPending) ||
+    (categoriesQuery.isFetching && !categoriesQuery.isPending);
 
   const timeEntries = useMemo(() => timeEntriesQuery.data ?? [], [timeEntriesQuery.data]);
   const activeGoals = useMemo(() => activeGoalsQuery.data ?? [], [activeGoalsQuery.data]);
@@ -161,6 +183,16 @@ export default function ReportsScreen() {
 
   const comparisonLabel = period === "week" ? "vs last week" : "vs last month";
   const donutSize = Math.min(MAX_DONUT_SIZE, Math.max(140, width - DONUT_HORIZONTAL_INSET));
+
+  // src/lib/query-client.ts sets `placeholderData: keepPreviousData` globally,
+  // so the instant after a week -> month tap this screen is holding the WEEK
+  // window's entries while the month request is in flight — and every total,
+  // average and delta below is computed from them. Week-from-month data
+  // happens to be right (a subset), but month-from-week undercounts, and
+  // either way the numbers on screen aren't the period whose name is above
+  // them. Dimming them is what makes that legible instead of a silent wrong
+  // answer; the pull-to-refresh spinner is already turning at the same time.
+  const isProvisional = timeEntriesQuery.isPlaceholderData;
 
   // Genuinely first load: none of the queries have cached data yet. Matches
   // the Today screen's convention — once any one of them has data (even
@@ -219,8 +251,8 @@ export default function ReportsScreen() {
         contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void onRefresh()}
+            refreshing={isRefreshing}
+            onRefresh={onRefresh}
             accessibilityLabel="Pull to refresh reports"
           />
         }
@@ -244,7 +276,7 @@ export default function ReportsScreen() {
               <Text style={styles.rangeLabel}>{ranges.label}</Text>
             </View>
 
-            <Reveal style={styles.tileRow}>
+            <Reveal style={[styles.tileRow, isProvisional && styles.provisional]}>
               <StatCard
                 label="Focus time"
                 value={formatDuration(currentMinutes)}
@@ -259,7 +291,7 @@ export default function ReportsScreen() {
               />
             </Reveal>
 
-            <Reveal delay={70} style={styles.tileRow}>
+            <Reveal delay={70} style={[styles.tileRow, isProvisional && styles.provisional]}>
               <StatCard
                 label="Tasks done"
                 value={String(currentTasksDone)}
@@ -273,7 +305,7 @@ export default function ReportsScreen() {
               />
             </Reveal>
 
-            <Reveal delay={140} style={styles.section}>
+            <Reveal delay={140} style={[styles.section, isProvisional && styles.provisional]}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Focus per day</Text>
@@ -283,7 +315,7 @@ export default function ReportsScreen() {
                   style={styles.chartArea}
                   onLayout={(event) => setChartWidth(event.nativeEvent.layout.width)}
                   accessible
-                  accessibilityLabel={buildChartSummary(currentMinutes, buckets.length, period)}
+                  accessibilityLabel={buildChartSummary(currentMinutes, elapsedDays, period)}
                 >
                   {currentMinutes === 0 ? (
                     <Text style={styles.emptyChartText}>
@@ -296,7 +328,7 @@ export default function ReportsScreen() {
               </View>
             </Reveal>
 
-            <Reveal delay={210} style={styles.section}>
+            <Reveal delay={210} style={[styles.section, isProvisional && styles.provisional]}>
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Time by category</Text>
@@ -318,11 +350,17 @@ export default function ReportsScreen() {
   );
 }
 
-/** One spoken sentence instead of 31 individually-focusable bars. */
+/**
+ * One spoken sentence instead of 31 individually-focusable bars.
+ *
+ * `dayCount` is the number of days that have actually elapsed, not the length
+ * of the period: on the 2nd of a month this said "across 31 days", which
+ * reads as a month of near-zero activity rather than two days of it.
+ */
 function buildChartSummary(minutes: number, dayCount: number, period: ReportPeriod): string {
-  return `Bar chart of focus time per day. ${formatDuration(minutes)} logged across ${dayCount} days ${
-    period === "week" ? "this week" : "this month"
-  }.`;
+  return `Bar chart of focus time per day. ${formatDuration(minutes)} logged across ${dayCount} ${
+    dayCount === 1 ? "day" : "days"
+  } so far ${period === "week" ? "this week" : "this month"}.`;
 }
 
 const styles = StyleSheet.create({
@@ -335,9 +373,15 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: spacing.xl,
+    // Keeps "Reports" clear of the layout's floating menu button.
+    paddingRight: HAMBURGER_CLEARANCE,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
     gap: 2,
+  },
+  /** Numbers that belong to a period other than the one named above them. */
+  provisional: {
+    opacity: 0.45,
   },
   eyebrow: {
     ...typography.caption,

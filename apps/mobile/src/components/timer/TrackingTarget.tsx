@@ -34,6 +34,29 @@ export interface TrackingTargetProps {
 
 export function TrackingTarget({ label, sublabel, accentColor, editable, onPress }: TrackingTargetProps) {
   if (label === null) {
+    // The empty slot has to respect `editable` too. This branch used to
+    // return before the check further down, so a running session whose title
+    // hadn't resolved yet rendered a live "Choose what to track" CTA that
+    // opened the picker — offering a re-target mid-run that the timer doesn't
+    // support.
+    if (!editable) {
+      return (
+        <View style={styles.emptySlot} accessible accessibilityLabel="Tracking an unnamed session">
+          <View style={styles.emptyGlyph}>
+            {/* `timer` is the Icon set's Clock glyph — there is no bare
+                "clock" name; see src/components/ui/Icon.tsx. */}
+            <Icon name="timer" size={18} color={colors.mutedForeground} />
+          </View>
+          <View style={styles.body}>
+            <Text style={styles.emptyTitle}>Untitled session</Text>
+            <Text style={styles.emptySubtitle} numberOfLines={1}>
+              The clock is running
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
     return (
       <Pressable
         style={({ pressed }) => [styles.emptySlot, pressed && styles.pressed]}
