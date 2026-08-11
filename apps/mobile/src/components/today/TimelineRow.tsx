@@ -8,10 +8,12 @@
 // three blocks read as "a day" rather than as three unrelated rows, which is
 // the whole point of putting them on Today at all.
 
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { formatDuration, formatTime12h, timeToMinutes, type ScheduleBlock } from "@goalslot/shared";
 
+import { PressableScale } from "@/components/today/PressableScale";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 export interface TimelineRowProps {
@@ -20,6 +22,8 @@ export interface TimelineRowProps {
   isLast: boolean;
   /** This block is happening right now — same block the hero is showing. */
   isNow: boolean;
+  /** Opens the Schedule tab. Omit to render the row as static content. */
+  onPress?: () => void;
 }
 
 /** "9:00 AM" -> ["9:00", "AM"] so the gutter can set them at two different sizes. */
@@ -28,17 +32,29 @@ function splitClock(time: string): [string, string] {
   return [clock, meridiem ?? ""];
 }
 
-export function TimelineRow({ block, isLast, isNow }: TimelineRowProps) {
+// Memoised because the Today screen re-renders once a minute to keep its
+// "right now" state honest; without this, every block in the day's timeline
+// re-renders on every tick even though only the active one can change.
+export const TimelineRow = memo(function TimelineRow({ block, isLast, isNow, onPress }: TimelineRowProps) {
   const [clock, meridiem] = splitClock(block.startTime);
   const minutes = Math.max(0, timeToMinutes(block.endTime) - timeToMinutes(block.startTime));
 
+  // A row that looks like a list row but swallows taps reads as a broken
+  // control on touch. Falls back to a plain View when the caller has nowhere
+  // to send the user.
+  const Container = onPress ? PressableScale : View;
+  const pressProps = onPress
+    ? ({ onPress, accessibilityRole: "button", accessibilityHint: "Opens your schedule" } as const)
+    : null;
+
   return (
-    <View
+    <Container
       style={styles.row}
       accessible
       accessibilityLabel={`${isNow ? "Now, " : ""}${block.title}, ${formatTime12h(
         block.startTime,
       )} to ${formatTime12h(block.endTime)}${block.category ? `, ${block.category}` : ""}`}
+      {...pressProps}
     >
       <View style={styles.gutter}>
         <Text style={[styles.clock, isNow && styles.clockNow]}>{clock}</Text>
@@ -77,9 +93,9 @@ export function TimelineRow({ block, isLast, isNow }: TimelineRowProps) {
           ) : null}
         </View>
       </View>
-    </View>
+    </Container>
   );
-}
+});
 
 const GUTTER_WIDTH = 52;
 const RAIL_WIDTH = 16;
@@ -102,7 +118,12 @@ const styles = StyleSheet.create({
     color: colors.foreground,
   },
   clockNow: {
-    color: colors.primaryForeground,
+    // Was `primaryForeground` (#18181B) — byte-identical to `foreground`,
+    // so the "this block is happening now" emphasis rendered no differently
+    // from every other row. `primaryText` (#A16207, yellow-700) is the
+    // token foundation.ts documents as readable brand-colored TEXT; raw
+    // #F2CC0D fails contrast on a light surface.
+    color: colors.primaryText,
   },
   meridiem: {
     ...typography.label,
@@ -150,7 +171,10 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   bodyNow: {
-    backgroundColor: colors.warningMuted,
+    // Brand tint, not the warning tint — "now" is the app's accent moment,
+    // and reusing `warningMuted` here made a normal active block share a
+    // surface color with genuine warnings.
+    backgroundColor: colors.primaryMuted,
     borderRadius: radii.md,
     borderBottomWidth: 0,
   },
