@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { router, Slot } from "expo-router";
+import { router, Slot, type Href } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
@@ -58,7 +58,11 @@ function AppGate() {
     }
     const route = resolveNotificationRoute(lastNotificationResponse.notification.request.content.data);
     if (route) {
-      router.push(route);
+      // Built at runtime from a notification payload (see ROUTES.* in
+      // deep-links.ts), so it can never be one of expo-router's statically
+      // known literal paths — same `as Href` escape hatch index.tsx already
+      // uses for its own dynamically-referenced routes.
+      router.push(route as Href);
     }
   }, [status, lastNotificationResponse]);
 

@@ -174,7 +174,14 @@ export default function SettingsScreen() {
           {MORE_LINKS.map((link, index) => (
             <Link key={link.href} href={link.href} asChild>
               <Pressable
-                style={[styles.moreRow, index < MORE_LINKS.length - 1 && styles.moreRowDivider]}
+                // Link's `asChild` forwards this Pressable straight into
+                // expo-router's Slot, which throws on an array `style` (see
+                // expo-router/build/ui/Slot.js) — must be flattened here,
+                // not just left as [a, b && c].
+                style={StyleSheet.flatten([
+                  styles.moreRow,
+                  index < MORE_LINKS.length - 1 && styles.moreRowDivider,
+                ])}
                 accessibilityRole="link"
                 accessibilityLabel={link.label}
               >
