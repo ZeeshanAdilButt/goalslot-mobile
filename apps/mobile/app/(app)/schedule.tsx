@@ -269,9 +269,14 @@ export default function ScheduleScreen() {
         )}
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
-        <Icon name="add" size={26} color={colors.primaryForeground} />
-      </Pressable>
+      {/* Hidden on an empty day: ScheduleEmptyState already renders its own
+          "Add your first block" CTA doing the exact same thing, and the FAB's
+          fixed bottom-right position sits directly on top of it otherwise. */}
+      {blockCount > 0 ? (
+        <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
+          <Icon name="add" size={26} color={colors.primaryForeground} />
+        </Pressable>
+      ) : null}
 
       <ScheduleBlockSheet ref={blockSheetRef} />
       <BlockDetailSheet
