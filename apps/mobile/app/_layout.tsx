@@ -3,6 +3,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { router, Slot, type Href } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
+import { useIsRestoring } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 
 import { LoadingState } from "@/components/LoadingState";
@@ -20,6 +21,14 @@ initSentry();
 
 function AppGate() {
   const { status, loadUser } = useAuth();
+
+  // True while the persisted query cache is still being read back off
+  // AsyncStorage. Without this the tree mounts first and the restore lands
+  // second, so every screen runs its first render against an *empty* cache —
+  // `isPending` is true, skeletons appear, and the data they were already
+  // holding pops in a moment later. That's the "loaders when we've got data"
+  // flash: the cache wasn't missing, just late.
+  const isRestoring = useIsRestoring();
 
   // Runs once: checks secure-store for a token left over from a previous
   // launch and resolves it against the API, moving `status` out of
@@ -66,7 +75,7 @@ function AppGate() {
     }
   }, [status, lastNotificationResponse]);
 
-  if (status === "loading") {
+  if (status === "loading" || isRestoring) {
     return <LoadingState message="Loading GoalSlot..." fullScreen />;
   }
 

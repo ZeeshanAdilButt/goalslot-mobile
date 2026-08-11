@@ -20,6 +20,11 @@ interface NotesUiState {
   /** Ensure a note renders expanded (no-op when it already is). Used after
    *  dropping/creating something inside it so the result is visible. */
   expand: (noteId: string) => void;
+  /**
+   * Drop every stored id. For sign-out only (see session-reset.ts): these are
+   * one account's note ids and mean nothing under another.
+   */
+  reset: () => void;
 }
 
 export const useNotesUiStore = create<NotesUiState>()(
@@ -40,6 +45,10 @@ export const useNotesUiStore = create<NotesUiState>()(
         const { collapsedIds } = get();
         if (!collapsedIds.includes(noteId)) return;
         set({ collapsedIds: collapsedIds.filter((id) => id !== noteId) });
+      },
+
+      reset() {
+        set({ collapsedIds: [] });
       },
     }),
     {

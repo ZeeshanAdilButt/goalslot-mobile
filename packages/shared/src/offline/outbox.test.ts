@@ -68,4 +68,50 @@ describe('createOutbox', () => {
     const outboxC = createOutbox(createMemoryStorage())
     expect(await outboxC.getOutboxCount()).toBe(0)
   })
+
+  // clearOutbox backs a security fix: entries carry no record of who queued
+  // them and replay against whatever credentials are current, so anything
+  // surviving a sign-out would be written into the NEXT account to sign in.
+  describe('clearOutbox', () => {
+    it('drops every queued entry', async () => {
+      const outbox = createOutbox(createMemoryStorage())
+      await outbox.addToOutbox(makeEntry('a'))
+      await outbox.addToOutbox(makeEntry('b'))
+
+      await outbox.clearOutbox()
+
+      expect(await outbox.getOutbox()).toEqual([])
+      expect(await outbox.getOutboxCount()).toBe(0)
+    })
+
+    it('clears the backing storage, not just the in-memory view', async () => {
+      // The real leak would be an entry that looks gone but reappears for the
+      // next account when a fresh outbox reads the same storage on relaunch.
+      const storage = createMemoryStorage()
+      const signedOut = createOutbox(storage)
+      await signedOut.addToOutbox(makeEntry('a'))
+      await signedOut.clearOutbox()
+
+      const nextSession = createOutbox(storage)
+      expect(await nextSession.getOutboxCount()).toBe(0)
+    })
+
+    it('is safe on an already-empty outbox', async () => {
+      const outbox = createOutbox(createMemoryStorage())
+      await expect(outbox.clearOutbox()).resolves.toBeUndefined()
+      expect(await outbox.getOutboxCount()).toBe(0)
+    })
+
+    it('cannot be clobbered by an enqueue racing it', async () => {
+      // Both go through the same serialized chain, so the clear must win
+      // whatever the interleaving — otherwise a write landing mid-logout
+      // survives into the next session.
+      const outbox = createOutbox(createMemoryStorage())
+      await outbox.addToOutbox(makeEntry('a'))
+
+      await Promise.all([outbox.addToOutbox(makeEntry('b')), outbox.clearOutbox()])
+
+      expect(await outbox.getOutboxCount()).toBe(0)
+    })
+  })
 })

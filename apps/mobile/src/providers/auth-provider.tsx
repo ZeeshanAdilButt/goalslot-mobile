@@ -14,6 +14,7 @@ import type { User } from "@goalslot/shared";
 
 import { apiClient, setSessionExpiredHandler } from "../lib/api-client";
 import { secureTokenStorage } from "../lib/secure-token-storage";
+import { resetSessionState } from "../lib/session-reset";
 
 // Mobile keyboards/autofill routinely tack on a leading/trailing space or
 // leave stray capitalization on email addresses (autocapitalize, swipe-typed
@@ -52,6 +53,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   async login(email, password) {
     const response = await apiClient.auth.login({ email: normalizeEmail(email), password });
     const { accessToken, refreshToken, user } = response.data;
+    // Before the new session's tokens exist, so nothing can fetch and cache
+    // under the incoming account while the previous account's caches are
+    // still being torn down. Also covers the case logout can't: a process
+    // kill between sign-out and sign-in never runs the logout path at all.
+    await resetSessionState();
     await secureTokenStorage.setTokens(accessToken, refreshToken);
     set({ user, status: "authenticated" });
   },
@@ -59,12 +65,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   async register(data) {
     const response = await apiClient.auth.register({ ...data, email: normalizeEmail(data.email) });
     const { accessToken, refreshToken, user } = response.data;
+    await resetSessionState();
     await secureTokenStorage.setTokens(accessToken, refreshToken);
     set({ user, status: "authenticated" });
   },
 
   async logout() {
+    // Tokens are only the key to the door — the previous account's goals,
+    // tasks and queued offline writes live in caches behind it. Clearing
+    // just the tokens is what let the next person to sign in on this device
+    // see the last person's data. See src/lib/session-reset.ts.
     await secureTokenStorage.clear();
+    await resetSessionState();
     set({ user: null, status: "unauthenticated" });
   },
 

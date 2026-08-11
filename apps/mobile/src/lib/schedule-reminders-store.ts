@@ -28,6 +28,11 @@ interface ScheduleRemindersState extends ScheduleRemindersPersistedState {
   disableAll: (blockIds: string[]) => void;
   /** Bulk helper for "turn on all" — removes every one of these ids. */
   enableAll: (blockIds: string[]) => void;
+  /**
+   * Drop every stored id. For sign-out only (see session-reset.ts): these are
+   * one account's schedule-block ids and mean nothing under another.
+   */
+  reset: () => void;
 }
 
 export const useScheduleRemindersStore = create<ScheduleRemindersState>()(
@@ -62,6 +67,10 @@ export const useScheduleRemindersStore = create<ScheduleRemindersState>()(
           const remove = new Set(blockIds);
           return { disabledBlockIds: state.disabledBlockIds.filter((id) => !remove.has(id)) };
         });
+      },
+
+      reset() {
+        set({ disabledBlockIds: [] });
       },
     }),
     {
