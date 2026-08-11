@@ -1,11 +1,18 @@
 // Edit sheet for an existing goal: title, category, target hours, deadline,
-// color. Mirrors QuickAddSheet's @gorhom/bottom-sheet shell (same backdrop /
-// keyboard-behavior props, same input styling), but goals.tsx's row-tap flow
-// needs to hand this component a specific Goal to edit rather than "open
-// blank" — so instead of forwarding the raw BottomSheetModal ref
+// status, color. Mirrors QuickAddSheet's @gorhom/bottom-sheet shell (same
+// backdrop / keyboard-behavior props, same input styling), but goals.tsx's
+// row-tap flow needs to hand this component a specific Goal to edit rather
+// than "open blank" — so instead of forwarding the raw BottomSheetModal ref
 // (QuickAddSheet's shape, whose present() takes no args) this exposes a
 // small custom imperative handle: present(goal) seeds the form from that
 // goal and opens the sheet, dismiss() closes it without saving.
+//
+// Field set matches dw-time-web's goal-modal.tsx column layout, minus the two
+// things that need editors mobile doesn't have yet (rich-text description,
+// label autocomplete) — see the handover. Status is included because
+// goal-modal.tsx renders that select whenever it is editing rather than
+// creating, and it's the only way to pause or un-pause a goal; without it
+// the Paused tab on goals.tsx would be a read-only dead end.
 //
 // Submit follows the same optimistic-patch -> apiClient.goals.update() ->
 // invalidate-on-success / rollback-on-failure shape as goals.tsx's
@@ -23,42 +30,20 @@ import {
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
 
-import { updateGoalSchema, type Goal, type UpdateGoalInput } from "@goalslot/shared";
+import { GOAL_STATUS_OPTIONS, updateGoalSchema, type Goal, type GoalStatus, type UpdateGoalInput } from "@goalslot/shared";
 
 import { apiClient } from "../lib/api-client";
 import { goalQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { formatDeadlineLong, GoalColorPicker, toDeadlineKey } from "@/components/goals";
+import { DEFAULT_SWATCH, SegmentedControl } from "@/components/lists";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 
 export interface EditGoalSheetRef {
   present: (goal: Goal) => void;
   dismiss: () => void;
-}
-
-// Fixed swatch palette for the goal's color dot — no color-picker library is
-// installed, and QuickAddSheet's PLACEHOLDER_COLOR (#94A3B8) is the only
-// other color constant in this app, so this is a small standalone set rather
-// than reusing goal.ts's LABEL_COLORS (those are pastel label backgrounds
-// with a separate textColor, a different design token than a solid dot).
-const COLOR_OPTIONS = ["#1F2933", "#B3261E", "#0F766E", "#7C3AED", "#EA580C", "#0EA5E9", "#DB2777", "#65A30D"];
-
-/**
- * Formats a "YYYY-MM-DD" key as a friendly label, e.g. "Dec 31, 2026". Parsed
- * via the date parts rather than `new Date(dateStr)` — the bare-date form is
- * parsed as UTC midnight, which renders as the previous day for anyone
- * behind UTC (same trap SessionHistory.tsx's formatDayHeading documents, and
- * the same `{ month, day, year }` option shape it and reports/aggregate.ts
- * use for other date labels in this app).
- */
-function formatDeadlineLabel(dateKey: string): string {
-  const [year, month, day] = dateKey.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 }
 
 export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditGoalSheet(_props, ref) {
@@ -68,8 +53,10 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [targetHours, setTargetHours] = useState("");
+  /** Always "" or a canonical "YYYY-MM-DD" key — never a raw API instant. */
   const [deadline, setDeadline] = useState("");
-  const [color, setColor] = useState<string>(COLOR_OPTIONS[0]);
+  const [status, setStatus] = useState<GoalStatus>("ACTIVE");
+  const [color, setColor] = useState<string>(DEFAULT_SWATCH);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | null>(null);
@@ -79,6 +66,14 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   // though most edits don't touch the deadline.
   const [deadlinePickerOpen, setDeadlinePickerOpen] = useState(false);
 
+  /**
+   * The calendar day currently PERSISTED on this goal, normalised the same
+   * way. Kept separately from the editable `deadline` so the form can tell
+   * "the user cleared a saved deadline" (which the API can't express — see
+   * the notice below) apart from "the user cleared a pick they hadn't saved".
+   */
+  const savedDeadlineKey = useMemo(() => toDeadlineKey(goal?.deadline), [goal?.deadline]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -87,8 +82,16 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         setTitle(g.title);
         setCategory(g.category);
         setTargetHours(String(g.targetHours));
-        setDeadline(g.deadline ?? "");
-        setColor(g.color || COLOR_OPTIONS[0]);
+        // `g.deadline` arrives as a full ISO instant (the API column is a
+        // Prisma DateTime), not the "YYYY-MM-DD" key DatePicker and the label
+        // formatter both expect. Feeding it in raw produced the literal text
+        // "Invalid Date" in the summary row and left the calendar with no day
+        // highlighted, because `value === cell.key` could never match. web
+        // normalises at exactly this boundary: goal-modal.tsx:118 —
+        // `deadline: goal.deadline ? goal.deadline.split('T')[0] : ''`.
+        setDeadline(toDeadlineKey(g.deadline) ?? "");
+        setStatus(g.status);
+        setColor(g.color || DEFAULT_SWATCH);
         setError(null);
         setDeadlinePickerOpen(false);
         sheetRef.current?.present();
@@ -106,10 +109,9 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const snapPoints = useMemo(() => ["85%"], []);
 
   const parsedTargetHours = Number(targetHours);
-  // No format/validity check needed here anymore: `deadline` is now only
-  // ever set by DatePicker (always a well-formed "YYYY-MM-DD") or cleared to
-  // "" by the "No deadline" action below, unlike the old free-text field
-  // which needed DATE_PATTERN to catch typos.
+  // No format/validity check needed for `deadline`: it is only ever set by
+  // DatePicker (always a well-formed "YYYY-MM-DD"), by `toDeadlineKey` on
+  // open, or cleared to "" by the Clear action below.
   const canSubmit =
     !isSubmitting &&
     goal !== null &&
@@ -117,6 +119,19 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     category.trim().length > 0 &&
     Number.isFinite(parsedTargetHours) &&
     parsedTargetHours >= 1;
+
+  /**
+   * True only in the one case where the deadline control lies: the goal has a
+   * deadline on the server and the user has cleared it locally. There is no
+   * wire representation for "remove this deadline" —
+   * dw-time-api/src/modules/goals/goals.service.ts:252 is
+   * `deadline: dto.deadline ? new Date(dto.deadline) : undefined`, and Prisma
+   * reads `undefined` as "leave the column alone". Web has the same gap and
+   * simply blanks its date input; on mobile the Clear action reads as a
+   * committed destructive edit, so the form says what will actually happen
+   * rather than letting the value silently reappear on the next fetch.
+   */
+  const clearingSavedDeadline = savedDeadlineKey !== null && deadline === "";
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
@@ -128,6 +143,9 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const handleCancel = useCallback(() => {
     sheetRef.current?.dismiss();
   }, []);
+
+  /** Editing any field clears a stale validation message. */
+  const clearError = useCallback(() => setError(null), []);
 
   const handleSubmit = useCallback(async () => {
     if (!goal || !canSubmit) return;
@@ -142,12 +160,11 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         title: trimmedTitle,
         category: trimmedCategory,
         targetHours: parsedTargetHours,
+        status,
         color,
-        // Only sent when non-empty: an omitted key leaves the server-side
-        // deadline untouched on this PATCH-style update rather than clearing
-        // it, so a cleared field here can't un-set an existing deadline —
-        // an acceptable gap for this pass (same limitation applies to the
-        // task sheet's due date).
+        // Only sent when non-empty — see `clearingSavedDeadline` above for
+        // why an omitted key can't clear a stored deadline, and what the form
+        // tells the user about it.
         ...(trimmedDeadline ? { deadline: trimmedDeadline } : {}),
       });
     } catch {
@@ -159,23 +176,32 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     // updateGoalSchema's `labels` field (LabelInput[] — {name, color}) is a
     // write-only shape for the create/label-attach flow, structurally
     // incompatible with Goal.labels (GoalLabel[], the server's expanded
-    // join-row shape) — and this form only ever edits the four fields below
-    // anyway.
+    // join-row shape) — and this form only ever edits the fields below anyway.
     const goalPatch: Partial<Goal> = {
       title: payload.title,
       category: payload.category,
       targetHours: payload.targetHours,
+      status: payload.status,
       color: payload.color,
       ...(payload.deadline !== undefined ? { deadline: payload.deadline } : {}),
     };
 
-    // Editing never changes status here, so the goal's current status tells
-    // us exactly which goals.tsx tab (and therefore which cached list query)
-    // it lives under — same filters shape as goals.tsx's `{ status: tab }`.
+    // The goal's status BEFORE this edit tells us which goals.tsx tab (and so
+    // which cached list query) it currently lives under — same filters shape
+    // as that screen's `{ status: tab }`.
     const listKey = goalQueries.goalQueries.list({ status: goal.status });
     const previous = queryClient.getQueryData<Goal[]>(listKey);
+    const statusChanged = payload.status !== undefined && payload.status !== goal.status;
+
     queryClient.setQueryData<Goal[]>(listKey, (existing) =>
-      (existing ?? []).map((g) => (g.id === goal.id ? { ...g, ...goalPatch } : g)),
+      statusChanged
+        ? // Now the sheet can change status, an edit can move a goal to a
+          // different tab. Patching it in place would leave a completed goal
+          // sitting in the Active list until the invalidation below landed —
+          // it has to drop out of this list the same way handleComplete drops
+          // it. The destination tab is reconciled from the server.
+          (existing ?? []).filter((g) => g.id !== goal.id)
+        : (existing ?? []).map((g) => (g.id === goal.id ? { ...g, ...goalPatch } : g)),
     );
 
     setIsSubmitting(true);
@@ -190,7 +216,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     } finally {
       setIsSubmitting(false);
     }
-  }, [canSubmit, category, color, deadline, goal, parsedTargetHours, title]);
+  }, [canSubmit, category, color, deadline, goal, parsedTargetHours, status, title]);
 
   return (
     <BottomSheetModal
@@ -218,7 +244,10 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             placeholder="What do you want to work toward?"
             placeholderTextColor={colors.mutedForeground}
             value={title}
-            onChangeText={setTitle}
+            onChangeText={(next) => {
+              clearError();
+              setTitle(next);
+            }}
             onFocus={() => setFocusedField("title")}
             onBlur={() => setFocusedField(null)}
             accessibilityLabel="Goal title"
@@ -232,7 +261,10 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             placeholder="e.g. Fitness"
             placeholderTextColor={colors.mutedForeground}
             value={category}
-            onChangeText={setCategory}
+            onChangeText={(next) => {
+              clearError();
+              setCategory(next);
+            }}
             onFocus={() => setFocusedField("category")}
             onBlur={() => setFocusedField(null)}
             accessibilityLabel="Goal category"
@@ -246,11 +278,15 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             placeholder="e.g. 20"
             placeholderTextColor={colors.mutedForeground}
             value={targetHours}
-            onChangeText={setTargetHours}
+            onChangeText={(next) => {
+              clearError();
+              setTargetHours(next);
+            }}
             onFocus={() => setFocusedField("targetHours")}
             onBlur={() => setFocusedField(null)}
             keyboardType="numeric"
             accessibilityLabel="Target hours"
+            accessibilityHint="Must be at least 1"
           />
         </View>
 
@@ -260,13 +296,25 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             style={styles.deadlineRow}
             onPress={() => setDeadlinePickerOpen((open) => !open)}
             accessibilityRole="button"
-            accessibilityLabel={deadline ? `Change deadline, currently ${formatDeadlineLabel(deadline)}` : "Set a deadline"}
+            accessibilityLabel={
+              deadline ? `Change deadline, currently ${formatDeadlineLong(deadline)}` : "Set a deadline"
+            }
             accessibilityState={{ expanded: deadlinePickerOpen }}
           >
             <Icon name="schedule" size={18} color={colors.mutedForeground} />
-            <Text style={styles.deadlineRowText}>{deadline ? formatDeadlineLabel(deadline) : "No deadline"}</Text>
+            <Text style={styles.deadlineRowText}>{deadline ? formatDeadlineLong(deadline) : "No deadline"}</Text>
             <Icon name={deadlinePickerOpen ? "chevron-down" : "chevron"} size={16} color={colors.mutedForeground} />
           </TouchableOpacity>
+
+          {clearingSavedDeadline ? (
+            <View style={styles.deadlineWarning}>
+              <Icon name="alert" size={14} color={colors.warning} />
+              <Text style={styles.deadlineWarningText}>
+                Deadlines can&apos;t be removed from the app yet — saving now keeps{" "}
+                {formatDeadlineLong(savedDeadlineKey)}. Pick a different date to change it.
+              </Text>
+            </View>
+          ) : null}
 
           {deadlinePickerOpen ? (
             <View style={styles.deadlinePicker}>
@@ -280,7 +328,13 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
                 past deadline on an existing goal, and this picker matches
                 that rather than inventing a stricter mobile-only rule.
               */}
-              <DatePicker value={deadline || null} onChange={setDeadline} />
+              <DatePicker
+                value={deadline || null}
+                onChange={(next) => {
+                  clearError();
+                  setDeadline(next);
+                }}
+              />
               {deadline ? (
                 <TouchableOpacity
                   style={styles.clearDeadlineButton}
@@ -289,7 +343,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
                   accessibilityLabel="Clear deadline"
                 >
                   <Icon name="calendar-off" size={16} color={colors.destructive} />
-                  <Text style={styles.clearDeadlineText}>No deadline</Text>
+                  <Text style={styles.clearDeadlineText}>Clear</Text>
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -297,22 +351,22 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Color</Text>
-          <View style={styles.colorRow}>
-            {COLOR_OPTIONS.map((option) => (
-              <TouchableOpacity
-                key={option}
-                style={[styles.colorSwatch, { backgroundColor: option }, color === option && styles.colorSwatchSelected]}
-                onPress={() => setColor(option)}
-                accessibilityRole="button"
-                accessibilityLabel={`Set goal color to ${option}`}
-                accessibilityState={{ selected: color === option }}
-              />
-            ))}
-          </View>
+          <Text style={styles.label}>Status</Text>
+          {/* goal-modal.tsx:302-317 renders this select only when editing an
+              existing goal, which is the only mode this sheet has. */}
+          <SegmentedControl options={GOAL_STATUS_OPTIONS} value={status} onChange={setStatus} />
         </View>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <View style={styles.field}>
+          <Text style={styles.label}>Color</Text>
+          <GoalColorPicker value={color} onChange={setColor} />
+        </View>
+
+        {error ? (
+          <Text style={styles.error} accessibilityRole="alert">
+            {error}
+          </Text>
+        ) : null}
 
         <View style={styles.footer}>
           <TouchableOpacity
@@ -320,6 +374,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             onPress={handleCancel}
             accessibilityRole="button"
             accessibilityLabel="Cancel"
+            accessibilityHint="Closes without saving"
           >
             <Text style={styles.cancelText}>Cancel</Text>
           </TouchableOpacity>
@@ -329,7 +384,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
             disabled={!canSubmit}
             accessibilityRole="button"
             accessibilityLabel="Save goal changes"
-            accessibilityState={{ disabled: !canSubmit }}
+            accessibilityState={{ disabled: !canSubmit, busy: isSubmitting }}
           >
             <Text style={styles.submitText}>{isSubmitting ? "Saving…" : "Save changes"}</Text>
           </TouchableOpacity>
@@ -402,6 +457,21 @@ const styles = StyleSheet.create({
     color: colors.foreground,
     flex: 1,
   },
+  deadlineWarning: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: radii.md,
+    backgroundColor: colors.warningMuted,
+  },
+  deadlineWarningText: {
+    ...typography.bodySmall,
+    color: colors.foreground,
+    flex: 1,
+    lineHeight: 17,
+  },
   deadlinePicker: {
     marginTop: spacing.sm,
     padding: spacing.sm,
@@ -424,24 +494,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: colors.destructive,
   },
-  colorRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm + spacing.xxs,
-  },
-  colorSwatch: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.full,
-    borderWidth: 2,
-    borderColor: "transparent",
-  },
-  colorSwatchSelected: {
-    borderColor: colors.primary,
-  },
   error: {
+    ...typography.bodySmall,
     color: colors.destructive,
-    fontSize: 13,
   },
   footer: {
     flexDirection: "row",

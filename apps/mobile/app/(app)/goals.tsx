@@ -1,22 +1,24 @@
-// Goals tab: filtered list (Active/Completed) with mark-complete and delete
-// actions, plus the shared QuickAddSheet for title-only creation. Tapping a
-// goal row (not the Done/Delete buttons) opens EditGoalSheet for full edit
-// (title/category/target hours/deadline/color) — see
+// Goals tab: status-filtered list with mark-complete and delete actions, plus
+// the shared QuickAddSheet for title-only creation. Tapping a goal row (not
+// the Done/Delete buttons) opens EditGoalSheet for the full edit
+// (title/category/target hours/deadline/status/color) — see
 // src/components/EditGoalSheet.tsx.
 //
 // Visual language is ported from dw-time-web's goals page:
-//   - src/features/goals/components/goal-item.tsx — the card itself: a
-//     `border-l-[5px]` stripe in `goal.color`, a category eyebrow preceded by
-//     a status dot, the title, and a progress block pinned to the bottom
-//     showing `loggedHours.toFixed(1)h / targetHoursh` beside a big percent.
-//     The bar + number pair is folded into one ProgressRing here (see
-//     src/components/lists/ProgressRing.tsx for why).
-//   - src/features/goals/components/goals-stats.tsx — the StatCard strip above
-//     the list, reproduced as a scroll-away summary row.
-//   - src/features/goals/components/goals-filters.tsx — the status filter,
-//     which is a <Select> on web and a segmented control here.
+//   - src/features/goals/components/goals-filters.tsx:41-52 — the status
+//     filter. Web offers ACTIVE / COMPLETED / PAUSED in a <Select>; this is
+//     the same three as a segmented control, because hiding a short fixed
+//     list behind a tap is pointless on a phone. PAUSED used to be missing
+//     here entirely, which meant a goal paused on web simply vanished from
+//     the phone with no tab showing it and no control to bring it back.
+//   - src/features/goals/components/goals-stats.tsx — the StatCard strip
+//     above the list, reproduced as a scroll-away summary row, and the
+//     Active/Paused/Completed counts, which ride on the segments themselves
+//     rather than costing three more tiles.
 //   - src/features/goals/components/goals-list.tsx:32-54 — the empty state's
 //     title/description/CTA structure.
+//   - src/features/goals/components/goal-item.tsx — the card itself; see
+//     src/components/goals/GoalCard.tsx.
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
@@ -26,20 +28,18 @@ import { useQuery } from "@tanstack/react-query";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 
-import { calculateProgressPercent, updateGoalSchema, type Goal, type GoalStatus } from "@goalslot/shared";
-
-import { EditGoalSheet, ErrorState, QuickAddSheet, SkeletonListItem, type EditGoalSheetRef } from "@/components";
-import { Icon } from "@/components/ui/Icon";
 import {
-  ListCard,
-  ListEmptyState,
-  MetaChip,
-  ProgressRing,
-  safeColor,
-  ScreenHeader,
-  SegmentedControl,
-  StatusPill,
-} from "@/components/lists";
+  GOAL_STATUS_OPTIONS,
+  getLocalDateString,
+  updateGoalSchema,
+  type Goal,
+  type GoalStatus,
+} from "@goalslot/shared";
+
+import { EditGoalSheet, ErrorState, QuickAddSheet, Skeleton, SkeletonCard, type EditGoalSheetRef } from "@/components";
+import { Icon } from "@/components/ui/Icon";
+import { GoalCard, GoalsSummary, summariseGoals, SUMMARY_HEIGHT } from "@/components/goals";
+import { ListEmptyState, ScreenHeader, SegmentedControl, type SegmentOption } from "@/components/lists";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { goalQueries } from "@/lib/queries";
@@ -47,44 +47,45 @@ import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
-// The two tabs this screen offers. PAUSED goals (the third GoalStatus value)
-// have no tab of their own in v1 — out of scope per the project brief.
-type GoalTab = Extract<GoalStatus, "ACTIVE" | "COMPLETED">;
+/** Lower-case name of each tab, for the summary strip and empty copy. */
+const STATUS_WORD: Record<GoalStatus, string> = {
+  ACTIVE: "active",
+  PAUSED: "paused",
+  COMPLETED: "completed",
+};
 
-const TABS: { value: GoalTab; label: string }[] = [
-  { value: "ACTIVE", label: "Active" },
-  { value: "COMPLETED", label: "Completed" },
-];
-
-const EMPTY_MESSAGE: Record<GoalTab, string> = {
-  ACTIVE: "No active goals yet — add one to get started",
+const EMPTY_TITLE: Record<GoalStatus, string> = {
+  ACTIVE: "No active goals yet",
+  PAUSED: "Nothing on hold",
   COMPLETED: "No completed goals yet",
 };
 
 /** Supporting line under the empty-state headline — web goals-list.tsx:38-42. */
-const EMPTY_DESCRIPTION: Record<GoalTab, string> = {
+const EMPTY_DESCRIPTION: Record<GoalStatus, string> = {
   ACTIVE: "Create your first goal to start tracking your progress. Log hours against it and watch the ring fill up.",
+  PAUSED: "Goals you set aside land here, holding their hours until you pick them back up.",
   COMPLETED: "Goals you finish will be archived here, with the hours you put into each one.",
 };
 
-const SKELETON_ROWS = 6;
-
-/** Deadline as "Mar 4" — web formats with date-fns `MMM d, yyyy`; the year is
- *  dropped here because a phone chip has no room for it. */
-function formatDeadline(deadline: string): string {
-  const parsed = new Date(deadline);
-  if (Number.isNaN(parsed.getTime())) return deadline;
-  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+const SKELETON_ROWS = 5;
 
 export default function GoalsScreen() {
-  const [tab, setTab] = useState<GoalTab>("ACTIVE");
+  const [tab, setTab] = useState<GoalStatus>("ACTIVE");
   const analytics = useAnalytics();
   const quickAddRef = useRef<BottomSheetModal>(null);
   const editGoalRef = useRef<EditGoalSheetRef>(null);
 
+  // Today, as a "YYYY-MM-DD" key. Every row is handed the same value so a
+  // long list can't disagree with itself about whether a deadline is overdue.
+  // Refreshed on focus rather than on a timer: the app sitting open past
+  // midnight is the only way this goes stale, and returning to the tab is the
+  // next thing that happens after that. Setting the same string is a React
+  // bailout, so this costs nothing on a normal focus.
+  const [todayKey, setTodayKey] = useState(() => getLocalDateString());
+
   useFocusEffect(
     useCallback(() => {
+      setTodayKey(getLocalDateString());
       analytics.track({ name: "screenViewed", payload: { screenName: "goals" } });
     }, [analytics]),
   );
@@ -93,13 +94,40 @@ export default function GoalsScreen() {
   // `isPending` (no cached data yet) drives the skeleton; a screen returning
   // to this tab with data already in the query cache renders instantly with
   // `isPending: false`, so no blocking skeleton flashes on cached-first loads.
+  // Never `isLoading`/`isFetching` here — both are true on a background
+  // revalidation and would blank a perfectly good list on every revisit.
   const { data, isPending, isError, isFetching, refetch } = useQuery(goalQueries.list(filters));
+
+  // Web spends three StatCards on these counts (goals-stats.tsx:40-44). One
+  // extra query, and deliberately not part of any loading gate: if /goals/stats
+  // is slow or fails, the segments simply render without their badges instead
+  // of holding up the list.
+  const statsQuery = useQuery(goalQueries.stats());
+
+  // GOAL_STATUS_OPTIONS (packages/shared/src/types/goal.ts) is the same
+  // ACTIVE / PAUSED / COMPLETED list, in the same order, that web feeds its
+  // status <Select> — reused rather than re-typed so the two can't drift.
+  const tabOptions = useMemo<SegmentOption<GoalStatus>[]>(() => {
+    const stats = statsQuery.data;
+    return GOAL_STATUS_OPTIONS.map((entry) => ({
+      ...entry,
+      count:
+        stats === undefined
+          ? undefined
+          : entry.value === "ACTIVE"
+            ? stats.active
+            : entry.value === "PAUSED"
+              ? stats.paused
+              : stats.completed,
+    }));
+  }, [statsQuery.data]);
 
   // Both mutations below only ever touch the currently-viewed tab's list
   // query — the completed/deleted goal simply drops out of it. The
   // post-success `invalidateQueries` on `goalQueries.goalQueries.all`
-  // reconciles the *other* tab (e.g. a completed goal reappearing under
-  // Completed) against the server instead of hand-patching every cached key.
+  // reconciles the *other* tabs (e.g. a completed goal reappearing under
+  // Completed, and the stats counts) against the server instead of
+  // hand-patching every cached key.
   const listKey = useMemo(() => goalQueries.goalQueries.list(filters), [filters]);
 
   const removeFromCurrentList = useCallback(
@@ -163,54 +191,69 @@ export default function GoalsScreen() {
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<Goal>) => (
-      <GoalRow goal={item} index={index} onComplete={handleComplete} onDelete={confirmDelete} onEdit={openEdit} />
+      <GoalCard
+        goal={item}
+        index={index}
+        todayKey={todayKey}
+        onComplete={handleComplete}
+        onDelete={confirmDelete}
+        onEdit={openEdit}
+      />
     ),
-    [confirmDelete, handleComplete, openEdit],
+    [confirmDelete, handleComplete, openEdit, todayKey],
   );
 
-  // Mirrors goals-stats.tsx's StatCard strip: the three numbers worth knowing
-  // before you read any individual row. Scrolls away with the list rather
-  // than permanently eating vertical space on a phone.
-  const summary = useMemo(() => {
-    if (!data || data.length === 0) return null;
-    const logged = data.reduce((total, goal) => total + goal.loggedHours, 0);
-    const target = data.reduce((total, goal) => total + goal.targetHours, 0);
-    const averageProgress = Math.round(
-      data.reduce((total, goal) => total + calculateProgressPercent(goal.loggedHours, goal.targetHours), 0) /
-        data.length,
-    );
-    return { count: data.length, logged, target, averageProgress };
-  }, [data]);
+  const goals = data ?? [];
+  const summary = useMemo(() => summariseGoals(data), [data]);
 
   const listHeader = useMemo(() => {
     if (!summary) return null;
     return (
-      <View style={styles.summaryRow}>
-        <SummaryStat label={summary.count === 1 ? "Goal" : "Goals"} value={String(summary.count)} />
-        <View style={styles.summaryDivider} />
-        <SummaryStat label="Logged" value={`${summary.logged.toFixed(1)}h`} />
-        <View style={styles.summaryDivider} />
-        <SummaryStat label="Avg" value={`${summary.averageProgress}%`} accent />
-      </View>
+      <>
+        {/* A failed background refetch must not take the screen away: the
+            cached list below is still the last thing the server said, so the
+            failure is reported as a retry strip above it instead of replacing
+            real content with an error page. */}
+        {isError ? <StaleNotice onRetry={() => void refetch()} /> : null}
+        <GoalsSummary data={summary} statusLabel={STATUS_WORD[tab]} />
+      </>
     );
-  }, [summary]);
+  }, [isError, refetch, summary, tab]);
+
+  // A failure only takes over the screen when there is nothing cached to show
+  // (`!data`); with cached goals in hand the list stays and StaleNotice
+  // reports the failure instead.
+  const showError = isError && !data;
+  const showEmpty = !isPending && !showError && goals.length === 0;
+  // Only the Active tab's empty state carries a CTA (web does the same —
+  // goals-list.tsx:44-52), and where it does, the FAB is hidden: both do the
+  // exact same thing and the FAB's fixed bottom-right position lands on top
+  // of the centred CTA. Same fix as commit 2d1806c on the Schedule tab.
+  const emptyStateHasCta = showEmpty && tab === "ACTIVE";
 
   let content: React.ReactNode;
   if (isPending) {
     content = (
       <View style={styles.skeletonWrap}>
+        {/* Reserves the summary strip's exact height so the rows below don't
+            jump down when real data lands. */}
+        <Skeleton width="100%" height={SUMMARY_HEIGHT} borderRadius={radii.lg} style={styles.summarySkeleton} />
         {Array.from({ length: SKELETON_ROWS }).map((_, index) => (
-          <SkeletonListItem key={index} />
+          // SkeletonCard, not SkeletonListItem: Skeleton.tsx:152-159 says it
+          // was written for "the elevated-card row shape goals.tsx renders",
+          // and this screen was the one place still using the thin variant, so
+          // the placeholder read as a different list than the one that arrived.
+          <SkeletonCard key={index} />
         ))}
       </View>
     );
-  } else if (isError) {
+  } else if (showError) {
     content = <ErrorState message="Couldn't load goals." onRetry={() => void refetch()} />;
-  } else if (!data || data.length === 0) {
+  } else if (showEmpty) {
     content = (
       <ListEmptyState
         variant="goals"
-        title={EMPTY_MESSAGE[tab]}
+        title={EMPTY_TITLE[tab]}
         description={EMPTY_DESCRIPTION[tab]}
         actionLabel={tab === "ACTIVE" ? "Create goal" : undefined}
         onAction={tab === "ACTIVE" ? openQuickAdd : undefined}
@@ -219,7 +262,7 @@ export default function GoalsScreen() {
   } else {
     content = (
       <FlashList
-        data={data}
+        data={goals}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         ListHeaderComponent={listHeader}
@@ -235,27 +278,33 @@ export default function GoalsScreen() {
 
   return (
     // edges={["top"]} — every route in app/(app)/_layout.tsx sets
-    // `headerShown: false`, so without this the segmented control renders
-    // underneath the status bar / notch.
+    // `headerShown: false`, so without this the header renders underneath the
+    // status bar / notch. ScreenHeader then reserves the right-hand gutter for
+    // the layout's floating hamburger and drops the segmented control onto its
+    // own row below the title, which is what keeps either from colliding with
+    // that button.
     <SafeAreaView style={styles.container} edges={["top"]}>
       <ScreenHeader
         eyebrow="Track"
         title="Goals"
         subtitle="Hours logged against what you said mattered."
-        action={<SegmentedControl options={TABS} value={tab} onChange={setTab} />}
+        action={<SegmentedControl options={tabOptions} value={tab} onChange={setTab} />}
       />
 
       <View style={styles.listArea}>{content}</View>
 
-      <Pressable
-        style={styles.fab}
-        onPress={openQuickAdd}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel="Add goal"
-      >
-        <Icon name="add" size={26} color={colors.primaryForeground} />
-      </Pressable>
+      {emptyStateHasCta ? null : (
+        <Pressable
+          style={styles.fab}
+          onPress={openQuickAdd}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Add goal"
+          accessibilityHint="Opens the quick-add sheet"
+        >
+          <Icon name="add" size={26} color={colors.primaryForeground} />
+        </Pressable>
+      )}
 
       <QuickAddSheet ref={quickAddRef} kind="goal" />
       <EditGoalSheet ref={editGoalRef} />
@@ -263,105 +312,26 @@ export default function GoalsScreen() {
   );
 }
 
-function SummaryStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+/**
+ * Shown above a list that is still rendering cached goals after a refetch
+ * failed. `alert` stands in for a wifi-off glyph, which the icon set doesn't
+ * carry yet (flagged in the handover).
+ */
+function StaleNotice({ onRetry }: { onRetry: () => void }) {
   return (
-    <View style={styles.summaryStat}>
-      <Text style={[styles.summaryValue, accent && styles.summaryValueAccent]}>{value}</Text>
-      <Text style={styles.summaryLabel}>{label}</Text>
-    </View>
-  );
-}
-
-interface GoalRowProps {
-  goal: Goal;
-  index: number;
-  onComplete: (goal: Goal) => void;
-  onDelete: (goal: Goal) => void;
-  onEdit: (goal: Goal) => void;
-}
-
-function GoalRow({ goal, index, onComplete, onDelete, onEdit }: GoalRowProps) {
-  const progress = calculateProgressPercent(goal.loggedHours, goal.targetHours);
-  const accent = safeColor(goal.color, colors.primary);
-  const isActive = goal.status === "ACTIVE";
-
-  return (
-    <ListCard
-      accentColor={accent}
-      index={index}
-      dimmed={!isActive}
-      onPress={() => onEdit(goal)}
-      accessibilityLabel={`Edit "${goal.title}"`}
+    <Pressable
+      style={styles.staleNotice}
+      onPress={onRetry}
+      accessibilityRole="button"
+      accessibilityLabel="Couldn't refresh goals. Showing the last saved copy."
+      accessibilityHint="Tap to try again"
     >
-      <View style={styles.rowTop}>
-        <ProgressRing
-          progress={progress}
-          color={accent}
-          accessibilityLabel={`${progress} percent of "${goal.title}" complete`}
-        />
-
-        <View style={styles.rowBody}>
-          {/* Eyebrow: status dot + category, exactly the pairing in
-              goal-item.tsx:66-79. */}
-          <View style={styles.eyebrowRow}>
-            <View
-              style={[styles.statusDot, { backgroundColor: isActive ? colors.success : colors.mutedForeground }]}
-            />
-            <Text style={styles.category} numberOfLines={1}>
-              {goal.category}
-            </Text>
-          </View>
-
-          <Text style={styles.title} numberOfLines={2}>
-            {goal.title}
-          </Text>
-
-          {/* goal-item.tsx:132-135 — logged hours bold, target muted beside it. */}
-          <Text style={styles.hours}>
-            {goal.loggedHours.toFixed(1)}h<Text style={styles.hoursTarget}> / {goal.targetHours}h</Text>
-          </Text>
-        </View>
-      </View>
-
-      {goal.deadline || (goal.labels && goal.labels.length > 0) ? (
-        <View style={styles.chipRow}>
-          {goal.deadline ? (
-            <MetaChip icon="schedule" tone="warning" label={`Due ${formatDeadline(goal.deadline)}`} />
-          ) : null}
-          {/* goal-item.tsx:108-120 caps the label list at four. */}
-          {(goal.labels ?? []).slice(0, 4).map((goalLabel) => (
-            <MetaChip key={goalLabel.label.id} label={goalLabel.label.name} accentColor={goalLabel.label.color} />
-          ))}
-        </View>
-      ) : null}
-
-      <View style={styles.actionRow}>
-        {isActive ? (
-          <Pressable
-            style={styles.completeButton}
-            onPress={() => onComplete(goal)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Mark "${goal.title}" complete`}
-          >
-            <Icon name="check" size={15} color={colors.success} />
-            <Text style={styles.completeButtonText}>Done</Text>
-          </Pressable>
-        ) : (
-          <StatusPill label="Completed" tone="success" />
-        )}
-
-        <Pressable
-          style={styles.deleteButton}
-          onPress={() => onDelete(goal)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Delete "${goal.title}"`}
-        >
-          <Icon name="trash" size={16} color={colors.destructive} />
-        </Pressable>
-      </View>
-    </ListCard>
+      <Icon name="alert" size={14} color={colors.warning} />
+      <Text style={styles.staleNoticeText} numberOfLines={1}>
+        Couldn&apos;t refresh — showing saved goals
+      </Text>
+      <Icon name="refresh" size={14} color={colors.mutedForeground} />
+    </Pressable>
   );
 }
 
@@ -383,115 +353,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
   },
-
-  // --- Summary strip (web: goals-stats.tsx StatCard row) ---
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
+  summarySkeleton: {
     marginBottom: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  summaryStat: {
-    flex: 1,
-    alignItems: "center",
-    gap: spacing.xxs,
-  },
-  summaryValue: {
-    ...typography.title,
-    color: colors.foreground,
-  },
-  summaryValueAccent: {
-    color: colors.primaryDark,
-  },
-  summaryLabel: {
-    ...typography.label,
-    color: colors.mutedForeground,
-  },
-  summaryDivider: {
-    width: 1,
-    height: 26,
-    backgroundColor: colors.border,
   },
 
-  // --- Goal card ---
-  rowTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.lg,
-  },
-  rowBody: {
-    flex: 1,
-    gap: spacing.xxs,
-  },
-  eyebrowRow: {
+  staleNotice: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.warningMuted,
+    backgroundColor: colors.warningMuted,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  category: {
-    ...typography.label,
-    color: colors.mutedForeground,
-    flexShrink: 1,
-  },
-  title: {
-    ...typography.title,
-    color: colors.foreground,
-    lineHeight: 21,
-  },
-  hours: {
+  staleNoticeText: {
     ...typography.bodySmall,
-    fontWeight: "700",
+    fontWeight: "600",
     color: colors.foreground,
-    marginTop: spacing.xxs,
+    flex: 1,
   },
-  hoursTarget: {
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  chipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-  },
-  actionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  completeButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    minHeight: minTouchTarget - spacing.md,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radii.full,
-    backgroundColor: colors.successMuted,
-  },
-  completeButtonText: {
-    ...typography.caption,
-    color: colors.success,
-  },
-  deleteButton: {
-    width: minTouchTarget - spacing.xs,
-    height: minTouchTarget - spacing.xs,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radii.full,
-  },
+
   fab: {
     position: "absolute",
     right: spacing.xl,
