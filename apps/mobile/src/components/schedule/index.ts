@@ -6,7 +6,9 @@ export { BlockDetailSheet, type BlockDetailSheetProps } from "./BlockDetailSheet
 export { DayStrip, type DayStripProps } from "./DayStrip";
 export { NowIndicator, type NowIndicatorProps } from "./NowIndicator";
 export { ScheduleBlockSheet, type ScheduleBlockSheetPresentOptions, type ScheduleBlockSheetRef } from "./ScheduleBlockSheet";
-export { ScheduleEmptyState, type ScheduleEmptyStateProps } from "./ScheduleEmptyState";
+// ScheduleEmptyState is deliberately gone: the screen now renders the real
+// hour grid on an empty day (see schedule.tsx's note on why the illustrated
+// card was dropped), so the component had no remaining call site.
 export { Timeline, type TimelineProps } from "./Timeline";
 export { TimelineBlock, type TimelineBlockProps } from "./TimelineBlock";
 export { TimelineSkeleton } from "./TimelineSkeleton";

@@ -79,6 +79,15 @@ export default function ScheduleScreen() {
   const detailRef = useRef<BottomSheetModal>(null);
   const scrollRef = useRef<ScrollView>(null);
 
+  // Offset the incoming day should land on, consumed once by the ScrollView's
+  // onContentSizeChange. `scrollTo` is clamped against whatever contentSize the
+  // native view still holds at the moment it's called, and a day change swaps
+  // the canvas for one of a different height inside the same commit — so the
+  // effect below can only *ask* for a position; this is what lands it.
+  const pendingScrollY = useRef<number | null>(null);
+  // Day the viewport has already been positioned for. Null until data arrives.
+  const landedDay = useRef<number | null>(null);
+
   // expo-router re-exports react-navigation's useFocusEffect directly (see
   // node_modules/expo-router/build/useFocusEffect.js) — no extra dependency
   // needed. Fires on every tab return, not just the first mount, matching
@@ -108,17 +117,27 @@ export default function ScheduleScreen() {
   const todayIndex = now.getDay();
   const nowMinutes = selectedDay === todayIndex ? now.getHours() * 60 + now.getMinutes() : null;
 
+  // Midnight of the day `now` falls in, as a plain timestamp. The clock above
+  // ticks every minute but the week only turns over at midnight, so keying the
+  // week off a primitive day boundary keeps `weekDates` referentially stable
+  // between ticks — otherwise all seven pills get fresh Date props, and their
+  // React.memo does nothing, sixty times an hour.
+  const todayStart = useMemo(
+    () => new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(),
+    [now],
+  );
+
   // Sunday-first dates for the week `now` falls in, so each day pill can show
   // its real calendar date rather than just a weekday abbreviation.
   const weekDates = useMemo(() => {
-    const sunday = new Date(now);
-    sunday.setDate(now.getDate() - now.getDay());
+    const sunday = new Date(todayStart);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
     return Array.from({ length: DAYS_IN_WEEK }, (_, index) => {
       const date = new Date(sunday);
       date.setDate(sunday.getDate() + index);
       return date;
     });
-  }, [now]);
+  }, [todayStart]);
 
   const blockCounts = useMemo(
     () => Array.from({ length: DAYS_IN_WEEK }, (_, index) => weeklyQuery.data?.[index]?.length ?? 0),
@@ -151,13 +170,23 @@ export default function ScheduleScreen() {
   // window happens to start.
   useEffect(() => {
     if (showSkeleton) return;
+    // Landing the viewport is a once-per-day-selection courtesy, not a standing
+    // behaviour. `entries` gets a fresh identity on every background refetch
+    // (react-query hands back a new object, positionBlocks maps a new array),
+    // and re-running this then would yank the day out from under someone
+    // mid-read every time a refetch resolved.
+    if (landedDay.current === selectedDay) return;
+    landedDay.current = selectedDay;
+
     const target =
       nowMinutes !== null
         ? minuteToY(nowMinutes, dayWindow) - NOW_SCROLL_HEADROOM
         : entries.length > 0
           ? minuteToY(entries[0].startMin, dayWindow) - BLOCK_SCROLL_HEADROOM
           : 0;
-    scrollRef.current?.scrollTo({ y: Math.max(0, target), animated: true });
+    const y = Math.max(0, target);
+    pendingScrollY.current = y;
+    scrollRef.current?.scrollTo({ y, animated: true });
     // `nowMinutes` is read but deliberately NOT a dependency: it changes every
     // minute, and re-scrolling the viewport under someone who is reading their
     // day would be hostile. The effect only fires when the day, the data, or
@@ -194,10 +223,29 @@ export default function ScheduleScreen() {
   // add a slot at proper time... cant select that a slot can be for multiple
   // days"). QuickAddSheet itself is untouched and still used by Today/Goals/
   // Tasks for their own kind="goal"/"task"/"slot" quick-adds.
+  const presentCreateSheet = useCallback(
+    (startTime?: string) => {
+      hapticLight();
+      blockSheetRef.current?.present({ mode: "create", dayOfWeek: selectedDay, startTime });
+    },
+    [selectedDay],
+  );
+
+  // The FAB has no time in mind, so the sheet keeps the web's 09:00 default.
+  // Wrapped rather than passed straight to `onPress`, which would hand the
+  // gesture event in as the start time.
   const openCreateSheet = useCallback(() => {
-    hapticLight();
-    blockSheetRef.current?.present({ mode: "create", dayOfWeek: selectedDay });
-  }, [selectedDay]);
+    presentCreateSheet();
+  }, [presentCreateSheet]);
+
+  // An hour row does have a time in mind — its own label already says "Add a
+  // block at 3 PM", so the sheet has to actually open there.
+  const handlePressEmptyHour = useCallback(
+    (hour: number) => {
+      presentCreateSheet(`${String(hour).padStart(2, "0")}:00`);
+    },
+    [presentCreateSheet],
+  );
 
   const handleSelectBlock = useCallback((block: ScheduleBlock) => {
     setDetailBlock(block);
@@ -210,6 +258,16 @@ export default function ScheduleScreen() {
 
   const dayLabel = DAYS_OF_WEEK_FULL[selectedDay];
   const blockCount = entries.length;
+  const summaryMeta =
+    blockCount === 0
+      ? "Nothing scheduled"
+      : `${blockCount} ${blockCount === 1 ? "block" : "blocks"} · ${formatDuration(scheduledMinutes)}`;
+  // Spoken separately from the visible string: the "·" the eye reads as a
+  // separator is announced as a word (or skipped) by a screen reader.
+  const summaryLabel =
+    blockCount === 0
+      ? `${dayLabel}, nothing scheduled`
+      : `${dayLabel}, ${blockCount} ${blockCount === 1 ? "block" : "blocks"}, ${formatDuration(scheduledMinutes)} scheduled`;
 
   const handleToggleAllReminders = useCallback(() => {
     hapticLight();
@@ -221,7 +279,7 @@ export default function ScheduleScreen() {
       <View style={styles.header}>
         <View style={styles.headerTitleRow}>
           {/* Web PageHeader's eyebrow/title/description trio (schedule-page.tsx). */}
-          <View>
+          <View style={styles.headerTitles}>
             <Text style={styles.eyebrow}>Plan your week</Text>
             <Text style={styles.headerTitle}>Schedule</Text>
           </View>
@@ -234,6 +292,10 @@ export default function ScheduleScreen() {
             style={styles.remindersToggle}
             onPress={handleToggleAllReminders}
             disabled={allBlocks.length === 0}
+            // The circle reads better at 36 than at 44 next to the title, so
+            // the touch target is bought back with hitSlop (36 + 2×8 = 52),
+            // the same trade the floating hamburger makes in _layout.tsx.
+            hitSlop={spacing.sm}
             accessibilityRole="button"
             accessibilityLabel={reminders.allEnabled ? "Turn off all reminders" : "Turn on all reminders"}
             accessibilityState={{ disabled: allBlocks.length === 0 }}
@@ -255,13 +317,12 @@ export default function ScheduleScreen() {
         onSelectDay={setSelectedDay}
       />
 
-      <View style={styles.summaryRow}>
+      {/* One accessible node, not two: the day and its load are a single fact,
+          and reading them as separate stops makes the reader walk the header
+          twice before it reaches the timeline. */}
+      <View style={styles.summaryRow} accessible accessibilityRole="header" accessibilityLabel={summaryLabel}>
         <Text style={styles.summaryDay}>{dayLabel}</Text>
-        <Text style={styles.summaryMeta}>
-          {blockCount === 0
-            ? "Nothing scheduled"
-            : `${blockCount} ${blockCount === 1 ? "block" : "blocks"} · ${formatDuration(scheduledMinutes)}`}
-        </Text>
+        <Text style={styles.summaryMeta}>{summaryMeta}</Text>
       </View>
 
       <ScrollView
@@ -269,6 +330,19 @@ export default function ScheduleScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        // Lands the offset the day-change effect asked for, once the new
+        // canvas has actually been measured. See `pendingScrollY`.
+        onContentSizeChange={() => {
+          const y = pendingScrollY.current;
+          if (y === null) return;
+          pendingScrollY.current = null;
+          scrollRef.current?.scrollTo({ y, animated: false });
+        }}
+        // Once a finger is on the timeline the day has been read on the user's
+        // terms, and no pending landing gets to override that.
+        onScrollBeginDrag={() => {
+          pendingScrollY.current = null;
+        }}
         refreshControl={
           <RefreshControl
             refreshing={weeklyQuery.isFetching && !weeklyQuery.isPending}
@@ -305,7 +379,7 @@ export default function ScheduleScreen() {
             entries={entries}
             nowMinutes={nowMinutes}
             onSelectBlock={handleSelectBlock}
-            onPressEmptyHour={openCreateSheet}
+            onPressEmptyHour={handlePressEmptyHour}
           />
         )}
       </ScrollView>
@@ -329,6 +403,12 @@ export default function ScheduleScreen() {
 }
 
 const FAB_SIZE = 56;
+/**
+ * Bottom padding on the timeline's scroll content. Derived from the FAB's own
+ * footprint (its bottom offset + its height + a gap) rather than picked, so
+ * the last hour of the day can never end up parked under the button.
+ */
+const SCROLL_BOTTOM_INSET = spacing.xxl + FAB_SIZE + spacing.lg;
 
 const styles = StyleSheet.create({
   container: {
@@ -339,6 +419,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
+  },
+  // The gap this carries used to sit on `header`, which has a single child —
+  // so the eyebrow and the title were flush against each other.
+  headerTitles: {
     gap: spacing.xxs,
   },
   headerTitleRow: {
@@ -390,7 +474,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxxl * 3,
+    paddingBottom: SCROLL_BOTTOM_INSET,
   },
   fab: {
     position: "absolute",
