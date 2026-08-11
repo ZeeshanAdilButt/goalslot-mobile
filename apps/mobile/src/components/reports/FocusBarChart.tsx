@@ -41,6 +41,12 @@ const MIN_BAR_HEIGHT = 2;
 const GROW_DURATION = 420;
 /** Whole-chart stagger budget — the brief's 150-300ms, spread across however many bars there are. */
 const TOTAL_STAGGER = 260;
+/**
+ * Horizontal room a 10pt x-axis label needs before it touches its neighbour:
+ * two digits at ~6pt plus a gap. Used to decide when two labels are too close
+ * to both be drawn.
+ */
+const LABEL_MIN_WIDTH = 18;
 
 /**
  * Compact axis tick — "45m", "2h", "2.5h". Same intent as dw-time-web's
@@ -129,6 +135,12 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
   const radius = Math.min(barWidth / 2, 4);
   const perBarDelay = TOTAL_STAGGER / Math.max(1, buckets.length - 1);
 
+  const todayIndex = buckets.findIndex((bucket) => bucket.isToday);
+  // Minimum slots between two drawn labels. Derived from the actual slot
+  // width rather than fixed, so a week view (~40pt slots, where adjacent
+  // labels are perfectly legible) never suppresses anything.
+  const minLabelGap = Math.max(1, Math.ceil(LABEL_MIN_WIDTH / Math.max(slot, 1)));
+
   const gridFractions = [0, 0.5, 1];
 
   return (
@@ -187,7 +199,15 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
       {buckets.map((bucket, index) => {
         // Label sparingly: 31 day-numbers under a month view is unreadable,
         // so only every Nth gets one — plus today, always.
-        const shouldLabel = index % labelEvery === 0 || bucket.isToday;
+        //
+        // The "plus today" clause is what forces the second condition. On a
+        // month view (labelEvery 7, slots ~8pt wide) today landing on or
+        // beside a scheduled label drew both, and two 10pt day-numbers 8pt
+        // apart overlap into an unreadable smear. Today wins the collision;
+        // the scheduled label next to it is dropped.
+        const isCollidingWithToday =
+          todayIndex >= 0 && !bucket.isToday && Math.abs(index - todayIndex) < minLabelGap;
+        const shouldLabel = bucket.isToday || (index % labelEvery === 0 && !isCollidingWithToday);
         if (!shouldLabel) return null;
         return (
           <SvgText

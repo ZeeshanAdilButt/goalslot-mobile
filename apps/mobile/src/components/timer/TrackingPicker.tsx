@@ -11,6 +11,7 @@
 // against one or the other, never both.
 
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { Goal, Task } from "@goalslot/shared";
 
@@ -37,10 +38,29 @@ export function TrackingPicker({
   onPickGoal,
   onClose,
 }: TrackingPickerProps) {
+  // A `Modal` renders outside the screen's SafeAreaView, so the sheet has to
+  // apply the bottom inset itself — without it the Cancel target sits under
+  // the home indicator on every gesture-nav device.
+  const insets = useSafeAreaInsets();
+
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close picker">
-        <Pressable style={styles.sheet} onPress={(event) => event.stopPropagation()}>
+      <Pressable
+        style={styles.backdrop}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close picker"
+      >
+        {/* Purely a tap-swallower so presses inside the sheet don't reach the
+            backdrop. `accessible={false}` keeps it out of the accessibility
+            tree — as a Pressable it was otherwise focusable, and being
+            unlabelled it announced as a bare "button" wrapping the whole
+            sheet. */}
+        <Pressable
+          style={[styles.sheet, { paddingBottom: spacing.lg + insets.bottom }]}
+          onPress={(event) => event.stopPropagation()}
+          accessible={false}
+        >
           <View style={styles.handle} />
           <Text style={styles.title}>What are you tracking?</Text>
 
@@ -153,7 +173,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xl,
     paddingTop: spacing.md,
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.lg,
+    // paddingBottom is applied inline, from the safe-area inset.
     maxHeight: "80%",
   },
   handle: {

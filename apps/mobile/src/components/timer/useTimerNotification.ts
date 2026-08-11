@@ -33,13 +33,13 @@
 // so the body shows the fixed wall-clock start time instead, which stays
 // true no matter how long the shade entry sits there.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 
 import { formatDuration } from "@goalslot/shared";
 
-import type { TimerStatus } from "@/lib/timer-store";
+import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors } from "@/theme/tokens";
 
@@ -168,6 +168,21 @@ export function useTimerNotification(args: TimerNotificationArgs): void {
   const { notifications } = useCapabilities();
   const { status, startedAt, pausedElapsedMs, label } = args;
 
+  // The timer store persists through AsyncStorage, which is a bridge call, so
+  // it reports `status: "idle"` for the first few frames of a cold start no
+  // matter what was actually running. Acting on that pre-hydration idle meant
+  // relaunching the app while a session was live *dismissed its own ongoing
+  // notification* and then re-presented it a moment later — a visible blink
+  // in the shade, and on Android a re-post that can lose the entry's place in
+  // the ordering. Waiting for hydration costs nothing: the reconciliation
+  // this hook exists to do (clear a shade entry stranded by a process kill)
+  // is still performed, just once the status is actually known.
+  const hydrated = useSyncExternalStore(
+    useTimerStore.persist.onFinishHydration,
+    useTimerStore.persist.hasHydrated,
+    useTimerStore.persist.hasHydrated,
+  );
+
   // Notification calls are async and this effect can re-fire faster than
   // they settle (start -> pause in quick succession). Chaining every update
   // onto the previous one guarantees they apply in the order they were
@@ -175,6 +190,8 @@ export function useTimerNotification(args: TimerNotificationArgs): void {
   const pending = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
+    if (!hydrated) return;
+
     const content = describeSession({ status, startedAt, pausedElapsedMs, label });
 
     const apply = async () => {
@@ -192,5 +209,5 @@ export function useTimerNotification(args: TimerNotificationArgs): void {
     };
 
     pending.current = pending.current.then(apply, apply);
-  }, [notifications, status, startedAt, pausedElapsedMs, label]);
+  }, [hydrated, notifications, status, startedAt, pausedElapsedMs, label]);
 }

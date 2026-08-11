@@ -21,7 +21,7 @@
 // component adds no duration math of its own.
 
 import { useEffect, useMemo, useReducer } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { AppState, StyleSheet, Text, View } from "react-native";
 import Animated, {
   Easing,
   useAnimatedProps,
@@ -67,6 +67,37 @@ function formatClockParts(ms: number): { hh: string; mm: string; ss: string } {
   };
 }
 
+/**
+ * Spoken form of the elapsed time, and deliberately COARSER than the digits
+ * on screen: an `accessibilityLabel` that changed every second would make
+ * VoiceOver/TalkBack re-read the whole clock on every tick for as long as it
+ * held focus, which is unusable. Minutes are the finest unit anything else in
+ * the app reports (`formatDuration` in packages/shared), so this string
+ * changes at most once a minute.
+ */
+function describeElapsed(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
+  if (minutes > 0) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  if (parts.length === 0) return "Less than a minute";
+  return parts.join(" ");
+}
+
+/**
+ * The visible caption is only worth speaking while RUNNING, where it carries
+ * the wall-clock start ("Started 2:32 PM"). Paused and idle set it to
+ * "Paused" / "Elapsed", which would just repeat the status word back.
+ */
+function buildClockLabel(elapsedMs: number, status: TimerStatus, caption: string | undefined): string {
+  const elapsed = `${describeElapsed(elapsedMs)} elapsed`;
+  if (status === "running") return caption ? `${elapsed}. ${caption}` : `${elapsed}. Tracking`;
+  if (status === "paused") return `${elapsed}. Paused`;
+  return elapsed;
+}
+
 export interface TimerRingProps {
   status: TimerStatus;
   /** Epoch ms the current running segment began; null while paused/idle. */
@@ -96,10 +127,50 @@ export function TimerRing({
   // from the store's timestamps on every render, which is what keeps a
   // backgrounded or restarted session accurate. See timer-store.ts.
   const [, tick] = useReducer((n: number) => n + 1, 0);
+
+  // A self-re-arming timeout aimed at the next whole second, NOT
+  // `setInterval(tick, 1000)`.
+  //
+  // setInterval schedules each callback ~1000ms after the previous one
+  // *ran*, so every late frame permanently shifts the phase. The digits are
+  // derived from `Date.now() - startedAt` rather than counted up, so that
+  // accumulated drift doesn't make the clock wrong — it makes it *skip*: once
+  // the phase has slipped a full second (a few minutes of a busy JS thread at
+  // a handful of ms per tick) the display jumps 00:00:01 -> 00:00:03.
+  // Re-deriving the delay from the real elapsed value each time pins the flip
+  // to the true second boundary for the life of the session.
   useEffect(() => {
     if (status !== "running") return;
-    const id = setInterval(tick, TICK_MS);
-    return () => clearInterval(id);
+
+    let handle: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const remainder = getElapsedMs({ status, startedAt, pausedElapsedMs }) % TICK_MS;
+      // Floor of one frame: a boundary we've only just crossed must not
+      // schedule a busy-loop of ~0ms timeouts.
+      handle = setTimeout(() => {
+        tick();
+        schedule();
+      }, Math.max(16, TICK_MS - remainder));
+    };
+    schedule();
+
+    return () => clearTimeout(handle);
+  }, [status, startedAt, pausedElapsedMs]);
+
+  // Foregrounding after a background stretch. JS timers are suspended (iOS)
+  // or heavily throttled (Android) while the app is away, so the pending
+  // timeout above can land up to a second late — long enough to see a stale
+  // clock in the app-switcher snapshot and on the first frame back. The
+  // elapsed value is never *wrong* (it is always now-minus-startedAt); this
+  // only forces the repaint to happen immediately rather than at the next
+  // tick. `schedule()` re-derives its delay from the fresh elapsed value on
+  // the following tick, so the boundary alignment self-heals too.
+  useEffect(() => {
+    if (status !== "running") return;
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") tick();
+    });
+    return () => subscription.remove();
   }, [status]);
 
   const elapsedMs = getElapsedMs({ status, startedAt, pausedElapsedMs });
@@ -243,7 +314,20 @@ export function TimerRing({
         ) : null}
       </Svg>
 
-      <View style={styles.centerContent} pointerEvents="none">
+      {/* One accessibility node for the whole readout. Ungrouped, the five
+          Text children are focused one at a time and read as "01", ":",
+          "23" — the colons are announced as punctuation and the number of
+          swipes to cross the hero triples. `accessibilityLiveRegion="none"`
+          is explicit rather than assumed: nothing here may auto-announce on
+          every tick (see `describeElapsed` for the matching coarse label). */}
+      <View
+        style={styles.centerContent}
+        pointerEvents="none"
+        accessible
+        accessibilityRole="text"
+        accessibilityLiveRegion="none"
+        accessibilityLabel={buildClockLabel(elapsedMs, status, caption)}
+      >
         <View style={styles.clockRow}>
           <Text style={[styles.digits, { fontSize: digitSize }]}>{hh}</Text>
           <Text style={[styles.colon, { fontSize: digitSize * 0.78 }]}>:</Text>

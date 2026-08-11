@@ -17,7 +17,7 @@
 // circular progress hero, round transport controls, and a day-grouped
 // session list.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
@@ -33,6 +33,7 @@ import Animated, {
 
 import {
   createTimeEntrySchema,
+  formatDuration,
   getLocalDateString,
   type Goal,
   type Task,
@@ -45,6 +46,7 @@ import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
+import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
@@ -54,6 +56,21 @@ import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RECENT_SKELETON_ROWS = 4;
+
+/**
+ * The floating hamburger (app/(app)/_layout.tsx) is absolutely positioned at
+ * top-right over every screen. Same 64pt gutter app/(app)/index.tsx and
+ * schedule.tsx reserve — without it "Time Tracker" runs under the button at
+ * large text sizes.
+ */
+const HAMBURGER_CLEARANCE = 64;
+
+/**
+ * Shown in place of the real title while a session is running but its
+ * task/goal hasn't resolved yet — see `activeLabel` below. Matches the
+ * fallback wording useTimerNotification.ts uses for the same situation.
+ */
+const UNRESOLVED_TARGET_LABEL = "Focus session";
 
 /** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
 const MAX_RING_SIZE = 300;
@@ -115,7 +132,28 @@ export default function TimerScreen() {
     () => goalsQuery.data?.find((g) => g.id === timerGoalId) ?? (status === "idle" ? selectedGoal : null),
     [goalsQuery.data, timerGoalId, status, selectedGoal],
   );
-  const activeLabel = activeTask?.title ?? activeGoal?.title ?? null;
+  const resolvedLabel = activeTask?.title ?? activeGoal?.title ?? null;
+
+  // The store persists only ids, so a running session's title has to be
+  // looked up in the task/goal lists — and those lists can be momentarily
+  // absent (cold start before the first fetch lands, or a cache eviction
+  // mid-session). Latching the last title we successfully resolved for THIS
+  // pair of ids stops the hero row, the shade notification and — the part
+  // that actually mattered — the entry we eventually POST from degrading to
+  // "Untitled session" just because a list request happens to be in flight.
+  // The key guard is what makes it safe: a latch from a previous target can
+  // never be shown against a new one.
+  const targetKey = `${timerTaskId ?? ""}|${timerGoalId ?? ""}`;
+  const labelLatch = useRef<{ key: string; label: string } | null>(null);
+  if (resolvedLabel !== null) labelLatch.current = { key: targetKey, label: resolvedLabel };
+  const latchedLabel = labelLatch.current?.key === targetKey ? labelLatch.current.label : null;
+
+  // Null here means "we genuinely do not know what this is": only possible on
+  // a cold start where nothing has ever resolved. A running timer still needs
+  // *something* on screen, but it must not be a fabricated title that then
+  // gets written to the API — hence the split below.
+  const knownLabel = resolvedLabel ?? latchedLabel;
+  const activeLabel = knownLabel ?? (status === "idle" ? null : UNRESOLVED_TARGET_LABEL);
   const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
   // A task shows its parent goal; a goal shows its category — either way the
   // second line answers "which bucket does this belong to?".
@@ -156,12 +194,28 @@ export default function TimerScreen() {
     hapticLight();
   }, [resume]);
 
+  // `stop()` resets the store synchronously, so a second press can only land
+  // inside the same frame as the first — but two fingers do exactly that, and
+  // the second call would return `getElapsedMs(INITIAL_STATE)` === 0, which
+  // `Math.max(1, ...)` below dutifully turns into a spurious 1-minute entry.
+  // A ref (not state) because it has to be readable before the re-render.
+  const stopping = useRef(false);
+
   const handleStop = useCallback(async () => {
+    if (stopping.current || status === "idle") return;
+    stopping.current = true;
+
     // Capture what was actually running before `stop()` resets the store
-    // back to idle (which clears taskId/goalId).
+    // back to idle (which clears taskId/goalId/startedAt).
     const stoppedTaskId = timerTaskId ?? undefined;
     const stoppedGoalId = activeTask?.goalId ?? timerGoalId ?? undefined;
-    const label = activeLabel ?? "Untitled session";
+    const stoppedStartedAt = startedAt;
+    // Only a title we actually resolved is fit to persist. When it's null the
+    // display falls back to "Focus session" (see `activeLabel`), but writing
+    // that placeholder into `taskTitle` would overwrite a real task's
+    // denormalised title with a made-up one.
+    const stoppedTitle = knownLabel;
+    const label = stoppedTitle ?? UNRESOLVED_TARGET_LABEL;
 
     const elapsed = stop();
     const elapsedSeconds = Math.round(elapsed / 1000);
@@ -170,14 +224,24 @@ export default function TimerScreen() {
     // timer that genuinely ran.
     const durationMinutes = Math.max(1, Math.round(elapsed / 60000));
 
-    try {
+    const submit = async () => {
       const payload = createTimeEntrySchema.parse({
         taskName: label,
         taskId: stoppedTaskId,
-        taskTitle: stoppedTaskId ? label : undefined,
+        taskTitle: stoppedTaskId && stoppedTitle ? stoppedTitle : undefined,
         goalId: stoppedGoalId,
         duration: durationMinutes,
         date: getLocalDateString(),
+        // Mirrors dw-time-web's time-tracker-page.tsx:293, which sends the
+        // wall-clock start alongside the duration. Mobile was dropping this
+        // optional field entirely (it has been in createTimeEntrySchema all
+        // along), so every phone-tracked entry reached the API with no idea
+        // *when* in the day it happened, while web-tracked ones carried it.
+        // Semantics match web exactly, down to the rough edges: this is the
+        // current running segment's start, which both platforms' `resume`
+        // resets to now and both platforms' `pause` sets to null — so a
+        // session stopped from Paused sends nothing, same as on web.
+        startedAt: stoppedStartedAt !== null ? new Date(stoppedStartedAt).toISOString() : undefined,
       });
       await apiClient.timeEntries.create(payload);
       hapticCompletion();
@@ -188,10 +252,38 @@ export default function TimerScreen() {
       setSelectedTask(null);
       setSelectedGoal(null);
       void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+    };
+
+    try {
+      await submit();
     } catch {
-      Alert.alert("Couldn't save time entry", "Your timer was stopped, but saving the entry failed. Please try again.");
+      // The store is already back to idle at this point, so the elapsed time
+      // exists nowhere but this closure — a bare "please try again" would
+      // discard the session outright. Offer the retry here, and name the
+      // duration either way so it can be re-entered by hand if the retry
+      // fails too.
+      Alert.alert(
+        "Couldn't save time entry",
+        `Your timer was stopped, but saving ${formatDuration(durationMinutes)} against "${label}" failed.`,
+        [
+          { text: "Discard", style: "destructive" },
+          {
+            text: "Retry",
+            onPress: () => {
+              void submit().catch(() => {
+                Alert.alert(
+                  "Still couldn't save",
+                  `Add ${formatDuration(durationMinutes)} for "${label}" manually when you're back online.`,
+                );
+              });
+            },
+          },
+        ],
+      );
+    } finally {
+      stopping.current = false;
     }
-  }, [activeLabel, activeTask, stop, timerGoalId, timerTaskId]);
+  }, [activeTask, analytics, knownLabel, startedAt, status, stop, timerGoalId, timerTaskId]);
 
   const canStart = status === "idle" && (selectedTask !== null || selectedGoal !== null);
   const statusMeta = STATUS_META[status];
@@ -291,18 +383,28 @@ export default function TimerScreen() {
 // "RUNNING" dot pulses (`animate-pulse`) while STOPPED/PAUSED stay static.
 // Uses Reanimated (already a dependency; see Skeleton.tsx for the same
 // pattern) rather than the JS-thread Animated API.
+//
+// This is the one animation on the screen that never stops on its own, which
+// makes honouring Reduce Motion non-optional: an indefinitely repeating
+// opacity loop is exactly the "continuous, non-essential motion" the setting
+// exists to switch off, and it would otherwise pulse for the entire length of
+// a session. TimerRing, Reveal and the Reports charts already gate on
+// `useReduceMotion`; this was the gap.
 function PulsingDot({ color, pulse }: { color: string; pulse: boolean }) {
+  const reduceMotion = useReduceMotion();
   const opacity = useSharedValue(1);
 
   useEffect(() => {
-    if (!pulse) {
+    if (!pulse || reduceMotion) {
       cancelAnimation(opacity);
+      // Full opacity, not the dimmed mid-pulse value: with motion off the dot
+      // is a plain "tracking" indicator and still has to read as lit.
       opacity.value = 1;
       return;
     }
     opacity.value = withRepeat(withTiming(0.3, { duration: 700, easing: Easing.inOut(Easing.ease) }), -1, true);
     return () => cancelAnimation(opacity);
-  }, [pulse, opacity]);
+  }, [pulse, reduceMotion, opacity]);
 
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
@@ -316,7 +418,11 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.xs,
+    // Reserves the floating menu button's column, and matches the spacing.md
+    // top inset every other tab header uses (this was spacing.xs, which put
+    // the title a few points higher than the hamburger it sits beside).
+    paddingRight: HAMBURGER_CLEARANCE,
+    paddingTop: spacing.md,
     gap: 2,
   },
   eyebrow: {
