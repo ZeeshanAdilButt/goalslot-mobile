@@ -27,11 +27,10 @@ export interface VoiceCapability {
   stopListening(): Promise<void>
 }
 
-export interface NotificationInput {
+interface NotificationInputBase {
   id: string
   title: string
   body: string
-  fireAtUtc: string
   /**
    * Arbitrary payload carried on the notification and handed back when the
    * user taps it, so the app can route somewhere specific instead of just
@@ -42,6 +41,37 @@ export interface NotificationInput {
    */
   data?: Record<string, unknown>
 }
+
+/** Fires once, at an exact absolute instant — e.g. a coach nudge or a one-off deadline. */
+interface OneShotNotificationInput extends NotificationInputBase {
+  fireAtUtc: string
+  repeat?: never
+}
+
+/**
+ * Fires every week when device-local wall-clock time matches `weekday`/
+ * `hour`/`minute` — schedule-block reminders, which recur on the block's own
+ * `dayOfWeek` (0 = Sunday, matching ScheduleBlock) every week indefinitely,
+ * not just once. There is no absolute `fireAtUtc` for a recurring trigger by
+ * definition, so this variant omits it rather than asking a caller to invent
+ * one.
+ *
+ * Local wall-clock time (not a stored IANA zone) is deliberate here, same as
+ * how a phone's own alarm clock behaves: a 9pm reminder should keep firing
+ * at 9pm after the user's local zone or DST offset changes, not silently
+ * follow whatever zone the schedule was originally authored in.
+ */
+interface RecurringNotificationInput extends NotificationInputBase {
+  fireAtUtc?: never
+  repeat: {
+    /** 0 (Sunday) - 6 (Saturday), matching ScheduleBlock.dayOfWeek. */
+    weekday: number
+    hour: number
+    minute: number
+  }
+}
+
+export type NotificationInput = OneShotNotificationInput | RecurringNotificationInput
 
 export interface NotificationCapability {
   requestPermission(): Promise<boolean>

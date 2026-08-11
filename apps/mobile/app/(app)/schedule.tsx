@@ -47,6 +47,7 @@ import { apiClient } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
 import { scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useScheduleReminders } from "@/lib/useScheduleReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 // `typeScale` is the primitive half of the same token set `tokens.ts` re-exports
 // (both resolve to theme/foundation.ts) — used here only where a semantic role
@@ -65,6 +66,8 @@ const CLOCK_TICK_MS = 60_000;
 /** How far above the now line to park the scroll, so context sits above it. */
 const NOW_SCROLL_HEADROOM = 140;
 const BLOCK_SCROLL_HEADROOM = 24;
+/** Same value index.tsx uses to keep header content clear of the floating hamburger (_layout.tsx). */
+const HAMBURGER_CLEARANCE = 64;
 
 export default function ScheduleScreen() {
   const analytics = useAnalytics();
@@ -126,6 +129,12 @@ export default function ScheduleScreen() {
     () => positionBlocks(weeklyQuery.data?.[selectedDay] ?? []),
     [weeklyQuery.data, selectedDay],
   );
+
+  // Every block across the whole week, not just the selected day — reminders
+  // cover "all schedule blocks" per the user's own words, not just whichever
+  // day happens to be open right now.
+  const allBlocks = useMemo(() => Object.values(weeklyQuery.data ?? {}).flat(), [weeklyQuery.data]);
+  const reminders = useScheduleReminders(allBlocks);
 
   const dayWindow = useMemo(
     () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? []),
@@ -202,12 +211,40 @@ export default function ScheduleScreen() {
   const dayLabel = DAYS_OF_WEEK_FULL[selectedDay];
   const blockCount = entries.length;
 
+  const handleToggleAllReminders = useCallback(() => {
+    hapticLight();
+    void (reminders.allEnabled ? reminders.disableAllReminders() : reminders.enableAllReminders());
+  }, [reminders]);
+
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
-        {/* Web PageHeader's eyebrow/title/description trio (schedule-page.tsx). */}
-        <Text style={styles.eyebrow}>Plan your week</Text>
-        <Text style={styles.headerTitle}>Schedule</Text>
+        <View style={styles.headerTitleRow}>
+          {/* Web PageHeader's eyebrow/title/description trio (schedule-page.tsx). */}
+          <View>
+            <Text style={styles.eyebrow}>Plan your week</Text>
+            <Text style={styles.headerTitle}>Schedule</Text>
+          </View>
+
+          {/* Bulk on/off for every block's reminder, right from this screen —
+              "ability to be able to turn on alarms for all schedule blocks
+              and also ability to stop all or one, right from schedule
+              screen". Per-block control lives in BlockDetailSheet. */}
+          <Pressable
+            style={styles.remindersToggle}
+            onPress={handleToggleAllReminders}
+            disabled={allBlocks.length === 0}
+            accessibilityRole="button"
+            accessibilityLabel={reminders.allEnabled ? "Turn off all reminders" : "Turn on all reminders"}
+            accessibilityState={{ disabled: allBlocks.length === 0 }}
+          >
+            <Icon
+              name={reminders.allEnabled ? "bell" : "bell-off"}
+              size={20}
+              color={allBlocks.length === 0 ? colors.mutedForeground : colors.foreground}
+            />
+          </Pressable>
+        </View>
       </View>
 
       <DayStrip
@@ -284,6 +321,8 @@ export default function ScheduleScreen() {
         onDelete={handleDeleteBlock}
         onEdit={handleEditBlock}
         onDismiss={() => setDetailBlock(null)}
+        reminderEnabled={detailBlock ? reminders.isReminderEnabled(detailBlock.id) : true}
+        onToggleReminder={() => detailBlock && void reminders.toggleBlockReminder(detailBlock)}
       />
     </SafeAreaView>
   );
@@ -301,6 +340,25 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
     gap: spacing.xxs,
+  },
+  headerTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    // Keeps the bell button clear of the floating hamburger (_layout.tsx),
+    // which overlays the whole screen at a fixed top-right position rather
+    // than living inside this header.
+    paddingRight: HAMBURGER_CLEARANCE,
+  },
+  remindersToggle: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   eyebrow: {
     ...typography.label,

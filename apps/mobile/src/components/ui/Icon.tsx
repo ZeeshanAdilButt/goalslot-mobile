@@ -22,6 +22,8 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  Bell,
+  BellOff,
   Calendar,
   CalendarOff,
   Check,
@@ -97,6 +99,8 @@ const ICONS = {
   "chevron-left": ChevronLeft,
   "calendar-off": CalendarOff,
   user: User,
+  bell: Bell,
+  "bell-off": BellOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

@@ -16,7 +16,7 @@
 // detail surface now, which is also where the web puts it.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomSheetBackdropProps } from "@gorhom/bottom-sheet";
 
 import {
@@ -37,10 +37,13 @@ export interface BlockDetailSheetProps {
   onDelete: (block: ScheduleBlock) => void;
   onEdit: (block: ScheduleBlock) => void;
   onDismiss: () => void;
+  /** Whether this block's reminder notification is currently on — see useScheduleReminders.ts. */
+  reminderEnabled: boolean;
+  onToggleReminder: () => void;
 }
 
 export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetProps>(function BlockDetailSheet(
-  { block, onDelete, onEdit, onDismiss },
+  { block, onDelete, onEdit, onDismiss, reminderEnabled, onToggleReminder },
   ref,
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -119,6 +122,23 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
                 ))}
               </View>
             ) : null}
+
+            {/* "ability to be able to turn on alarms for all schedule blocks
+                and also ability to stop all or one" — this is the "or one"
+                half; the bulk on/off lives in the Schedule screen's header. */}
+            <View style={styles.reminderRow}>
+              <View style={styles.reminderLabelGroup}>
+                <Icon name={reminderEnabled ? "bell" : "bell-off"} size={16} color={colors.mutedForeground} />
+                <Text style={styles.reminderLabel}>Reminder</Text>
+              </View>
+              <Switch
+                value={reminderEnabled}
+                onValueChange={onToggleReminder}
+                accessibilityRole="switch"
+                accessibilityLabel="Reminder"
+                accessibilityState={{ checked: reminderEnabled }}
+              />
+            </View>
 
             <View style={styles.actionRow}>
               <Pressable
@@ -223,6 +243,25 @@ const styles = StyleSheet.create({
   },
   section: {
     gap: spacing.sm,
+  },
+  reminderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.lg,
+    backgroundColor: colors.muted,
+  },
+  reminderLabelGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  reminderLabel: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
   },
   sectionLabel: {
     ...typography.label,

@@ -23,7 +23,8 @@ export function createExpoNotificationCapability(): NotificationCapability {
       return response.granted;
     },
 
-    async scheduleNotification({ id, title, body, fireAtUtc, data }: NotificationInput) {
+    async scheduleNotification(input: NotificationInput) {
+      const { id, title, body, data } = input;
       const current = await Notifications.getPermissionsAsync();
       let granted = current.granted;
 
@@ -37,15 +38,29 @@ export function createExpoNotificationCapability(): NotificationCapability {
         return;
       }
 
+      // expo-notifications' WeeklyTriggerInput numbers weekdays 1-7 with
+      // Sunday = 1; NotificationInput's `repeat.weekday` follows
+      // ScheduleBlock's own 0-6/Sunday=0 convention so the shared package
+      // never has to know an expo-specific numbering — the +1 conversion
+      // belongs here, at the one file allowed to import expo-notifications.
+      const trigger = input.repeat
+        ? {
+            type: Notifications.SchedulableTriggerInputTypes.WEEKLY as const,
+            weekday: input.repeat.weekday + 1,
+            hour: input.repeat.hour,
+            minute: input.repeat.minute,
+          }
+        : {
+            type: Notifications.SchedulableTriggerInputTypes.DATE as const,
+            date: new Date(input.fireAtUtc),
+          };
+
       await Notifications.scheduleNotificationAsync({
         identifier: id,
         // `data` is what src/lib/deep-links.ts reads back on tap to decide
         // which screen to open — without it a tap can only cold-open the app.
         content: { title, body, data },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DATE,
-          date: new Date(fireAtUtc),
-        },
+        trigger,
       });
     },
 
