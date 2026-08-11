@@ -1,12 +1,24 @@
-// Tasks screen: swipe-left-to-reveal-complete, swipe-right-to-reveal
-// reschedule/delete, tap-the-row-to-edit. All mutations follow the same
-// optimistic-patch -> live call -> invalidate-or-rollback shape as
-// src/hooks/useQuickAdd.ts, just inlined here (this file is the only one
-// this task is scoped to touch) instead of factored into a shared hook. The
-// row-tap edit flow (title/category/due date/estimated minutes) opens
+// Tasks screen. Two views over the same query, switched by the segmented
+// control in the header — the same pair dw-time-web offers
+// (src/features/tasks/components/tasks-view.tsx:100 and :151-176, a
+// Board/List toggle over one `tasks` array):
+//
+//   LIST  — swipe-left-to-reveal-complete, swipe-right-to-reveal
+//           reschedule/delete, tap-the-row-to-edit, grouped by status.
+//   BOARD — the four status columns as a horizontal pager. See
+//           src/components/tasks/TaskBoard.tsx.
+//
+// List is the default rather than web's Board: it's the view this screen has
+// always opened on, it's the one that carries the swipe gestures, and a
+// board's value is triage, which is the thing you go looking for.
+//
+// All mutations follow the same optimistic-patch -> live call ->
+// invalidate-or-rollback shape as src/hooks/useQuickAdd.ts, just inlined here
+// instead of factored into a shared hook. The row-tap edit flow
+// (title/category/due date/estimated minutes) opens
 // src/components/EditTaskSheet.tsx, which follows the same shape itself.
 //
-// Layout is ported from dw-time-web's task list:
+// List layout is ported from dw-time-web's task list:
 //   - src/features/tasks/components/task-list.tsx:18-32 — the list is GROUPED
 //     BY STATUS with a header carrying the group name and a count pill, and
 //     the DONE group is visually demoted. That replaces the flat
@@ -24,18 +36,16 @@
 //     because a thumb scanning a list needs the primary action under it, not
 //     at the bottom of each card.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
-import { BottomSheetModal, BottomSheetView } from "@gorhom/bottom-sheet";
+import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomSheetBackdropProps } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 
 import {
-  formatDuration,
-  formatTime12h,
   getLocalDateString,
   type CompleteTaskInput,
   type Task,
@@ -52,13 +62,15 @@ import {
   CompleteCheckbox,
   ListCard,
   ListEmptyState,
-  MetaChip,
   ScreenHeader,
   SectionHeader,
+  SegmentedControl,
   taskStatusLabel,
   taskStatusTone,
   TONES,
+  type SegmentOption,
 } from "@/components/lists";
+import { BOARD_COLUMNS, TaskBoard, TaskBoardSkeleton, TaskMetaChips } from "@/components/tasks";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { taskQueries } from "@/lib/queries";
@@ -116,12 +128,24 @@ const RESCHEDULE_OPTIONS: Array<{ label: string; daysFromToday: number; icon: Ic
   { label: "Next week", daysFromToday: 7, icon: "chevron" },
 ];
 
-/** Due dates as "Mar 4" — web renders `formatDate(task.dueDate, 'MMM d')`. */
-function formatDueDate(dueDate: string): string {
-  const parsed = new Date(dueDate);
-  if (Number.isNaN(parsed.getTime())) return dueDate;
-  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+type TaskView = "list" | "board";
+
+/**
+ * Web's toggle is two uppercase text buttons in a bordered group
+ * (tasks-view.tsx:151-176). `SegmentedControl` is this app's existing
+ * equivalent (it's what the Goals screen filters with) and already carries
+ * `accessibilityRole="tab"` + a selected state, so the switch is announced
+ * as a switch rather than as two unrelated buttons.
+ */
+const VIEW_OPTIONS: SegmentOption<TaskView>[] = [
+  { value: "list", label: "List" },
+  { value: "board", label: "Board" },
+];
+
+const VIEW_SUBTITLE: Record<TaskView, string> = {
+  list: "Everything on deck, grouped by where it stands.",
+  board: "Four columns, one swipe apart. Move a card to change its status.",
+};
 
 export default function TasksScreen() {
   const analytics = useAnalytics();
@@ -129,12 +153,15 @@ export default function TasksScreen() {
 
   const { data: tasks, isPending, isError, error, isFetching, refetch } = useQuery(taskQueries.list());
 
+  const [view, setView] = useState<TaskView>("list");
   const rows = useMemo(() => buildRows(tasks ?? []), [tasks]);
 
   const quickAddSheetRef = useRef<BottomSheetModal>(null);
   const rescheduleSheetRef = useRef<BottomSheetModal>(null);
+  const moveSheetRef = useRef<BottomSheetModal>(null);
   const editTaskRef = useRef<EditTaskSheetRef>(null);
   const [rescheduleTarget, setRescheduleTarget] = useState<Task | null>(null);
+  const [moveTarget, setMoveTarget] = useState<Task | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -231,10 +258,75 @@ export default function TasksScreen() {
     [patchTask, restoreSnapshot],
   );
 
+  /**
+   * The board's answer to web's drag-a-card-between-columns
+   * (task-board.tsx:152-169). Three routes out, because the API models the
+   * DONE boundary as an event rather than a field:
+   *
+   *   -> DONE   POST /tasks/:id/complete, i.e. exactly `handleComplete`.
+   *             That endpoint is what writes the COMPLETION time entry and
+   *             rolls the hours onto the goal.
+   *   DONE ->   POST /tasks/:id/restore first. Restore is what DELETES that
+   *             completion entry and recomputes the goal's loggedHours from
+   *             the live sum (dw-time-api tasks.service.ts:223-273); a plain
+   *             status PUT leaves the phantom entry behind and the goal
+   *             permanently over-credited. Restore always lands the task in
+   *             TODO, so any other target needs the follow-up write. The web
+   *             board takes the plain-PUT shortcut (task-board.tsx:164) and
+   *             has that bug; mobile doesn't copy it.
+   *   otherwise PUT /tasks/:id with the new status.
+   */
+  const handleMoveToStatus = useCallback(
+    async (task: Task, status: TaskStatus) => {
+      if (task.status === status) return;
+
+      if (status === "DONE") {
+        await handleComplete(task);
+        return;
+      }
+
+      const wasDone = task.status === "DONE";
+      const previous = patchTask(task.id, {
+        status,
+        ...(wasDone ? { completedAt: undefined, actualMinutes: undefined } : {}),
+      });
+
+      try {
+        if (wasDone) {
+          await apiClient.tasks.restore(task.id);
+          if (status !== "TODO") {
+            await apiClient.tasks.update(task.id, { status });
+          }
+        } else {
+          await apiClient.tasks.update(task.id, { status });
+        }
+        void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
+      } catch {
+        restoreSnapshot(previous);
+        Alert.alert("Couldn't move task", "Please try again.");
+      }
+    },
+    [handleComplete, patchTask, restoreSnapshot],
+  );
+
   const openReschedule = useCallback((task: Task) => {
     setRescheduleTarget(task);
     rescheduleSheetRef.current?.present();
   }, []);
+
+  const openMove = useCallback((task: Task) => {
+    setMoveTarget(task);
+    moveSheetRef.current?.present();
+  }, []);
+
+  const pickMoveStatus = useCallback(
+    (status: TaskStatus) => {
+      const target = moveTarget;
+      moveSheetRef.current?.dismiss();
+      if (target) void handleMoveToStatus(target, status);
+    },
+    [handleMoveToStatus, moveTarget],
+  );
 
   const pickRescheduleDate = useCallback(
     (daysFromToday: number) => {
@@ -253,6 +345,26 @@ export default function TasksScreen() {
   const openEdit = useCallback((task: Task) => {
     editTaskRef.current?.present(task);
   }, []);
+
+  // `/tasks?taskId=…` is what a task notification tap and a shared task link
+  // both resolve to (src/lib/deep-links.ts:36 — "the list screen can opt into
+  // reading it later"). Nothing read it, so those links landed the user on an
+  // undifferentiated list. There is no `/tasks/[id]` detail route in v1, so
+  // the closest thing to "here is that task" is its editor.
+  //
+  // Guarded by a ref rather than by clearing the param: the sheet must open
+  // once per link, not again on every re-render or on tab re-focus, and the
+  // ref survives both without a navigation side effect.
+  const { taskId: deepLinkTaskId } = useLocalSearchParams<{ taskId?: string }>();
+  const handledDeepLinkRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!deepLinkTaskId || handledDeepLinkRef.current === deepLinkTaskId) return;
+    const target = tasks?.find((task) => task.id === deepLinkTaskId);
+    if (!target) return;
+    handledDeepLinkRef.current = deepLinkTaskId;
+    openEdit(target);
+  }, [deepLinkTaskId, openEdit, tasks]);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TaskListRow>) => {
@@ -280,18 +392,33 @@ export default function TasksScreen() {
     [handleComplete, handleDelete, openEdit, openReschedule],
   );
 
+  // `isPending`, never `isLoading`: with the persisted query cache, a warm
+  // start already has tasks in hand and only `isPending` is false there —
+  // gating on `isLoading` (or on `isFetching`) would flash a skeleton over
+  // data that's already on screen.
   let content: React.ReactNode;
   if (isPending) {
-    content = (
-      <View style={styles.skeletonWrap}>
-        {Array.from({ length: SKELETON_ROW_COUNT }).map((_, index) => (
-          <SkeletonListItem key={index} showLeading={false} />
-        ))}
-      </View>
-    );
+    content =
+      view === "board" ? (
+        <TaskBoardSkeleton />
+      ) : (
+        <View
+          style={styles.skeletonWrap}
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel="Loading tasks"
+        >
+          {Array.from({ length: SKELETON_ROW_COUNT }).map((_, index) => (
+            <SkeletonListItem key={index} showLeading={false} />
+          ))}
+        </View>
+      );
   } else if (isError && !tasks) {
     content = <ErrorState message={error instanceof Error ? error.message : "Couldn't load tasks."} onRetry={refetch} />;
-  } else if (rows.length === 0) {
+  } else if ((tasks?.length ?? 0) === 0) {
+    // Emptiness is a property of the DATA, not of the list view's grouped
+    // rows: the board renders four columns from the same tasks, so testing
+    // `rows.length` here would have been the wrong question for it.
     content = (
       <ListEmptyState
         variant="tasks"
@@ -299,7 +426,22 @@ export default function TasksScreen() {
         description="Add a task to link it to your schedule and goals — the hours you log against it roll up automatically."
         actionLabel="Add task"
         onAction={openQuickAdd}
-        hint="Swipe a task right to complete it, left to reschedule or delete."
+        hint={
+          view === "board"
+            ? "Board view sorts them into Backlog, To Do, Doing and Done."
+            : "Swipe a task right to complete it, left to reschedule or delete."
+        }
+      />
+    );
+  } else if (view === "board") {
+    content = (
+      <TaskBoard
+        tasks={tasks ?? []}
+        onComplete={handleComplete}
+        onEdit={openEdit}
+        onMove={openMove}
+        refreshing={isFetching && !isPending}
+        onRefresh={refetch}
       />
     );
   } else {
@@ -322,7 +464,31 @@ export default function TasksScreen() {
     // edges={["top"]} — the layout renders `headerShown: false` for every
     // route, so this is what keeps the title out of the status bar.
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <ScreenHeader eyebrow="Do" title="Tasks" subtitle="Everything on deck, grouped by where it stands." />
+      <ScreenHeader
+        eyebrow="Do"
+        title="Tasks"
+        subtitle={VIEW_SUBTITLE[view]}
+        action={<SegmentedControl options={VIEW_OPTIONS} value={view} onChange={setView} />}
+      />
+
+      {/* A failed refetch on top of cached tasks used to be silent: the
+          `isError && !tasks` branch above only fires on a cold failure, so
+          offline users saw a stale list with no hint it was stale. This says
+          so without throwing away the data they can still read. */}
+      {isError && tasks ? (
+        <Pressable
+          style={styles.staleBanner}
+          onPress={() => void refetch()}
+          accessibilityRole="button"
+          accessibilityLabel="Couldn't refresh tasks. Tap to try again."
+        >
+          <Icon name="alert" size={14} color={colors.warning} />
+          <Text style={styles.staleBannerText} numberOfLines={1}>
+            Showing saved tasks — couldn&apos;t refresh
+          </Text>
+          <Icon name="refresh" size={14} color={colors.mutedForeground} />
+        </Pressable>
+      ) : null}
 
       <View style={styles.listArea}>{content}</View>
 
@@ -339,31 +505,86 @@ export default function TasksScreen() {
       <QuickAddSheet ref={quickAddSheetRef} kind="task" />
       <EditTaskSheet ref={editTaskRef} />
 
-      <BottomSheetModal ref={rescheduleSheetRef} snapPoints={RESCHEDULE_SNAP_POINTS} enablePanDownToClose>
-        <BottomSheetView style={styles.rescheduleContent}>
-          <Text style={styles.rescheduleEyebrow}>Reschedule</Text>
-          <Text style={styles.rescheduleTitle} numberOfLines={2}>
+      {/* `enableDynamicSizing` + a backdrop, matching QuickAddSheet /
+          EditTaskSheet. The fixed "40%" snap point this used to carry left a
+          three-option list floating in half a screen of blank sheet, and
+          without `backdropComponent` there was no scrim and no
+          tap-outside-to-close — the only way out was a pan-down. */}
+      <BottomSheetModal
+        ref={rescheduleSheetRef}
+        enableDynamicSizing
+        enablePanDownToClose
+        backdropComponent={renderBackdrop}
+        onDismiss={() => setRescheduleTarget(null)}
+      >
+        <BottomSheetView style={styles.sheetContent}>
+          <Text style={styles.sheetEyebrow}>Reschedule</Text>
+          <Text style={styles.sheetTitle} numberOfLines={2}>
             {rescheduleTarget?.title ?? "task"}
           </Text>
           {RESCHEDULE_OPTIONS.map((option) => (
             <Pressable
               key={option.label}
-              style={styles.rescheduleOption}
+              style={styles.sheetOption}
               onPress={() => pickRescheduleDate(option.daysFromToday)}
               accessibilityRole="button"
               accessibilityLabel={`Reschedule to ${option.label}`}
             >
               <Icon name={option.icon} size={18} color={colors.mutedForeground} />
-              <Text style={styles.rescheduleOptionText}>{option.label}</Text>
+              <Text style={styles.sheetOptionText}>{option.label}</Text>
             </Pressable>
           ))}
+        </BottomSheetView>
+      </BottomSheetModal>
+
+      {/* Board's column picker — the touch stand-in for web's drag-and-drop
+          (see `handleMoveToStatus`). Column titles and helper lines come from
+          the same BOARD_COLUMNS the board draws, so the sheet names the
+          destinations exactly as the columns do. */}
+      <BottomSheetModal
+        ref={moveSheetRef}
+        enableDynamicSizing
+        enablePanDownToClose
+        backdropComponent={renderBackdrop}
+        onDismiss={() => setMoveTarget(null)}
+      >
+        <BottomSheetView style={styles.sheetContent}>
+          <Text style={styles.sheetEyebrow}>Move to</Text>
+          <Text style={styles.sheetTitle} numberOfLines={2}>
+            {moveTarget?.title ?? "task"}
+          </Text>
+          {BOARD_COLUMNS.map((column) => {
+            const isCurrent = moveTarget?.status === column.status;
+            return (
+              <Pressable
+                key={column.status}
+                style={[styles.sheetOption, isCurrent && styles.sheetOptionCurrent]}
+                onPress={() => pickMoveStatus(column.status)}
+                disabled={isCurrent}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: isCurrent, selected: isCurrent }}
+                accessibilityLabel={isCurrent ? `Already in ${column.title}` : `Move to ${column.title}`}
+              >
+                <View style={[styles.moveDot, { backgroundColor: TONES[column.tone].accent }]} />
+                <View style={styles.moveTextBlock}>
+                  <Text style={styles.sheetOptionText}>{column.title}</Text>
+                  <Text style={styles.moveHelper} numberOfLines={1}>
+                    {isCurrent ? "Where it is now" : column.helper}
+                  </Text>
+                </View>
+                {isCurrent ? <Icon name="check" size={16} color={colors.mutedForeground} /> : null}
+              </Pressable>
+            );
+          })}
         </BottomSheetView>
       </BottomSheetModal>
     </SafeAreaView>
   );
 }
 
-const RESCHEDULE_SNAP_POINTS = ["40%"];
+function renderBackdrop(props: BottomSheetBackdropProps) {
+  return <BottomSheetBackdrop {...props} appearsOnIndex={0} disappearsOnIndex={-1} pressBehavior="close" />;
+}
 
 interface TaskRowProps {
   task: Task;
@@ -460,35 +681,11 @@ function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: Ta
             </Text>
           </View>
 
-          <TaskMeta task={task} />
+          {/* Chips moved to src/components/tasks/TaskMetaChips.tsx when the
+              board landed — the board card renders the same set, `compact`. */}
+          <TaskMetaChips task={task} style={styles.chipRow} />
         </ListCard>
       </Swipeable>
-    </View>
-  );
-}
-
-/**
- * The chip row — a direct port of task-metadata.tsx's four chips. Renders
- * nothing at all when a task has no metadata, so bare tasks stay a single
- * compact line instead of reserving empty space.
- */
-function TaskMeta({ task }: { task: Task }) {
-  const hasMeta =
-    !!task.category || !!task.goal || !!task.scheduleBlock || !!task.dueDate || !!task.estimatedMinutes;
-  if (!hasMeta) return null;
-
-  return (
-    <View style={styles.chipRow}>
-      {task.category ? <MetaChip label={task.category.replace("_", " ")} /> : null}
-      {task.goal ? <MetaChip icon="goals" label={task.goal.title} accentColor={task.goal.color} /> : null}
-      {task.scheduleBlock ? (
-        <MetaChip
-          icon="timer"
-          label={`${formatTime12h(task.scheduleBlock.startTime)} – ${formatTime12h(task.scheduleBlock.endTime)}`}
-        />
-      ) : null}
-      {task.dueDate ? <MetaChip icon="schedule" tone="warning" label={`Due ${formatDueDate(task.dueDate)}`} /> : null}
-      {task.estimatedMinutes ? <MetaChip icon="timer" label={formatDuration(task.estimatedMinutes)} /> : null}
     </View>
   );
 }
@@ -534,10 +731,28 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
   },
   chipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
     paddingLeft: CHECKBOX_RAIL,
+  },
+
+  staleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    minHeight: minTouchTarget,
+    borderRadius: radii.lg,
+    backgroundColor: colors.warningMuted,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  staleBannerText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.foreground,
+    flex: 1,
   },
 
   // --- Swipe actions ---
@@ -579,23 +794,23 @@ const styles = StyleSheet.create({
     ...shadows.fab,
   },
 
-  // --- Reschedule sheet ---
-  rescheduleContent: {
+  // --- Reschedule / Move sheets (same shape, so one set of styles) ---
+  sheetContent: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xxl,
     gap: spacing.sm,
   },
-  rescheduleEyebrow: {
+  sheetEyebrow: {
     ...typography.label,
     color: colors.mutedForeground,
   },
-  rescheduleTitle: {
+  sheetTitle: {
     ...typography.title,
     color: colors.foreground,
     marginBottom: spacing.md,
   },
-  rescheduleOption: {
+  sheetOption: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
@@ -607,9 +822,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  rescheduleOptionText: {
+  sheetOptionCurrent: {
+    // Stays visible and readable rather than dropping to 40% opacity: it's
+    // the row that answers "where is this now?", it just isn't tappable.
+    backgroundColor: colors.background,
+    borderStyle: "dashed",
+  },
+  sheetOptionText: {
     ...typography.body,
     fontWeight: "600",
     color: colors.foreground,
+  },
+  moveDot: {
+    width: 10,
+    height: 10,
+    borderRadius: radii.full,
+  },
+  moveTextBlock: {
+    flex: 1,
+    gap: 1,
+  },
+  moveHelper: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
   },
 });
