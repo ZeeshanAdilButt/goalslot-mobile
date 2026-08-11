@@ -38,7 +38,6 @@ import {
   minuteToY,
   positionBlocks,
   ScheduleBlockSheet,
-  ScheduleEmptyState,
   Timeline,
   TimelineSkeleton,
   type ScheduleBlockSheetRef,
@@ -252,9 +251,14 @@ export default function ScheduleScreen() {
               void weeklyQuery.refetch();
             }}
           />
-        ) : blockCount === 0 ? (
-          <ScheduleEmptyState dayLabel={dayLabel} onAddBlock={openCreateSheet} />
         ) : (
+          // Always the real grid, even on a day with zero blocks — an
+          // illustrated "wide open" card used to replace it entirely, which
+          // read as a small floating card in a lot of blank space rather than
+          // an actual calendar. getDayWindow([]) already falls back to a
+          // sensible waking-hours window (layout.ts), and every hour row is
+          // still its own tap-to-add target via onPressEmptyHour below, so an
+          // empty day loses nothing — it just looks like a real, empty day.
           <Timeline
             // Remounting on day change re-runs each block's entrance stagger,
             // which is what signals "this is a different day" when the header
@@ -269,14 +273,9 @@ export default function ScheduleScreen() {
         )}
       </ScrollView>
 
-      {/* Hidden on an empty day: ScheduleEmptyState already renders its own
-          "Add your first block" CTA doing the exact same thing, and the FAB's
-          fixed bottom-right position sits directly on top of it otherwise. */}
-      {blockCount > 0 ? (
-        <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
-          <Icon name="add" size={26} color={colors.primaryForeground} />
-        </Pressable>
-      ) : null}
+      <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
+        <Icon name="add" size={26} color={colors.primaryForeground} />
+      </Pressable>
 
       <ScheduleBlockSheet ref={blockSheetRef} />
       <BlockDetailSheet
