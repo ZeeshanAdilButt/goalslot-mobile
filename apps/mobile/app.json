@@ -82,7 +82,10 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": "https://api.goalslot.io"
+      "apiBaseUrl": "https://api.goalslot.io",
+      "_messagingComment": "Origin of the jiffy-messaging deployment. Null = messaging is off in this build: the Messages screens stay unregistered, the drawer entry is hidden, and no socket or token request is ever made. Override per environment with EXPO_PUBLIC_MESSAGING_URL / EXPO_PUBLIC_MESSAGING_WS_URL — app.config.js layers those on top of these, and derives the ws:// URL from the http:// one when only the latter is set.",
+      "messagingUrl": null,
+      "messagingWsUrl": null
     },
     "runtimeVersion": {
       "policy": "appVersion"

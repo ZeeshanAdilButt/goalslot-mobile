@@ -13,6 +13,7 @@ import {
   createGoalQueries,
   createJournalQueries,
   createLabelQueries,
+  createMessagingQueries,
   createNoteQueries,
   createScheduleQueries,
   createTaskQueries,
@@ -20,6 +21,7 @@ import {
 } from "@goalslot/shared";
 
 import { apiClient } from "./api-client";
+import { messagingClient } from "./messaging-client";
 
 export const coachQueries = createCoachQueries(apiClient.coach);
 export const goalQueries = createGoalQueries(apiClient.goals);
@@ -30,3 +32,8 @@ export const labelQueries = createLabelQueries(apiClient.labels);
 export const timeEntryQueries = createTimeEntryQueries(apiClient.timeEntries);
 export const journalQueries = createJournalQueries(apiClient.journal);
 export const noteQueries = createNoteQueries(apiClient.notes);
+// Two services in one factory on purpose: conversations/messages come from
+// jiffy-messaging, but the contact picker's names come from GoalSlot's own
+// sharing directory. Keying both under ['messaging'] means signing out or
+// losing the messaging token clears the feature with a single invalidate.
+export const messagingQueries = createMessagingQueries(messagingClient, apiClient.sharing);
