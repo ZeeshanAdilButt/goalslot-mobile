@@ -31,7 +31,12 @@ export interface UseTimerRemindersArgs {
   status: TimerStatus;
   /** Epoch ms the current running segment began; null while paused/idle. */
   startedAt: number | null;
-  /** Task or goal title being tracked, or null when it hasn't resolved yet. */
+  /**
+   * Task or goal title being tracked. Null means there is no title to show:
+   * either the session was deliberately started with nothing attached (the
+   * Time Tracker allows this) or a target is set but hasn't resolved yet.
+   * Both are handled the same way — see describeTimerReminder.
+   */
   label: string | null;
 }
 

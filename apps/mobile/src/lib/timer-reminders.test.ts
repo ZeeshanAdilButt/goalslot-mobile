@@ -158,6 +158,23 @@ describe("describeTimerReminder", () => {
       "You are working on: Focus session. Still strictly focused?",
     );
   });
+
+  // A null label used to mean only "the target hasn't resolved yet", a
+  // transient cold-start gap. Since the Time Tracker allows starting with
+  // nothing attached, it is also the steady state of an ordinary
+  // unattributed session — so this copy is now something users actually see
+  // for the whole length of a run, not just for a frame or two. Pinned
+  // explicitly because the two changes landed separately and neither one on
+  // its own could have covered the combination.
+  it("still reads sensibly for a session deliberately tracked with no goal", () => {
+    const { title, body } = describeTimerReminder(null);
+    expect(title).toBe("Time Check");
+    expect(body).toBe("You are working on: Focus session. Still strictly focused?");
+    expect(body).not.toMatch(/undefined|null/);
+    // Matches the ongoing shade entry's wording for the same session, so one
+    // session is never called two different things on the same device.
+    expect(body).toContain("Focus session");
+  });
 });
 
 describe("scheduleTimerReminders", () => {
