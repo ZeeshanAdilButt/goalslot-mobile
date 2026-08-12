@@ -4,9 +4,11 @@
 // rationale), so this file is excluded from `tsc --noEmit` via
 // tsconfig.json's `exclude` rather than typed against jest's ambient
 // globals.
+import { Platform } from "react-native";
+
 import type { ScheduleBlock } from "@goalslot/shared";
 
-import { createExpoNotificationCapability } from "./notifications";
+import { createExpoNotificationCapability, resetAlarmChannelCacheForTests } from "./notifications";
 import { scheduleBlockReminder } from "./schedule-reminders";
 
 // Jest's module-factory hoisting (babel-plugin-jest-hoist) only allows a
@@ -21,6 +23,8 @@ const mockScheduleNotificationAsync = jest.fn();
 const mockCancelScheduledNotificationAsync = jest.fn();
 const mockCancelAllScheduledNotificationsAsync = jest.fn();
 const mockDismissAllNotificationsAsync = jest.fn();
+const mockGetAllScheduledNotificationsAsync = jest.fn();
+const mockSetNotificationChannelAsync = jest.fn();
 
 jest.mock("expo-notifications", () => ({
   requestPermissionsAsync: (...args: unknown[]) => mockRequestPermissionsAsync(...args),
@@ -30,7 +34,12 @@ jest.mock("expo-notifications", () => ({
   cancelAllScheduledNotificationsAsync: (...args: unknown[]) =>
     mockCancelAllScheduledNotificationsAsync(...args),
   dismissAllNotificationsAsync: (...args: unknown[]) => mockDismissAllNotificationsAsync(...args),
+  getAllScheduledNotificationsAsync: (...args: unknown[]) => mockGetAllScheduledNotificationsAsync(...args),
+  setNotificationChannelAsync: (...args: unknown[]) => mockSetNotificationChannelAsync(...args),
   SchedulableTriggerInputTypes: { DATE: "date", WEEKLY: "weekly" },
+  AndroidNotificationPriority: { MAX: "max", HIGH: "high", DEFAULT: "default", LOW: "low", MIN: "min" },
+  AndroidImportance: { MAX: 5, HIGH: 4, DEFAULT: 3, LOW: 2, MIN: 1 },
+  AndroidNotificationVisibility: { PUBLIC: 1, PRIVATE: 0, SECRET: -1 },
 }));
 
 describe("createExpoNotificationCapability", () => {
@@ -41,6 +50,10 @@ describe("createExpoNotificationCapability", () => {
     mockCancelScheduledNotificationAsync.mockReset();
     mockCancelAllScheduledNotificationsAsync.mockReset();
     mockDismissAllNotificationsAsync.mockReset();
+    mockGetAllScheduledNotificationsAsync.mockReset();
+    mockSetNotificationChannelAsync.mockReset();
+    mockSetNotificationChannelAsync.mockResolvedValue(undefined);
+    resetAlarmChannelCacheForTests();
   });
 
   describe("requestPermission", () => {
@@ -122,6 +135,111 @@ describe("createExpoNotificationCapability", () => {
     });
   });
 
+  // THE regression this feature exists for. A reminder that reaches the OS
+  // but arrives silently is indistinguishable, to the person holding the
+  // phone, from one that was never scheduled — "proper alarms for schedule
+  // blocks not working". Everything below asserts the notification is
+  // actually loud.
+  describe("alarm-grade delivery", () => {
+    const originalPlatform = Platform.OS;
+
+    function setPlatform(os: "ios" | "android") {
+      Object.defineProperty(Platform, "OS", { value: os, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(Platform, "OS", { value: originalPlatform, configurable: true });
+    });
+
+    async function scheduleAlarm() {
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+      await createExpoNotificationCapability().scheduleNotification({
+        id: "alarm-1",
+        title: "Reading",
+        body: "Starting now · 6:00 AM",
+        repeat: { weekday: 1, hour: 6, minute: 0 },
+        alarm: true,
+      });
+      return mockScheduleNotificationAsync.mock.calls[0][0];
+    }
+
+    it("carries a sound — the omission that made every reminder silent", async () => {
+      setPlatform("ios");
+
+      const request = await scheduleAlarm();
+
+      // With no `sound` key, expo-notifications' Android builder hits its
+      // `!shouldPlaySound && !shouldVibrate` branch and calls
+      // `setSilent(true)`, which suppresses the heads-up REGARDLESS of
+      // channel importance; on iOS a content without `sound` is a silent
+      // banner. This one key is the difference between an alarm and a
+      // wordless entry in the shade.
+      expect(request.content.sound).toBe("default");
+    });
+
+    it("asks iOS to break through Focus with a time-sensitive interruption", async () => {
+      setPlatform("ios");
+
+      const request = await scheduleAlarm();
+
+      expect(request.content.interruptionLevel).toBe("timeSensitive");
+    });
+
+    it("pins the alarm to a dedicated MAX-importance Android channel", async () => {
+      setPlatform("android");
+
+      const request = await scheduleAlarm();
+
+      const [channelId, config] = mockSetNotificationChannelAsync.mock.calls[0];
+      expect(config.importance).toBe(5); // AndroidImportance.MAX
+      expect(config.sound).toBe("default");
+      // The channel id has to ride on the TRIGGER — that is where
+      // expo-notifications reads it. On the content it is ignored and the
+      // alarm silently lands on the library's fallback channel instead.
+      expect(request.trigger.channelId).toBe(channelId);
+      // Not the timer's deliberately-quiet channel.
+      expect(channelId).not.toBe("goalslot-timer");
+    });
+
+    it("creates the channel once, not once per block", async () => {
+      setPlatform("android");
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+      const capability = createExpoNotificationCapability();
+
+      for (const id of ["a", "b", "c"]) {
+        await capability.scheduleNotification({
+          id,
+          title: id,
+          body: "",
+          repeat: { weekday: 1, hour: 6, minute: 0 },
+          alarm: true,
+        });
+      }
+
+      expect(mockSetNotificationChannelAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a non-alarm notification quiet and channel-free", async () => {
+      setPlatform("android");
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+
+      await createExpoNotificationCapability().scheduleNotification({
+        id: "quiet-1",
+        title: "Title",
+        body: "Body",
+        fireAtUtc: "2026-08-08T15:00:00.000Z",
+      });
+
+      const request = mockScheduleNotificationAsync.mock.calls[0][0];
+      expect(request.content.sound).toBeUndefined();
+      expect(request.trigger.channelId).toBeUndefined();
+      expect(mockSetNotificationChannelAsync).not.toHaveBeenCalled();
+    });
+  });
+
   describe("cancelNotification", () => {
     it("calls through with the given id", async () => {
       mockCancelScheduledNotificationAsync.mockResolvedValue(undefined);
@@ -131,6 +249,27 @@ describe("createExpoNotificationCapability", () => {
       await capability.cancelNotification("reminder-1");
 
       expect(mockCancelScheduledNotificationAsync).toHaveBeenCalledWith("reminder-1");
+    });
+  });
+
+  describe("listScheduledIds", () => {
+    it("returns the identifiers the OS is holding", async () => {
+      mockGetAllScheduledNotificationsAsync.mockResolvedValue([
+        { identifier: "schedule-reminder-a" },
+        { identifier: "goalslot-timer-session" },
+      ]);
+
+      const ids = await createExpoNotificationCapability().listScheduledIds();
+
+      expect(ids).toEqual(["schedule-reminder-a", "goalslot-timer-session"]);
+    });
+
+    it("reports an empty queue rather than throwing when the platform refuses", async () => {
+      mockGetAllScheduledNotificationsAsync.mockRejectedValue(new Error("unavailable"));
+
+      // Callers prune against this list mid-reconcile; a throw here would
+      // abort the pass that arms the real alarms.
+      await expect(createExpoNotificationCapability().listScheduledIds()).resolves.toEqual([]);
     });
   });
 

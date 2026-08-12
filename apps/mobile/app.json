@@ -20,6 +20,8 @@
       "package": "io.goalslot.mobile",
       "softwareKeyboardLayoutMode": "resize",
       "versionCode": 1,
+      "_permissionsComment": "What makes a schedule reminder land ON the minute. expo-notifications picks its AlarmManager method at runtime: `if (SDK_INT < S || canScheduleExactAlarms()) setExactAndAllowWhileIdle(...) else setAndAllowWhileIdle(...)`. Without these, that check fails on Android 12+ and every reminder degrades to the INEXACT branch, which Doze can defer by many minutes — a 9:00 block announcing itself at 9:20. SCHEDULE_EXACT_ALARM covers API 31-32; USE_EXACT_ALARM covers API 33+ and is required on Android 14+, where the former is no longer auto-granted. PLAY POLICY: USE_EXACT_ALARM is restricted to apps whose core function is an alarm clock or calendar — confirm before the next Play submission. Dropping it still leaves exact alarms working on Android 12-13.",
+      "permissions": ["android.permission.SCHEDULE_EXACT_ALARM", "android.permission.USE_EXACT_ALARM"],
       "adaptiveIcon": {
         "backgroundColor": "#F2CC0D",
         "foregroundImage": "./assets/android-icon-foreground.png",

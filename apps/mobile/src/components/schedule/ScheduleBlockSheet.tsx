@@ -71,6 +71,7 @@ import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { categoryQueries, goalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { findLinkedBlocks } from "@/lib/schedule-series";
 import { useAnalytics } from "@/providers/growth-provider";
 import { Icon } from "@/components/ui/Icon";
 import { TimePicker } from "@/components/ui/TimePicker";
@@ -199,15 +200,17 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const { data: categories = [] } = useQuery(categoryQueries.list());
   const { data: goals = [], isPending: isGoalsPending } = useQuery(goalQueries.list({ status: "ACTIVE" }));
 
-  // A block is "in a series" when other blocks in the week share its
-  // seriesId — same derivation as web's schedule-page.tsx `seriesBlockCount`
-  // (`allBlocks.filter(b => b.seriesId === editingBlock.seriesId).length`).
-  const seriesBlockCount = useMemo(() => {
-    if (!editingBlock || !weeklyQuery.data) return 0;
-    return Object.values(weeklyQuery.data)
-      .flat()
-      .filter((b) => b.seriesId === editingBlock.seriesId).length;
+  // Which other blocks this edit can reach. A real series (shared seriesId)
+  // is the web's `seriesBlockCount` derivation; the "lookalike" case is the
+  // one the web has no answer for — five separately-created "Reading" blocks
+  // that are visibly one routine but carry five unrelated seriesIds, and so
+  // can only be fanned out client-side. See src/lib/schedule-series.ts.
+  const linked = useMemo(() => {
+    if (!editingBlock || !weeklyQuery.data) return null;
+    return findLinkedBlocks(editingBlock, Object.values(weeklyQuery.data).flat());
   }, [editingBlock, weeklyQuery.data]);
+
+  const seriesBlockCount = linked && linked.kind !== "solo" ? linked.members.length : 0;
   const isSeriesEdit = mode === "edit" && seriesBlockCount > 1;
   const scopeToApply: ScheduleUpdateScope = isSeriesEdit ? updateScope : "single";
   const dayPickerDisabled = isSeriesEdit && scopeToApply === "series";
@@ -377,9 +380,20 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       patch.dayOfWeek = selectedDays[0];
     }
 
+    // A real series is fanned out by the SERVER (`updateMany` keyed on
+    // seriesId, with dayOfWeek stripped so the days can't collapse). A
+    // lookalike group has no shared seriesId for the server to key on, so the
+    // fan-out happens here instead: one plain `single` update per member,
+    // same shape as multi-day create. Either way `dayOfWeek` is left off, so
+    // no member is moved onto another member's day.
+    const fanOutClientSide = scopeToApply === "series" && linked?.kind === "lookalike";
+
     let payload: UpdateScheduleBlockInput;
     try {
-      payload = updateScheduleBlockSchema.parse({ ...patch, updateScope: scopeToApply });
+      payload = updateScheduleBlockSchema.parse({
+        ...patch,
+        updateScope: fanOutClientSide ? "single" : scopeToApply,
+      });
     } catch {
       setError("Please check the fields above and try again.");
       return;
@@ -415,13 +429,23 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     }
 
     try {
-      await apiClient.schedule.update(editingBlock.id, payload);
+      const targets = fanOutClientSide ? (linked?.members ?? [editingBlock]) : [editingBlock];
+      await Promise.all(targets.map((target) => apiClient.schedule.update(target.id, payload)));
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
       hapticCompletion();
-      analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: editingBlock.id } });
+      for (const target of targets) {
+        analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: target.id } });
+      }
       sheetRef.current?.dismiss();
     } catch {
       queryClient.setQueryData(weeklyKey, previous);
+      // A client-side fan-out is N independent requests; some may have landed
+      // before one failed, so the rollback above can restore blocks to values
+      // the server no longer holds. Refetch rather than leave a cache that is
+      // confidently wrong. (Same reasoning as multi-day create.)
+      if (fanOutClientSide) {
+        void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
+      }
       Alert.alert("Couldn't save", "Please try again.");
     } finally {
       setIsSubmitting(false);
@@ -434,6 +458,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     endTime,
     goalId,
     isPrivate,
+    linked,
     resolvedColor,
     scopeToApply,
     selectedDays,
@@ -515,7 +540,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
               {(
                 [
                   { label: "This day only", value: "single" as ScheduleUpdateScope },
-                  { label: `All ${seriesBlockCount} linked days`, value: "series" as ScheduleUpdateScope },
+                  { label: `All ${seriesBlockCount} days`, value: "series" as ScheduleUpdateScope },
                 ] as const
               ).map((option) => (
                 <TouchableOpacity
@@ -537,6 +562,15 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
                 </TouchableOpacity>
               ))}
             </View>
+            {/* Names the other days outright. "All 5 days" is not something a
+                user should have to accept on trust before pressing Save on a
+                change they can't undo — especially for a lookalike group,
+                which the app inferred rather than being told about. */}
+            <Text style={styles.scopeHint}>
+              {scopeToApply === "series"
+                ? `Changes ${linked?.members.map((b) => DAY_SHORT_LABELS[b.dayOfWeek]).join(", ")}. The day picker is locked while this is selected.`
+                : `Leaves the other ${seriesBlockCount - 1} day${seriesBlockCount - 1 === 1 ? "" : "s"} untouched.`}
+            </Text>
           </View>
         ) : null}
 
@@ -772,6 +806,12 @@ const styles = StyleSheet.create({
   },
   scopeChipTextSelected: {
     color: colors.primaryForeground,
+  },
+  scopeHint: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
   fieldError: {
     color: colors.destructive,
