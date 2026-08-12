@@ -42,6 +42,7 @@
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -118,6 +119,19 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const analytics = useAnalytics();
+
+  // See BlockDetailSheet.tsx for the full reasoning. Short version: this sheet
+  // is portalled to the app root, outside every screen's
+  // `<SafeAreaView edges={["top"]}>`, and Android is edge-to-edge, so nothing
+  // between this content and the physical edges of the display is accounted
+  // for unless the sheet accounts for it.
+  //
+  // Both edges matter here, because this form is tall enough that dynamic
+  // sizing clamps it to the full container height:
+  //   - bottom, or Cancel/Save sit under the navigation bar,
+  //   - top, or the "Edit time slot" heading and the grab handle slide under
+  //     the status bar once the sheet reaches its maximum height.
+  const insets = useSafeAreaInsets();
 
   const [mode, setMode] = useState<"create" | "edit">("create");
   const [editingBlock, setEditingBlock] = useState<ScheduleBlock | null>(null);
@@ -435,17 +449,25 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     <BottomSheetModal
       ref={sheetRef}
       enableDynamicSizing
+      topInset={insets.top}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
       enablePanDownToClose
+      // Only one detent here (dynamic sizing with no `snapPoints`), and for
+      // this form that's correct — it already opens at the tallest size the
+      // container allows, so there is nothing to expand to and the handle's
+      // job is purely drag-down-to-close. What it did need was a target big
+      // enough to hit: the library's default handle is a 4pt indicator in 10pt
+      // of padding, i.e. 24pt. This pads it out to 44.
+      handleStyle={styles.handle}
       handleIndicatorStyle={styles.handleIndicator}
       backgroundStyle={styles.sheetBackground}
     >
       <BottomSheetScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: spacing.xxl + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.title}>{mode === "edit" ? "Edit time slot" : "New time slot"}</Text>
@@ -654,6 +676,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
   },
+  // 20 + 4 + 20 = the 44pt minimum touch target.
+  handle: {
+    paddingVertical: spacing.xl,
+  },
   handleIndicator: {
     backgroundColor: colors.border,
     width: 40,
@@ -666,7 +692,8 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied at the call site — it has to add the bottom
+    // safe-area inset, which isn't a static value.
     gap: spacing.lg,
   },
   title: {
