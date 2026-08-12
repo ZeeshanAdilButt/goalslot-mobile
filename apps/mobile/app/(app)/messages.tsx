@@ -151,7 +151,14 @@ export default function MessagesScreen() {
     );
   } else if (conversationsQuery.isPending) {
     body = <ConversationListSkeleton />;
-  } else if (conversationsQuery.isError) {
+  } else if (conversationsQuery.isError && conversations.length === 0) {
+    // `isError` alone is the wrong condition in an offline-first app: this
+    // screen refetches on every focus, and a failed background refetch leaves
+    // `isError` true while `data` still holds a perfectly good cached list.
+    // Replacing that list with a full-screen error is a regression from what
+    // the user could already see. Only a failure with nothing to show is a
+    // failure worth a screen; anything else falls through to the list, with
+    // the offline banner explaining why it might be stale.
     body = (
       <ErrorState
         message={

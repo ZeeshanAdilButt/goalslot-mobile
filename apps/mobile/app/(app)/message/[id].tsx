@@ -316,7 +316,13 @@ export default function MessageThreadScreen() {
   );
 
   const conversationFailed = conversationQuery.isError;
-  const threadFailed = messagesQuery.isError;
+  // Only a failure with nothing to show is worth a full-screen error. This
+  // screen refetches on every focus, so `isError` stays true after a failed
+  // background refetch while `data` still holds the thread the user was
+  // reading — and swapping a readable conversation for "couldn't load this"
+  // is worse than showing it slightly stale under the offline banner. Same
+  // rule the conversations list applies.
+  const threadUnreadable = messagesQuery.isError && messages.length === 0;
 
   let body: React.ReactNode;
 
@@ -333,7 +339,7 @@ export default function MessageThreadScreen() {
     body = <ErrorState message="That conversation link is missing an id." />;
   } else if (conversationQuery.isPending || messagesQuery.isPending) {
     body = <ThreadSkeleton />;
-  } else if (conversationFailed || threadFailed) {
+  } else if (conversationFailed || threadUnreadable) {
     body = (
       <ErrorState
         message={
