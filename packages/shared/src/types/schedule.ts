@@ -56,6 +56,17 @@ export type SchedulePayload = {
 
 export type ScheduleUpdateScope = 'single' | 'series'
 
+/**
+ * How far a delete reaches. Mirrors `ScheduleUpdateScope`, but note the
+ * asymmetry in how each is honoured: the API accepts `updateScope` in the
+ * PUT body and fans out server-side (`updateMany({ userId, seriesId })`),
+ * whereas `DELETE /schedule/:id` takes no scope at all. There is no
+ * `deleteScope` field on the wire — a 'series' delete is the CLIENT issuing
+ * one DELETE per member block. This type names the user's intent so the UI
+ * and the call site agree on it; it is never serialised.
+ */
+export type ScheduleDeleteScope = 'single' | 'series'
+
 export type ScheduleUpdatePayload = Partial<Omit<SchedulePayload, 'seriesId'>> & {
   updateScope?: ScheduleUpdateScope
 }

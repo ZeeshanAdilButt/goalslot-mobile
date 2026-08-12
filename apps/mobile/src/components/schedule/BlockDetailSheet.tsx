@@ -25,6 +25,7 @@ import {
   formatTime12h,
   timeToMinutes,
   type ScheduleBlock,
+  type ScheduleDeleteScope,
 } from "@goalslot/shared";
 
 import { Icon } from "@/components/ui/Icon";
@@ -34,18 +35,34 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 
 export interface BlockDetailSheetProps {
   block: ScheduleBlock | null;
-  onDelete: (block: ScheduleBlock) => void;
+  onDelete: (block: ScheduleBlock, scope: ScheduleDeleteScope) => void;
   onEdit: (block: ScheduleBlock) => void;
   onDismiss: () => void;
   /** Whether this block's reminder notification is currently on — see useScheduleReminders.ts. */
   reminderEnabled: boolean;
   onToggleReminder: () => void;
+  /** How many blocks share this block's seriesId. 1 means it isn't really a series. */
+  seriesSize: number;
+  /** Whether the whole series' alarms are on — the "silence Reading everywhere" switch. */
+  seriesEnabled: boolean;
+  onToggleSeriesReminder: () => void;
 }
 
 export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetProps>(function BlockDetailSheet(
-  { block, onDelete, onEdit, onDismiss, reminderEnabled, onToggleReminder },
+  {
+    block,
+    onDelete,
+    onEdit,
+    onDismiss,
+    reminderEnabled,
+    onToggleReminder,
+    seriesSize,
+    seriesEnabled,
+    onToggleSeriesReminder,
+  },
   ref,
 ) {
+  const isSeries = seriesSize > 1;
   const sheetRef = useRef<BottomSheetModal>(null);
   useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
 
@@ -58,19 +75,41 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
 
   const handleDelete = useCallback(() => {
     if (!block) return;
-    // Same copy as the web's ConfirmDialog in schedule-block-detail-dialog.tsx.
-    Alert.alert("Delete time slot", "This can't be undone.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => {
-          sheetRef.current?.dismiss();
-          onDelete(block);
+
+    const remove = (scope: ScheduleDeleteScope) => {
+      sheetRef.current?.dismiss();
+      onDelete(block, scope);
+    };
+
+    // A solo block keeps the web's exact ConfirmDialog copy.
+    if (!isSeries) {
+      Alert.alert("Delete time slot", "This can't be undone.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => remove("single") },
+      ]);
+      return;
+    }
+
+    // The standard calendar prompt, and the reason it is a prompt rather than
+    // a default: "Reading" on five weekdays is five rows, and guessing wrong
+    // in either direction is bad. Silently deleting the series destroys four
+    // days the user never mentioned; silently deleting one leaves them doing
+    // it five times, which is the complaint that started this. So ask, and
+    // make the destructive-to-many option say how many.
+    Alert.alert(
+      "Delete time slot",
+      `"${block.title}" repeats on ${seriesSize} days. This can't be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "This day only", style: "destructive", onPress: () => remove("single") },
+        {
+          text: `All ${seriesSize} days`,
+          style: "destructive",
+          onPress: () => remove("series"),
         },
-      },
-    ]);
-  }, [block, onDelete]);
+      ],
+    );
+  }, [block, isSeries, onDelete, seriesSize]);
 
   const duration = useMemo(() => {
     if (!block) return "";
@@ -125,20 +164,50 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
 
             {/* "ability to be able to turn on alarms for all schedule blocks
                 and also ability to stop all or one" — this is the "or one"
-                half; the bulk on/off lives in the Schedule screen's header. */}
+                half; the master switch lives in the Schedule screen's header.
+                Between the two sits the series row below: silencing "Reading"
+                once instead of opening five days and flipping five switches. */}
             <View style={styles.reminderRow}>
               <View style={styles.reminderLabelGroup}>
                 <Icon name={reminderEnabled ? "bell" : "bell-off"} size={16} color={colors.mutedForeground} />
-                <Text style={styles.reminderLabel}>Reminder</Text>
+                <View style={styles.reminderCopy}>
+                  <Text style={styles.reminderLabel}>Alarm for this day</Text>
+                  <Text style={styles.reminderHint}>
+                    {reminderEnabled
+                      ? `Rings at ${formatTime12h(block.startTime)}`
+                      : "Silenced"}
+                  </Text>
+                </View>
               </View>
               <Switch
                 value={reminderEnabled}
                 onValueChange={onToggleReminder}
                 accessibilityRole="switch"
-                accessibilityLabel="Reminder"
+                accessibilityLabel={`Alarm for this day, ${DAYS_OF_WEEK_FULL[block.dayOfWeek]} at ${formatTime12h(block.startTime)}`}
                 accessibilityState={{ checked: reminderEnabled }}
               />
             </View>
+
+            {isSeries ? (
+              <View style={styles.reminderRow}>
+                <View style={styles.reminderLabelGroup}>
+                  <Icon name={seriesEnabled ? "bell" : "bell-off"} size={16} color={colors.mutedForeground} />
+                  <View style={styles.reminderCopy}>
+                    <Text style={styles.reminderLabel}>Alarms for all {seriesSize} days</Text>
+                    <Text style={styles.reminderHint}>
+                      Every day &ldquo;{block.title}&rdquo; repeats
+                    </Text>
+                  </View>
+                </View>
+                <Switch
+                  value={seriesEnabled}
+                  onValueChange={onToggleSeriesReminder}
+                  accessibilityRole="switch"
+                  accessibilityLabel={`Alarms for all ${seriesSize} days of ${block.title}`}
+                  accessibilityState={{ checked: seriesEnabled }}
+                />
+              </View>
+            ) : null}
 
             <View style={styles.actionRow}>
               <Pressable
@@ -254,14 +323,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.muted,
   },
   reminderLabelGroup: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+  },
+  reminderCopy: {
+    flexShrink: 1,
+    gap: spacing.xxs,
   },
   reminderLabel: {
     ...typography.body,
     fontWeight: "600",
     color: colors.foreground,
+  },
+  reminderHint: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
   sectionLabel: {
     ...typography.label,

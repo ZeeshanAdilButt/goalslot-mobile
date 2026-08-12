@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
 import { Icon } from "@/components/ui/Icon";
+import { ScheduleRemindersSync } from "@/components/schedule";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
@@ -49,6 +50,10 @@ export default function AppLayout() {
   // than expo-router's own Drawer navigator.
   return (
     <View style={styles.root}>
+      {/* Renders nothing. Owns re-arming every schedule alarm for the whole
+          signed-in session, so they survive a sign-in's notification sweep
+          and edits made outside the Schedule tab. See the component. */}
+      <ScheduleRemindersSync />
       <Tabs
         screenOptions={{
           headerShown: false,

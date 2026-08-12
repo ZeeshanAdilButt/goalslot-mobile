@@ -32,6 +32,27 @@ Go, not bare RN.
   local-notification rebooking on iOS) need native AndroidManifest
   entries and likely a native alarm-ringing module — `expo-notifications`
   alone doesn't reach the exact-alarm + full-screen-intent pattern.
+
+  Partly settled since. The *exact-alarm* half turned out not to need a
+  module at all, only manifest permissions: `expo-notifications` already
+  schedules through `AlarmManager` and already calls
+  `setExactAndAllowWhileIdle` — it just gates that on
+  `canScheduleExactAlarms()`, which is false on Android 12+ until the app
+  declares `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`. Those are now in
+  `app.json`, and the library also handles the two things this bullet
+  worried about most: weekly triggers re-arm themselves after firing
+  (`ExpoSchedulingDelegate.triggerNotification` reschedules), and a
+  `BOOT_COMPLETED` receiver restores the queue after a reboot.
+
+  What still needs a native module is the *full-screen intent* — the
+  alarm-clock experience that takes over a locked screen and rings until
+  dismissed. Everything short of that is reachable today: a MAX-importance
+  channel with sound and vibration on Android, and
+  `interruptionLevel: 'timeSensitive'` on iOS, which is as far as a
+  notification can go without Apple's Critical Alerts entitlement. That is
+  a heads-up alert with sound, not a ringing alarm you must dismiss, and
+  the gap is deliberate rather than pending — see
+  `src/lib/notifications.ts`.
 - What Expo buys over bare RN: `expo-updates` for OTA updates, `eas
   build`/`eas submit` for toolchain-free native builds (no local Android
   SDK or Xcode required per machine), and a maintained upgrade path
@@ -110,7 +131,8 @@ library/templates, and admin screens.
 - **Whiteboards** — the web canvas library has no practical native port;
   stays web-only permanently.
 - **Web notification handling** — rewritten against `expo-notifications`,
-  eventually backed by a native alarm module for real alarms.
+  which now covers exact, audible, weekly-recurring schedule alarms (see
+  §2); only a full-screen ringing alarm would still need a native module.
 - **Auth token storage and the auth interceptor chain** — every storage
   touchpoint gets rewritten against `expo-secure-store`; the
   request/response interceptor logic itself is portable, just not its

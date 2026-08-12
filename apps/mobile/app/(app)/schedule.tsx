@@ -27,6 +27,7 @@ import {
   DAYS_OF_WEEK_FULL,
   formatDuration,
   type ScheduleBlock,
+  type ScheduleDeleteScope,
   type WeekSchedule,
 } from "@goalslot/shared";
 
@@ -47,7 +48,10 @@ import { apiClient } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
 import { scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { cancelBlockReminders } from "@/lib/schedule-reminders";
+import { findLinkedBlocks } from "@/lib/schedule-series";
 import { useScheduleReminders } from "@/lib/useScheduleReminders";
+import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 // `typeScale` is the primitive half of the same token set `tokens.ts` re-exports
 // (both resolve to theme/foundation.ts) — used here only where a semantic role
@@ -71,6 +75,7 @@ const HAMBURGER_CLEARANCE = 64;
 
 export default function ScheduleScreen() {
   const analytics = useAnalytics();
+  const { notifications } = useCapabilities();
   const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
   const [now, setNow] = useState(() => new Date());
   const [detailBlock, setDetailBlock] = useState<ScheduleBlock | null>(null);
@@ -155,6 +160,14 @@ export default function ScheduleScreen() {
   const allBlocks = useMemo(() => Object.values(weeklyQuery.data ?? {}).flat(), [weeklyQuery.data]);
   const reminders = useScheduleReminders(allBlocks);
 
+  // The other days the open block is part of — a real series, or a lookalike
+  // group the app inferred. Drives both the detail sheet's "all N days"
+  // alarm switch and its delete prompt. See src/lib/schedule-series.ts.
+  const detailLinked = useMemo(
+    () => (detailBlock ? findLinkedBlocks(detailBlock, allBlocks).members : []),
+    [detailBlock, allBlocks],
+  );
+
   const dayWindow = useMemo(
     () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? []),
     [weeklyQuery.data, selectedDay],
@@ -193,26 +206,54 @@ export default function ScheduleScreen() {
     // the window actually changes, and reads the current minute at that point.
   }, [selectedDay, showSkeleton, entries, dayWindow]);
 
+  // Deleting is the one series operation the API has no scope for: PUT
+  // /schedule/:id honours `updateScope: 'series'` server-side, but DELETE
+  // /schedule/:id deletes exactly one row and takes no scope. So a series
+  // delete is fanned out here, one request per member — the same shape the
+  // multi-day CREATE already uses (ScheduleBlockSheet.tsx), for the same
+  // reason: no bulk endpoint exists.
   const handleDeleteBlock = useCallback(
-    async (block: ScheduleBlock) => {
+    async (block: ScheduleBlock, scope: ScheduleDeleteScope) => {
       const weeklyKey = scheduleQueries.scheduleQueries.weeklyKey();
       const previous = queryClient.getQueryData<WeekSchedule>(weeklyKey);
 
+      const targets = scope === "series" ? findLinkedBlocks(block, allBlocks).members : [block];
+      const targetIds = new Set(targets.map((b) => b.id));
+
       queryClient.setQueryData<WeekSchedule>(weeklyKey, (existing) => {
-        const week = existing ?? {};
-        const dayList = week[block.dayOfWeek] ?? [];
-        return { ...week, [block.dayOfWeek]: dayList.filter((entry) => entry.id !== block.id) };
+        const week = { ...(existing ?? {}) };
+        for (const key of Object.keys(week)) {
+          const dayIndex = Number(key);
+          week[dayIndex] = (week[dayIndex] ?? []).filter((entry) => !targetIds.has(entry.id));
+        }
+        return week;
       });
 
+      // Cancel the alarms before the requests, not after. These are weekly
+      // and indefinite: a deleted block whose notification is still queued
+      // keeps announcing itself every week with nothing left to open, and
+      // once the block is gone from the cache the reconciler can't find it
+      // to cancel either. (pruneOrphanReminders in useScheduleReminders.ts
+      // is the safety net for the ones that got away — including blocks
+      // deleted on the web — but the direct path shouldn't rely on it.)
+      await cancelBlockReminders(targets, notifications);
+
       try {
-        await apiClient.schedule.delete(block.id);
-        analytics.track({ name: "scheduleBlockDeleted", payload: { scheduleBlockId: block.id } });
+        await Promise.all(targets.map((target) => apiClient.schedule.delete(target.id)));
+        for (const target of targets) {
+          analytics.track({ name: "scheduleBlockDeleted", payload: { scheduleBlockId: target.id } });
+        }
       } catch {
         queryClient.setQueryData(weeklyKey, previous);
+        // A series delete is N independent requests and some may have
+        // succeeded before one failed, so the rollback above can put blocks
+        // back that no longer exist. Refetch to find out what actually
+        // survived rather than leaving a cache that's confidently wrong.
+        void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
         Alert.alert("Couldn't delete", "That time slot is still there — please try again.");
       }
     },
-    [analytics],
+    [allBlocks, analytics, notifications],
   );
 
   // Every "+" affordance on this screen (FAB, an empty hour row, the
@@ -269,9 +310,13 @@ export default function ScheduleScreen() {
       ? `${dayLabel}, nothing scheduled`
       : `${dayLabel}, ${blockCount} ${blockCount === 1 ? "block" : "blocks"}, ${formatDuration(scheduledMinutes)} scheduled`;
 
+  // A STICKY master switch, not a bulk edit of the blocks that happen to
+  // exist right now. The previous version added every current block id to a
+  // disabled set, so the next block the user created came back on and the
+  // switch had silently undone itself — see schedule-reminders-store.ts.
   const handleToggleAllReminders = useCallback(() => {
     hapticLight();
-    void (reminders.allEnabled ? reminders.disableAllReminders() : reminders.enableAllReminders());
+    void reminders.setMasterEnabled(!reminders.masterEnabled);
   }, [reminders]);
 
   return (
@@ -284,26 +329,33 @@ export default function ScheduleScreen() {
             <Text style={styles.headerTitle}>Schedule</Text>
           </View>
 
-          {/* Bulk on/off for every block's reminder, right from this screen —
+          {/* Master on/off for every schedule alarm, right from this screen —
               "ability to be able to turn on alarms for all schedule blocks
               and also ability to stop all or one, right from schedule
-              screen". Per-block control lives in BlockDetailSheet. */}
+              screen". Series and per-block control live in BlockDetailSheet.
+              Never disabled on an empty week: this is a standing preference,
+              and it has to be settable before the blocks it will govern
+              exist. */}
           <Pressable
             style={styles.remindersToggle}
             onPress={handleToggleAllReminders}
-            disabled={allBlocks.length === 0}
             // The circle reads better at 36 than at 44 next to the title, so
             // the touch target is bought back with hitSlop (36 + 2×8 = 52),
             // the same trade the floating hamburger makes in _layout.tsx.
             hitSlop={spacing.sm}
-            accessibilityRole="button"
-            accessibilityLabel={reminders.allEnabled ? "Turn off all reminders" : "Turn on all reminders"}
-            accessibilityState={{ disabled: allBlocks.length === 0 }}
+            accessibilityRole="switch"
+            accessibilityLabel="All schedule alarms"
+            accessibilityHint={
+              reminders.masterEnabled
+                ? "Turns off every schedule alarm, including slots you add later"
+                : "Turns every schedule alarm back on"
+            }
+            accessibilityState={{ checked: reminders.masterEnabled }}
           >
             <Icon
-              name={reminders.allEnabled ? "bell" : "bell-off"}
+              name={reminders.masterEnabled ? "bell" : "bell-off"}
               size={20}
-              color={allBlocks.length === 0 ? colors.mutedForeground : colors.foreground}
+              color={reminders.masterEnabled ? colors.foreground : colors.mutedForeground}
             />
           </Pressable>
         </View>
@@ -395,8 +447,13 @@ export default function ScheduleScreen() {
         onDelete={handleDeleteBlock}
         onEdit={handleEditBlock}
         onDismiss={() => setDetailBlock(null)}
-        reminderEnabled={detailBlock ? reminders.isReminderEnabled(detailBlock.id) : true}
+        reminderEnabled={detailBlock ? reminders.isReminderEnabled(detailBlock) : true}
         onToggleReminder={() => detailBlock && void reminders.toggleBlockReminder(detailBlock)}
+        seriesSize={detailLinked.length}
+        seriesEnabled={detailLinked.length > 0 ? reminders.isGroupEnabled(detailLinked) : true}
+        onToggleSeriesReminder={() =>
+          void reminders.setGroupEnabled(detailLinked, !reminders.isGroupEnabled(detailLinked))
+        }
       />
     </SafeAreaView>
   );

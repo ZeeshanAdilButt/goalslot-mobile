@@ -40,6 +40,27 @@ interface NotificationInputBase {
    * apps/mobile/src/lib/deep-links.ts's DeepLinkNotificationData.
    */
   data?: Record<string, unknown>
+  /**
+   * Ask for this to be delivered as an ALARM rather than a quiet notice:
+   * audible, heads-up, and allowed to interrupt a Focus/Do-Not-Disturb
+   * profile. Defaults to false — a plain notification.
+   *
+   * WHY this is one semantic flag rather than the platform fields it maps
+   * onto (`sound`, an Android channel id + importance, iOS
+   * `interruptionLevel`): this package is the capability port, and naming
+   * expo/Android/iOS concepts here would push platform detail up into every
+   * caller and defeat the boundary. Callers say WHAT they need — "this must
+   * wake someone up" — and the one file allowed to import expo-notifications
+   * (apps/mobile/src/lib/notifications.ts) decides HOW.
+   *
+   * A caller that sets this is not guaranteed an alarm: on Android 12+ exact
+   * delivery additionally depends on the app holding SCHEDULE_EXACT_ALARM /
+   * USE_EXACT_ALARM (declared in app.json), and on either platform the user
+   * can always silence the channel afterwards. It is a request, not a
+   * promise — the same contract as `scheduleNotification` itself, which
+   * resolves even when permission was refused.
+   */
+  alarm?: boolean
 }
 
 /** Fires once, at an exact absolute instant — e.g. a coach nudge or a one-off deadline. */
@@ -77,6 +98,22 @@ export interface NotificationCapability {
   requestPermission(): Promise<boolean>
   scheduleNotification(input: NotificationInput): Promise<void>
   cancelNotification(id: string): Promise<void>
+  /**
+   * Identifiers of everything this app currently has QUEUED (not delivered).
+   *
+   * WHY the port needs this: a recurring notification outlives the record
+   * that created it. Delete a schedule block — here, or on the web, or from
+   * another device — and its weekly alarm is still sitting in the OS queue,
+   * firing every week for a block that no longer exists. Nothing derived
+   * from the app's own data can find it, because the block it was named
+   * after is gone; the only way to notice an orphan is to ask the OS what it
+   * is actually holding and diff that against what should be there.
+   *
+   * Resolves to an empty array rather than rejecting when the platform can't
+   * answer — callers use this to prune, and a failed prune must degrade to
+   * "left the queue alone", never to a thrown error mid-reconcile.
+   */
+  listScheduledIds(): Promise<string[]>
   /**
    * Drops every notification this app owns on the device — the ones still
    * queued to fire and the ones already delivered and sitting in the shade.
@@ -141,6 +178,10 @@ function createNoopNotificationCapability(): NotificationCapability {
     },
     async cancelNotification() {
       // no-op
+    },
+    async listScheduledIds() {
+      // Nothing was ever scheduled, so nothing is queued.
+      return []
     },
     async clearAllNotifications() {
       // no-op: nothing was ever scheduled, so there is nothing to clear.
