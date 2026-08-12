@@ -32,6 +32,9 @@ function createRecordingNotifications() {
   const scheduled: NotificationInput[] = [];
   const cancelled: string[] = [];
   const capability: NotificationCapability = {
+    async getPermissionStatus() {
+      return "granted";
+    },
     async requestPermission() {
       return true;
     },

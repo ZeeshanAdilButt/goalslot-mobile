@@ -98,9 +98,10 @@ already proven in production:
   (Keychain/Keystore-backed), explicitly not AsyncStorage — long-lived
   tokens with no server-side revocation make secure storage
   non-negotiable.
-- **Local app state** (theme, timer, offline-queue UI): zustand with
-  `AsyncStorage`-backed persistence, matching the web app's existing
-  stores.
+- **Local app state** (timer, reminder interval, offline-queue UI): zustand
+  with `AsyncStorage`-backed persistence, matching the web app's existing
+  stores. Theme was originally an example here; it never became one — see
+  the note under §5.
 - **Optimistic writes**: `useOfflineMutation` ports as-is; only the
   toast/notifier call is swapped for an injected notifier.
 
@@ -111,6 +112,15 @@ from schedule, tasks, and timer data), Schedule (a day-agenda redesign of
 the web app's weekly drag-grid), Goals, Tasks, Time Tracker, a
 cross-cutting quick-add sheet, and a trimmed Settings screen
 (profile/logout/notifications/theme only).
+
+> **Amended.** Theme never shipped: no ThemeProvider was ever built, so the
+> picker saved a preference nothing read and the screen said so in its own
+> helper text. It and its store field have been removed — web reached the
+> same conclusion and hides its Appearance tab. Settings has since grown to
+> track web's remaining tabs: profile editing, an OTP password change,
+> delete account, the Coach's BYOK key and habits profile, and a read-only
+> plan badge. Billing stays read-only deliberately; see the comment at the
+> top of `app/(app)/settings.tsx`.
 
 **Cut from v1** (deferred, not dropped): an AI coaching chat screen,
 Journal, Notes (shipped later — see below), a Reports view, Whiteboards

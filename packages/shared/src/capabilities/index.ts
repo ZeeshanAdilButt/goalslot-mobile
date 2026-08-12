@@ -94,7 +94,28 @@ interface RecurringNotificationInput extends NotificationInputBase {
 
 export type NotificationInput = OneShotNotificationInput | RecurringNotificationInput
 
+/**
+ * What the OS currently thinks about this app and notifications.
+ *
+ * The three states are not two states with a nicety on top — they need three
+ * different pieces of UI. `undetermined` means an in-app "Allow
+ * notifications" button will actually raise the system prompt. `denied`
+ * means it won't: iOS only ever asks once, so the only route back is the
+ * device's own settings app, and a button that silently does nothing is
+ * worse than no button. `granted` means neither control should be shown.
+ */
+export type NotificationPermissionStatus = 'granted' | 'denied' | 'undetermined'
+
 export interface NotificationCapability {
+  /**
+   * Reads the current permission without prompting.
+   *
+   * Exists so a settings screen can show the truth instead of a local mirror
+   * of "did the last requestPermission() call succeed" — that mirror resets
+   * on every app launch, and it goes stale the moment the user changes the
+   * permission in the OS settings app and comes back.
+   */
+  getPermissionStatus(): Promise<NotificationPermissionStatus>
   requestPermission(): Promise<boolean>
   scheduleNotification(input: NotificationInput): Promise<void>
   cancelNotification(id: string): Promise<void>
@@ -170,6 +191,12 @@ function createNoopVoiceCapability(): VoiceCapability {
 
 function createNoopNotificationCapability(): NotificationCapability {
   return {
+    async getPermissionStatus() {
+      // 'denied' rather than 'undetermined': `requestPermission` below always
+      // returns false, so reporting "you can still be asked" would invite a
+      // caller to render a prompt button that can never succeed.
+      return 'denied'
+    },
     async requestPermission() {
       return false
     },

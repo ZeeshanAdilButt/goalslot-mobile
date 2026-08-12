@@ -1,9 +1,17 @@
-// Local device settings (theme preference, tracking-reminder interval).
-// Persisted via AsyncStorage following the exact same pattern as
-// src/lib/timer-store.ts — this is app-layer device state, not something the
-// API or another platform needs to know about, and not sensitive, so plain
-// AsyncStorage persistence (rather than expo-secure-store, which is reserved
-// for auth tokens per src/providers/auth-provider.tsx) is the right call.
+// Local device settings. Persisted via AsyncStorage following the exact same
+// pattern as src/lib/timer-store.ts — this is app-layer device state, not
+// something the API or another platform needs to know about, and not
+// sensitive, so plain AsyncStorage persistence (rather than expo-secure-store,
+// which is reserved for auth tokens per src/providers/auth-provider.tsx) is
+// the right call.
+//
+// Everything here has to earn its place by actually changing app behaviour.
+// A "theme preference" used to live here too, and it did not: nothing read
+// it, so the Settings screen shipped a segmented control that saved a value
+// and changed nothing, under a note telling the user so. It has been removed
+// rather than left to rot — web made the same call, hiding its Appearance tab
+// (see dw-time-web/src/app/dashboard/settings/page.tsx's TABS comment). If a
+// real theme system ever lands, the preference comes back with it.
 //
 // The reminder interval lives HERE rather than on timer-store, even though
 // web keeps its equivalent on the timer store (dw-time-web's
@@ -12,16 +20,8 @@
 // sign-out — resets that store wholesale back to INITIAL_STATE. Parking the
 // interval there would silently reset the user's choice to 15 minutes every
 // time they signed in. It is device-scoped rather than account-scoped for
-// the same reason theme is, and for the same reason web's copy is: web
-// persists it to localStorage, so it is already per-device there too.
-//
-// Theme is deliberately just "the user's stored preference" right now.
-// There is no app-wide theme system implemented yet (no ThemeProvider, no
-// component reads this value to actually change colors) — wiring live theme
-// switching across every screen is out of scope for the Settings screen
-// itself. This store exists so the choice survives app restarts and is
-// ready for a future theme system to read, per the Settings screen's note
-// to the user that the choice takes effect on next launch.
+// the same reason web's copy is: web persists it to localStorage, so it is
+// already per-device there too.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { create } from "zustand";
@@ -29,32 +29,52 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { DEFAULT_REMINDER_INTERVAL_MINUTES, normalizeReminderIntervalMinutes } from "./timer-reminders";
 
-export type ThemePreference = "light" | "dark" | "system";
-
 interface SettingsPersistedState {
-  themePreference: ThemePreference;
   /** How often the running timer nudges "still strictly focused?", in minutes. */
   timerReminderIntervalMinutes: number;
 }
 
 interface SettingsState extends SettingsPersistedState {
-  setThemePreference: (preference: ThemePreference) => void;
   setTimerReminderIntervalMinutes: (minutes: number) => void;
 }
 
 const INITIAL_STATE: SettingsPersistedState = {
-  themePreference: "system",
   timerReminderIntervalMinutes: DEFAULT_REMINDER_INTERVAL_MINUTES,
 };
+
+/**
+ * Rebuilds state from whatever AsyncStorage happens to hold, taking only the
+ * keys this store still recognises.
+ *
+ * Deliberately an explicit pick rather than `{ ...current, ...persisted }`.
+ * Installs that ran a build where `themePreference` was still persisted have
+ * that key sitting in `goalslot-settings-store` today, and a blind spread
+ * would copy it straight back onto live state as a property no type declares
+ * and nothing reads. zustand's *default* merge is a shallow spread with the
+ * same behaviour — "unknown keys are ignored" is only true of the state
+ * shape, not of the object you get back. Picking by name means a retired key
+ * cannot survive a rehydrate, and it is dropped from storage entirely on the
+ * next write (`partialize` decides what gets written, and it no longer lists
+ * it).
+ *
+ * Exported for src/lib/settings-store.test.ts — the stale-key case is
+ * exactly the one that is invisible at runtime until it isn't.
+ */
+export function mergePersistedSettings(persisted: unknown, current: SettingsState): SettingsState {
+  const stored = (persisted ?? {}) as Partial<SettingsPersistedState>;
+  return {
+    ...current,
+    // Storage written before this field existed rehydrates it as `undefined`,
+    // which would otherwise reach the picker as "no option selected" and the
+    // scheduler as a normalise-to-default every pass.
+    timerReminderIntervalMinutes: normalizeReminderIntervalMinutes(stored.timerReminderIntervalMinutes),
+  };
+}
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       ...INITIAL_STATE,
-
-      setThemePreference(preference) {
-        set({ themePreference: preference });
-      },
 
       setTimerReminderIntervalMinutes(minutes) {
         // Normalised on the way in as well as on the way out (the scheduler
@@ -67,19 +87,9 @@ export const useSettingsStore = create<SettingsState>()(
       name: "goalslot-settings-store",
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => ({
-        themePreference: state.themePreference,
         timerReminderIntervalMinutes: state.timerReminderIntervalMinutes,
       }),
-      // Storage written before this field existed rehydrates it as
-      // `undefined`, which would otherwise reach the picker as "no option
-      // selected" and the scheduler as a normalise-to-default every pass.
-      merge: (persisted, current) => ({
-        ...current,
-        ...(persisted as Partial<SettingsPersistedState>),
-        timerReminderIntervalMinutes: normalizeReminderIntervalMinutes(
-          (persisted as Partial<SettingsPersistedState> | undefined)?.timerReminderIntervalMinutes,
-        ),
-      }),
+      merge: mergePersistedSettings,
     },
   ),
 );

@@ -10,6 +10,7 @@
 import {
   createCategoryQueries,
   createCoachQueries,
+  createCoachSettingsQueries,
   createGoalQueries,
   createJournalQueries,
   createLabelQueries,
@@ -24,6 +25,10 @@ import { apiClient } from "./api-client";
 import { messagingClient } from "./messaging-client";
 
 export const coachQueries = createCoachQueries(apiClient.coach);
+// The BYOK key + habits profile, read by the Settings screen's sheets. Keys
+// live under the same `['coach']` root as the chat queries above — see
+// packages/shared/src/queries/coach-settings.ts for why that matters.
+export const coachSettingsQueries = createCoachSettingsQueries(apiClient.coachSettings);
 export const goalQueries = createGoalQueries(apiClient.goals);
 export const taskQueries = createTaskQueries(apiClient.tasks);
 export const scheduleQueries = createScheduleQueries(apiClient.schedule);
