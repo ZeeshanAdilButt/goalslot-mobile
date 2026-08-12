@@ -48,6 +48,14 @@ describe('createNoopCapabilities', () => {
     await expect(caps.notifications.cancelNotification('n1')).resolves.toBeUndefined()
   })
 
+  it('notifications: the bulk sign-out sweep resolves without error', async () => {
+    // Its one caller is a sign-out (apps/mobile/src/lib/session-reset.ts),
+    // which must never be blocked by the notification layer — including when
+    // the notification layer is this inert stand-in.
+    const caps = createNoopCapabilities()
+    await expect(caps.notifications.clearAllNotifications()).resolves.toBeUndefined()
+  })
+
   it('each call to the factory returns an independent instance', async () => {
     const capsA = createNoopCapabilities()
     const capsB = createNoopCapabilities()

@@ -41,6 +41,11 @@ function createRecordingNotifications() {
     async cancelNotification(id) {
       cancelled.push(id);
     },
+    async clearAllNotifications() {
+      // Nothing in this module calls it — the bulk sweep belongs to sign-out
+      // (session-reset.ts), which is tested there. Present only so the fake
+      // still satisfies the port.
+    },
   };
   return { capability, scheduled, cancelled };
 }

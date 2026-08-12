@@ -77,6 +77,23 @@ export interface NotificationCapability {
   requestPermission(): Promise<boolean>
   scheduleNotification(input: NotificationInput): Promise<void>
   cancelNotification(id: string): Promise<void>
+  /**
+   * Drops every notification this app owns on the device — the ones still
+   * queued to fire and the ones already delivered and sitting in the shade.
+   *
+   * WHY the port needs a bulk operation instead of callers looping over
+   * `cancelNotification`: the one caller that needs this is sign-out, and by
+   * then it cannot enumerate the ids. Notification ids are minted from
+   * account-scoped server ids (`schedule-reminder-<blockId>`), so the only
+   * record of what is pending is the very data a sign-out has just thrown
+   * away. Anything the caller could reconstruct would be a guess, and a
+   * missed id is a notification that fires for the next person on the device
+   * carrying the previous account's wording.
+   *
+   * Resolves rather than rejects even when the platform refuses. Sign-out is
+   * the caller, and a user must always be able to sign out.
+   */
+  clearAllNotifications(): Promise<void>
 }
 
 export interface Capabilities {
@@ -124,6 +141,9 @@ function createNoopNotificationCapability(): NotificationCapability {
     },
     async cancelNotification() {
       // no-op
+    },
+    async clearAllNotifications() {
+      // no-op: nothing was ever scheduled, so there is nothing to clear.
     },
   }
 }
