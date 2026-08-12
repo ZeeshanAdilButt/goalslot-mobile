@@ -50,6 +50,7 @@ import { TimerControls } from "@/components/timer/TimerControls";
 import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
+import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
@@ -534,6 +535,13 @@ export default function TimerScreen() {
           onStop={() => void handleStop()}
         />
       </View>
+
+      {/* Tracking-scoped voice control. Self-contained — it reads the timer
+          store and the goal/task lists itself — except for stopping, which
+          is handed back to this screen's own handler so there stays exactly
+          one path that writes a TimeEntry. See the component's header for
+          why this mic behaves differently from the one in the tab bar. */}
+      <TrackerVoiceButton onStopSession={() => void handleStop()} />
 
       <View style={styles.listArea}>
         {recentQuery.isPending ? (

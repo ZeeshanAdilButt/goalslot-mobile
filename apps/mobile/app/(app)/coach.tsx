@@ -12,11 +12,17 @@
 // Streaming: uses apiClient.coach.streamChat, which goes over `expo/fetch`
 // (not the RN built-in `fetch`) specifically because Hermes' fetch can't
 // expose a readable response body — see src/lib/api-client.ts's comment.
-// The proposal-apply endpoint (POST /coach/proposals/apply) exists in
-// @goalslot/shared's coach API but is intentionally not called here: a
-// wrong auto-mutation of a real goal/schedule/task from a first-pass
-// mobile screen is worse than a card the user can only look at. Proposal
-// cards below are read-only.
+//
+// Proposals used to render read-only here, with a footnote telling the user
+// to open the web app to apply them. That changed with voice control: the
+// voice assistant (app/(app)/voice.tsx) needs the same card and needs it to
+// work, and shipping two versions — one actionable and one not — would be
+// worse than either. The card moved to
+// src/components/coach/CoachProposalCard.tsx, gained an Apply button gated
+// on explicit confirmation (twice, for anything destructive), and both
+// screens render that one component against POST /coach/proposals/apply.
+// So a change the user typed and a change they spoke behave identically,
+// because they are the same code.
 //
 // scopeKey is always "this ISO week" (currentCoachWeekScopeKey()) — web
 // also offers month/quarter/year via a scope-period picker, which doesn't
@@ -33,11 +39,11 @@ import {
   extractCoachProposals,
   type CoachMessageDto,
   type CoachProposalAction,
-  type CoachProposalActionType,
-  type CoachProposalBlock,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton } from "@/components";
+import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
+import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { apiClient } from "@/lib/api-client";
 import { coachQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -54,77 +60,14 @@ interface ChatMessageView {
   pending?: boolean;
 }
 
-/** Human label for a proposal action type — no icon library is installed (see app/(app)/_layout.tsx), text-only. */
-const ACTION_LABELS: Record<CoachProposalActionType, string> = {
-  RENAME_GOAL: "Rename goal",
-  UPDATE_GOAL: "Update goal",
-  CREATE_GOAL: "Create goal",
-  DELETE_GOAL: "Delete goal",
-  CREATE_SCHEDULE_BLOCK: "Add schedule block",
-  UPDATE_SCHEDULE_BLOCK: "Update schedule block",
-  DELETE_SCHEDULE_BLOCK: "Remove schedule block",
-  CREATE_TIME_ENTRY: "Log time",
-  UPDATE_TIME_ENTRY: "Update time entry",
-  DELETE_TIME_ENTRY: "Delete time entry",
-  CREATE_TASK: "Create task",
-  UPDATE_TASK: "Update task",
-  DELETE_TASK: "Delete task",
-  CREATE_PRACTICE: "Add active practice",
-};
-
-const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>(["DELETE_GOAL", "DELETE_SCHEDULE_BLOCK", "DELETE_TIME_ENTRY", "DELETE_TASK"]);
-
-/**
- * Read-only summary of a proposed action's payload. Simpler than web's
- * describeAction (dw-time-web/src/features/coach/components/coach-proposal-card.tsx),
- * which resolves goal/schedule/time-entry ids against the React Query cache
- * to show human-readable names — that cache-preloading dance is a lot of
- * surface area for a card the user can't act on yet in this first pass, so
- * this shows what the model actually sent (title/time/date fields when
- * present) rather than resolving ids to names.
- */
-function describeProposalAction(action: CoachProposalAction): string | null {
-  const p = action.payload ?? {};
-  const bits: string[] = [];
-  if (typeof p.title === "string") bits.push(`"${p.title}"`);
-  if (typeof p.startTime === "string" && typeof p.endTime === "string") {
-    bits.push(`${p.startTime}–${p.endTime}`);
-  }
-  if (typeof p.date === "string") bits.push(p.date);
-  if (typeof p.deadline === "string") bits.push(`due ${p.deadline}`);
-  if (typeof p.duration === "number") bits.push(`${p.duration} min`);
-  if (bits.length === 0 && action.id) bits.push(`#${action.id.slice(0, 8)}`);
-  return bits.length ? bits.join(" · ") : null;
-}
-
-function ProposalCard({ block }: { block: CoachProposalBlock }) {
-  const hasDestructive = block.actions.some((a) => DESTRUCTIVE_TYPES.has(a.type));
-  return (
-    <View style={styles.proposalCard} accessibilityRole="summary" accessibilityLabel="Coach proposed change, read only">
-      <View style={styles.proposalHeader}>
-        <Text style={styles.proposalHeaderText}>COACH PROPOSED CHANGE</Text>
-        {block.summary ? <Text style={styles.proposalSummary}>{block.summary}</Text> : null}
-      </View>
-      {block.actions.map((action, i) => {
-        const detail = describeProposalAction(action);
-        return (
-          <View key={i} style={styles.proposalRow}>
-            <Text style={[styles.proposalActionLabel, DESTRUCTIVE_TYPES.has(action.type) && styles.proposalActionLabelDestructive]}>
-              {ACTION_LABELS[action.type] ?? action.type}
-            </Text>
-            {detail ? <Text style={styles.proposalActionDetail}>{detail}</Text> : null}
-          </View>
-        );
-      })}
-      <Text style={styles.proposalFootnote}>
-        {hasDestructive ? "Includes a delete. " : ""}
-        Preview only — nothing changes. Applying proposals isn't supported on mobile yet; open GoalSlot on the web to apply this.
-      </Text>
-    </View>
-  );
-}
-
-function ChatBubble({ message }: { message: ChatMessageView }) {
+function ChatBubble({
+  message,
+  onApply,
+}: {
+  message: ChatMessageView;
+  /** Omitted while a reply is still streaming — half a proposal isn't a proposal. */
+  onApply?: (actions: CoachProposalAction[]) => Promise<string>;
+}) {
   const isUser = message.role === "USER";
 
   if (isUser) {
@@ -175,7 +118,9 @@ function ChatBubble({ message }: { message: ChatMessageView }) {
         </View>
       ) : null}
       {proposals.map((block, idx) => (
-        <ProposalCard key={idx} block={block} />
+        <View key={idx} style={styles.proposalSlot}>
+          <CoachProposalCard block={block} onApply={onApply} />
+        </View>
       ))}
     </View>
   );
@@ -184,6 +129,12 @@ function ChatBubble({ message }: { message: ChatMessageView }) {
 export default function CoachScreen() {
   const analytics = useAnalytics();
   const scopeKey = useMemo(() => currentCoachWeekScopeKey(), []);
+  const { apply } = useApplyCoachProposals();
+
+  const applyActions = useCallback(
+    (actions: CoachProposalAction[]) => apply({ actions }),
+    [apply],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -323,7 +274,10 @@ export default function CoachScreen() {
         accessibilityRole="none"
       >
         {allMessages.map((m) => (
-          <ChatBubble key={m.id} message={m} />
+          // A still-streaming reply gets no Apply button: `extractCoachProposals`
+          // reports a half-arrived block as `pending`, and offering to apply
+          // what has landed so far would let the user agree to a fragment.
+          <ChatBubble key={m.id} message={m} onApply={m.pending ? undefined : applyActions} />
         ))}
       </ScrollView>
     );
@@ -507,59 +461,13 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     color: colors.foreground,
   },
-  proposalCard: {
-    marginTop: spacing.xs,
+  // The proposal card itself now lives in
+  // src/components/coach/CoachProposalCard.tsx so the voice assistant renders
+  // the identical confirmation. This wrapper only holds the width and inset
+  // that make it sit inside the assistant bubble column.
+  proposalSlot: {
     maxWidth: "92%",
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.primaryDark,
-    backgroundColor: colors.card,
-    overflow: "hidden",
-  },
-  proposalHeader: {
-    backgroundColor: colors.warningMuted,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    gap: spacing.xxs,
-  },
-  proposalHeaderText: {
-    ...typography.label,
-    color: colors.foreground,
-  },
-  proposalSummary: {
-    ...typography.bodySmall,
-    fontWeight: "700",
-    color: colors.foreground,
-  },
-  proposalRow: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    gap: spacing.xxs,
-  },
-  proposalActionLabel: {
-    ...typography.caption,
-    color: colors.foreground,
-    textTransform: "uppercase",
-  },
-  proposalActionLabelDestructive: {
-    color: colors.destructive,
-  },
-  proposalActionDetail: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  proposalFootnote: {
-    ...typography.caption,
-    fontWeight: "400",
-    textTransform: "none",
-    color: colors.mutedForeground,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    alignSelf: "stretch",
   },
   errorBanner: {
     ...typography.bodySmall,

@@ -44,6 +44,8 @@ import {
   MessagesSquare,
   MessageSquareText,
   Menu,
+  Mic,
+  MicOff,
   NotebookPen,
   Pencil,
   RefreshCw,
@@ -119,6 +121,12 @@ const ICONS = {
   key: Key,
   "key-round": KeyRound,
   "credit-card": CreditCard,
+  // Voice control. `mic-off` is not a mute toggle — it's the resting mark
+  // for the two states where the microphone cannot be used at all
+  // (permission refused, no recognizer on the device), which need to look
+  // visibly different from an idle mic rather than merely dimmer.
+  mic: Mic,
+  "mic-off": MicOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;
