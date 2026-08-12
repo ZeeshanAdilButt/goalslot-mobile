@@ -246,6 +246,16 @@ export default function SettingsScreen() {
             icon="key-round"
             description="Bring your own OpenAI, Anthropic, Gemini or OpenRouter key."
             onPress={() => setOpenSheet("ai-key")}
+          />
+          {/* The two rows above configure the coach; this is where you use
+              it. Settings routes to the existing screen rather than growing
+              a chat of its own. */}
+          <SettingsRow
+            label="Open Coach"
+            icon="coach"
+            description="Chat with your coach about this week."
+            isLink
+            onPress={() => router.push("/coach")}
             divider={false}
           />
         </SettingsSection>

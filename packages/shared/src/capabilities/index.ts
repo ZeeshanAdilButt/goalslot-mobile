@@ -78,7 +78,7 @@ export type NotificationInput = OneShotNotificationInput | RecurringNotification
  *
  * The three states are not two states with a nicety on top — they need three
  * different pieces of UI. `undetermined` means an in-app "Allow
- * notifications" button will actually raise the system prompt.  `denied`
+ * notifications" button will actually raise the system prompt. `denied`
  * means it won't: iOS only ever asks once, so the only route back is the
  * device's own settings app, and a button that silently does nothing is
  * worse than no button. `granted` means neither control should be shown.
