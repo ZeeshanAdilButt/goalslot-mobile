@@ -1,8 +1,7 @@
 # GoalSlot mobile — design spec
 
-Practical reference for matching the web app's design system
-(`D:\Projects - Community\dw-time-master\dw-time-web`, live at
-https://www.goalslot.io). Every value here is sourced from that codebase —
+Practical reference for matching the web app's design system, live at
+https://www.goalslot.io. Every value here is sourced from that codebase —
 file paths and line numbers are cited so you can go check. The actual token
 implementation lives in `apps/mobile/src/theme/foundation.ts`; this file is
 the "how to use it" companion.
@@ -223,13 +222,9 @@ uppercase/muted), used above a group of cards/rows. Cited:
 
 Web uses **`lucide-react`** (`package.json`: `"lucide-react": "^0.439.0"`)
 throughout — every icon in `app-sidebar.tsx`, buttons, stat cards, chips.
-For 1:1 icon parity, mobile should use the equivalent icon family/glyphs —
-either `lucide-react-native` or `@expo/vector-icons`'s Ionicons/Feather set
-picked to match each `lucide-react` icon name as closely as possible
-(most map 1:1 by name: `Clock`, `Calendar`, `CheckSquare`, `Target`,
-`TrendingUp`, etc.). A separate agent is currently adding
-`@expo/vector-icons` — coordinate icon choice with that work rather than
-introducing a second icon dependency.
+Mobile uses **`lucide-react-native`** for 1:1 icon parity — most icons map
+1:1 by name (`Clock`, `Calendar`, `CheckSquare`, `Target`, `TrendingUp`,
+etc.).
 
 ## Mobile deviations from web (intentional, not oversights)
 
