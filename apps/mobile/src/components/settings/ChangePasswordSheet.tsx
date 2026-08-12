@@ -96,7 +96,9 @@ export function ChangePasswordSheet({ visible, onClose }: ChangePasswordSheetPro
 
   const sendCode = useCallback(async () => {
     if (currentPassword.length < MIN_PASSWORD_LENGTH) {
-      setError(`Your current password is at least ${MIN_PASSWORD_LENGTH} characters.`);
+      // Not a guess about their password — the API's own DTO is
+      // `@MinLength(8)` on this field, so anything shorter is a guaranteed 400.
+      setError(`That's too short to be your current password.`);
       return;
     }
     setIsBusy(true);
