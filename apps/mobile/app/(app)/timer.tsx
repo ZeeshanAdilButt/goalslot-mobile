@@ -40,6 +40,7 @@ import {
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { SessionHistory } from "@/components/timer/SessionHistory";
 import { TimerControls } from "@/components/timer/TimerControls";
 import { TimerRing } from "@/components/timer/TimerRing";
@@ -51,7 +52,9 @@ import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
+import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -102,6 +105,9 @@ export default function TimerScreen() {
   const pause = useTimerStore((s) => s.pause);
   const resume = useTimerStore((s) => s.resume);
   const stop = useTimerStore((s) => s.stop);
+
+  const reminderIntervalMinutes = useSettingsStore((s) => s.timerReminderIntervalMinutes);
+  const setReminderIntervalMinutes = useSettingsStore((s) => s.setTimerReminderIntervalMinutes);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   // What the *next* run will be tracked against, chosen before pressing
@@ -163,6 +169,12 @@ export default function TimerScreen() {
   // session, so a running timer is visible from outside the app. Degrades to
   // nothing at all if notification permission is refused.
   useTimerNotification({ status, startedAt, pausedElapsedMs, label: activeLabel });
+
+  // The recurring "still strictly focused?" nudge, ported from web's
+  // REMINDER control. Separate from the ongoing shade entry above: these are
+  // future-dated notifications handed to the OS so they still arrive while
+  // the app is suspended. Also degrades to nothing if permission is refused.
+  useTimerReminders({ status, startedAt, label: activeLabel });
 
   const handlePickTask = useCallback((task: Task) => {
     setSelectedTask(task);
@@ -331,6 +343,12 @@ export default function TimerScreen() {
           accentColor={activeColor}
           editable={status === "idle"}
           onPress={() => setPickerOpen(true)}
+        />
+
+        <ReminderIntervalPicker
+          value={reminderIntervalMinutes}
+          disabled={status === "running"}
+          onChange={setReminderIntervalMinutes}
         />
 
         <TimerControls

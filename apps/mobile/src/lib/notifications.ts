@@ -67,5 +67,40 @@ export function createExpoNotificationCapability(): NotificationCapability {
     async cancelNotification(id: string) {
       await Notifications.cancelScheduledNotificationAsync(id);
     },
+
+    async clearAllNotifications() {
+      // A per-account notification can sit in either of two queues, and this
+      // has to empty both:
+      //
+      //   - PENDING, not yet fired. Schedule-block reminders (weekly, titled
+      //     with the block's own name) and the timer's "Time Check" batch.
+      //     `cancelAllScheduledNotificationsAsync` is what drops these.
+      //   - DELIVERED, already in the shade. The ongoing "Tracking · <task>"
+      //     entry from components/timer/useTimerNotification.ts, which is
+      //     presented immediately and so is never "scheduled" by the time a
+      //     sign-out runs. Cancelling a pending notification does nothing to
+      //     an entry that has already been posted — that needs
+      //     `dismissAllNotificationsAsync`.
+      //
+      // Neither call needs notification permission: revoking permission stops
+      // notifications being shown, it doesn't retroactively clear what was
+      // already accepted, so this still has work to do for a user who granted
+      // permission once and later turned it off.
+      //
+      // The two are guarded separately and never rethrow. This is called from
+      // the sign-out path, where the whole point is that the previous
+      // account's reminders stop — a failure in one queue must not skip the
+      // other, and neither may block the sign-out itself.
+      await clear("scheduled", () => Notifications.cancelAllScheduledNotificationsAsync());
+      await clear("delivered", () => Notifications.dismissAllNotificationsAsync());
+    },
   };
+}
+
+async function clear(queue: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    console.warn(`[notifications] could not clear ${queue} notifications`, error);
+  }
 }

@@ -95,6 +95,15 @@ export const useAuthStore = create<AuthState>((set) => ({
       // network error on the very first request). Either way there's no
       // usable session to show — fall back to unauthenticated rather than
       // getting stuck in `loading` forever.
+      //
+      // Deliberately NOT resetSessionState(), unlike logout() above: the two
+      // causes are indistinguishable from here, and on the network-blip one
+      // the user is still legitimately signed in — wiping the offline outbox
+      // would silently destroy writes they queued while offline. The cost is
+      // that reminders queued by the previous account survive this
+      // particular exit until someone signs in (login/register both reset).
+      // Distinguishing a rejected token from an unreachable server is the
+      // fix; until then the destructive option is the worse trade.
       await secureTokenStorage.clear();
       set({ user: null, status: "unauthenticated" });
     }
