@@ -8,6 +8,7 @@ import { ScheduleRemindersSync } from "@/components/schedule";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
+import { VoiceTabButton } from "@/components/voice/VoiceTabButton";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
@@ -51,10 +52,21 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  // Five tabs on the bar (Today/Schedule/Goals/Tasks/Timer) — more than that
-  // is unreadable at phone width. The other five routes stay registered but
-  // off the bar via `href: null`, and every one of them is reachable from the
+  // Five slots on the bar — more than that is unreadable at phone width —
+  // and the middle one is the voice mic rather than a screen: Today,
+  // Schedule, [mic], Tasks, Timer. The other routes stay registered but off
+  // the bar via `href: null`, and every one of them is reachable from the
   // slide-out drawer opened by the hamburger below.
+  //
+  // GOALS CAME OFF THE BAR to make room, and that is a real trade, not an
+  // oversight. A raised centre control has to be the geometric centre or it
+  // reads as a sixth tab someone bolted on, and five slots means one of the
+  // existing five moves. Goals is the one that survives the move best: it is
+  // the longest-horizon surface of the five (the others are all "today" or
+  // "this week"), Today already renders goal progress and links into it, the
+  // Timer attaches sessions to it, and it keeps a top-level row in the
+  // drawer under Plan. Schedule, Tasks and Timer are all daily-use screens
+  // where a second tap would be felt every day.
   //
   // The drawer exists because relying on a link buried in Settings was a real
   // discoverability failure: "I can't see notes. There is no way for me to
@@ -76,6 +88,10 @@ export default function AppLayout() {
             backgroundColor: colors.card,
             borderTopColor: colors.border,
             borderTopWidth: 1,
+            // The voice mic is drawn with a negative top margin so it breaks
+            // the bar's top line. Without this it is clipped flat against it
+            // and stops reading as raised at all.
+            overflow: "visible",
           },
           tabBarLabelStyle: {
             fontSize: 11,
@@ -94,9 +110,16 @@ export default function AppLayout() {
             tabBarIcon: ({ color, size }) => <Icon name="schedule" color={color} size={size} />,
           }}
         />
+        {/* The mic. `tabBarButton` replaces the whole tab item, which is what
+            lets the control break the bar's top line — see VoiceTabButton.
+            It stays a real route so a screen reader announces it as a tab
+            and the back gesture behaves normally. */}
         <Tabs.Screen
-          name="goals"
-          options={{ title: "Goals", tabBarIcon: ({ color, size }) => <Icon name="goals" color={color} size={size} /> }}
+          name="voice"
+          options={{
+            title: "Voice",
+            tabBarButton: (props) => <VoiceTabButton {...props} />,
+          }}
         />
         <Tabs.Screen
           name="tasks"
@@ -106,6 +129,9 @@ export default function AppLayout() {
           name="timer"
           options={{ title: "Timer", tabBarIcon: ({ color, size }) => <Icon name="timer" color={color} size={size} /> }}
         />
+        {/* Off the bar to make room for the mic (see the note above), still a
+            first-class row in the drawer's Plan group. */}
+        <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
         <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
         <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
         <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />

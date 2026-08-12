@@ -154,6 +154,55 @@ library/templates, and admin screens.
   problem on mobile (a single "tab"), so this is dropped rather than
   rebuilt.
 
+## Voice control
+
+Two microphones, deliberately, because they answer different questions.
+
+**The tab-bar mic** (`apps/mobile/app/(app)/voice.tsx`) is open-ended and
+adds no intelligence of its own. Speech becomes a transcript, the
+transcript goes into the assistant that already exists — the same
+`apiClient.coach.streamChat` the Coach chat screen calls, the same
+`extractCoachProposals` parser in `packages/shared/src/coach`, the same
+`POST /coach/proposals/apply` endpoint — and the answer is rendered with
+the same `CoachProposalCard` the Coach screen now renders. There is no
+second prompt pipeline and no second way to mutate a goal. The card grew
+an Apply button in the process, so a change the user typed and one they
+spoke are the same code path rather than two that can drift.
+
+**The Time Tracker mic** (`src/components/voice/TrackerVoiceButton.tsx`) is
+scoped to tracking, where the vocabulary is small and closed: start, stop,
+pause, resume, log N minutes. Those are parsed on the device by
+`packages/shared/src/voice` with no model round trip, because "pause" has
+to feel as fast as pressing Pause or nobody says it twice. Anything the
+parser does not recognise is forwarded to the tab-bar assistant with the
+transcript attached, rather than guessed at.
+
+- **Confirmation policy.** Start/stop/pause/resume run immediately: each is
+  undone by saying the opposite word, and confirming them would remove the
+  only reason to speak instead of tapping. `log 30 minutes to X` writes a
+  record with a duration nobody measured, so it confirms. Every Coach
+  proposal confirms, and a batch containing a delete confirms twice. A
+  misheard word must never be able to remove a goal.
+- **Name resolution over parsing.** The complaint that started this work was
+  a goal called "deen" that could not be found in a picker, so an
+  unrecognised name is never allowed to become an unattributed timer. The
+  resolver classifies every spoken name as confident / needs-confirmation /
+  unresolved and carries ranked runners-up, and the UI asks whenever it is
+  not the first.
+- **`packages/shared/src/voice` mirrors the `jiffy-voice` package's public
+  contract** (`VoiceIntent`, `ResolvedTarget`, `TargetCandidate`, the
+  resolution statuses) rather than importing it: that package is
+  unpublished and does not commit its `dist/`, so it cannot be a dependency
+  yet. When it ships to a registry, `src/voice/index.ts` becomes a
+  re-export.
+- **Speech library: `expo-speech-recognition`, not `@react-native-voice/voice`.**
+  This app runs the New Architecture; the latter ships no `codegenConfig`
+  and its bundled config plugin pins `@expo/config-plugins@^2` (SDK 41
+  era). The former is an Expo module, and its plugin writes the Android 11+
+  `<queries>` entry for `android.speech.RecognitionService` — without which
+  `SpeechRecognizer` silently reports unavailable on every recent Android
+  device. Full reasoning in `src/lib/speech-recognition.ts`.
+
 ## Notes feature
 
 An MS OneNote-style pages-and-subpages tree (rather than a Notion-style

@@ -21,10 +21,68 @@ export interface AlarmCapability {
   listScheduled(): Promise<ScheduledAlarm[]>
 }
 
+/**
+ * Whether the OS will let this app listen. 'undetermined' is the only state
+ * in which asking is allowed — asking again after a denial does nothing on
+ * either platform except train the user to ignore the app, so a caller that
+ * sees 'denied' must send them to Settings instead of re-prompting.
+ */
+export type VoicePermissionStatus = 'granted' | 'denied' | 'undetermined'
+
+/**
+ * Every way listening can end badly, reduced to the cases a UI actually
+ * renders differently. The platform error vocabularies are larger than this
+ * and not worth exposing: an app cannot do anything different about
+ * "bad-grammar" than about "client".
+ */
+export type VoiceErrorKind =
+  /** The OS refused, or permission was never granted. Route to Settings. */
+  | 'permission-denied'
+  /** Heard nothing. Not a failure — offer another go. */
+  | 'no-speech'
+  /** No recognizer on this device, or the locale isn't installed. */
+  | 'unavailable'
+  /** Recognition needed the network and didn't have it. */
+  | 'network'
+  /** The microphone itself could not be read (in use, hardware, interrupted). */
+  | 'audio'
+  | 'unknown'
+
+export interface VoiceError {
+  readonly kind: VoiceErrorKind
+  /** Sentence shown to the user. Always written for a person, never a code. */
+  readonly message: string
+}
+
+export interface VoiceListenHandlers {
+  /**
+   * Called repeatedly while someone talks (`isFinal: false`) and once when
+   * the recognizer commits (`isFinal: true`). Interim text is for display
+   * only — acting on it means acting on half a sentence.
+   */
+  onTranscript(text: string, isFinal: boolean): void
+  onError?(error: VoiceError): void
+  /** The session is over, however it ended. Always the last call. */
+  onEnd?(): void
+}
+
+/**
+ * Speech capture. Deliberately transcript-only: this port hears words and
+ * stops there. What a sentence *means* is decided by `../voice`'s parser
+ * (tracking commands) or by the Coach (everything else), neither of which
+ * should have to know which native module produced the string.
+ */
 export interface VoiceCapability {
+  /** A recognizer exists on this device. Independent of permission. */
   isAvailable(): Promise<boolean>
-  startListening(onTranscript: (text: string, isFinal: boolean) => void): Promise<void>
+  getPermission(): Promise<VoicePermissionStatus>
+  /** Prompts. Only call when `getPermission()` returned 'undetermined'. */
+  requestPermission(): Promise<VoicePermissionStatus>
+  startListening(handlers: VoiceListenHandlers): Promise<void>
+  /** Stop and take the final transcript. */
   stopListening(): Promise<void>
+  /** Stop and throw the transcript away — the user backed out. */
+  cancelListening(): Promise<void>
 }
 
 interface NotificationInputBase {
@@ -180,10 +238,23 @@ function createNoopVoiceCapability(): VoiceCapability {
     async isAvailable() {
       return false
     },
+    async getPermission() {
+      // Not 'denied': nothing was ever asked, and a UI that treats this as a
+      // refusal would send the user to Settings to fix a permission that is
+      // not the problem. `isAvailable()` above is what the UI should branch
+      // on when there is no recognizer at all.
+      return 'undetermined'
+    },
+    async requestPermission() {
+      return 'undetermined'
+    },
     async startListening() {
-      // no-op: nothing is listening, so onTranscript is never invoked.
+      // no-op: nothing is listening, so no handler is ever invoked.
     },
     async stopListening() {
+      // no-op
+    },
+    async cancelListening() {
       // no-op
     },
   }

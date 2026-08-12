@@ -39,3 +39,23 @@ export function hapticSlotTick(): void {
 export function hapticDepthTick(): void {
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
+
+/** Fire when something went wrong but nothing was lost — a retryable failure. */
+export function hapticWarning(): void {
+  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+}
+
+/**
+ * Fire the moment the microphone opens. Deliberately the heaviest impact in
+ * this file: it is the only confirmation a user gets that the app started
+ * listening, and on a voice interface that beat has to be unmistakable —
+ * they are about to talk to something they cannot see respond.
+ */
+export function hapticListenStart(): void {
+  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+}
+
+/** Fire when the microphone closes and the app starts thinking. */
+export function hapticListenEnd(): void {
+  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+}
