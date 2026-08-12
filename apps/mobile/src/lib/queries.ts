@@ -19,6 +19,7 @@ import {
   createScheduleQueries,
   createTaskQueries,
   createTimeEntryQueries,
+  createTimerSessionQueries,
 } from "@goalslot/shared";
 
 import { apiClient } from "./api-client";
@@ -35,6 +36,11 @@ export const scheduleQueries = createScheduleQueries(apiClient.schedule);
 export const categoryQueries = createCategoryQueries(apiClient.categories);
 export const labelQueries = createLabelQueries(apiClient.labels);
 export const timeEntryQueries = createTimeEntryQueries(apiClient.timeEntries);
+// The cross-device active timer session a coach voice/chat action may have
+// started server-side — see app/(app)/timer.tsx's use of this for why the
+// Time Tracker screen has to poll it rather than trust its own local store
+// as the only source of truth.
+export const timerSessionQueries = createTimerSessionQueries(apiClient.timerSession);
 export const journalQueries = createJournalQueries(apiClient.journal);
 export const noteQueries = createNoteQueries(apiClient.notes);
 // Two services in one factory on purpose: conversations/messages come from

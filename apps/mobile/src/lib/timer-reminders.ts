@@ -29,6 +29,8 @@
 
 import type { NotificationCapability } from "@goalslot/shared";
 
+import { DEFAULT_SESSION_LABEL } from "./session-label";
+
 /**
  * The intervals offered on the Time Tracker, in minutes. Same seven values as
  * web's REMINDER_OPTIONS (timer-settings.tsx) — deliberately not a superset,
@@ -68,13 +70,12 @@ export const MAX_PENDING_TIMER_REMINDERS = 8;
 export const TIMER_REMINDER_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Shown when the session's task/goal title hasn't resolved yet. Matches
- * useTimerNotification.ts and timer.tsx's UNRESOLVED_TARGET_LABEL rather than
- * web's "Untitled Task" — mobile has already standardised on this wording for
- * the same situation, and a session should not be called two different things
- * in two different notifications on the same device.
+ * Shown when the session's task/goal title hasn't resolved yet. Same shared
+ * constant useTimerNotification.ts and timer.tsx's UNRESOLVED_TARGET_LABEL
+ * point at — see src/lib/session-label.ts for why this is one constant
+ * rather than several copies.
  */
-const UNRESOLVED_TARGET_LABEL = "Focus session";
+const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;
 
 /**
  * Stable per-slot id. Re-issuing the same id replaces that entry rather than
