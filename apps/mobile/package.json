@@ -7,7 +7,7 @@
     "dev": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "build": "expo export",
+    "build": "expo export --platform android && expo export --platform ios",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "jest"
