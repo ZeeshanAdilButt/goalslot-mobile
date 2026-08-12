@@ -58,12 +58,23 @@ export type CoachProposalActionType =
   | 'UPDATE_TASK'
   | 'DELETE_TASK'
   | 'CREATE_PRACTICE'
+  // Live stopwatch, NOT interchangeable with CREATE_TIME_ENTRY:
+  // CREATE_TIME_ENTRY logs work that already finished and whose duration is
+  // known, whereas START_TIMER/STOP_TIMER drive the shared ActiveTimerSession
+  // where the duration isn't known until the user stops.
+  | 'START_TIMER'
+  | 'STOP_TIMER'
 
 /**
  * Runtime source-of-truth for the action types the API accepts (mirrors
  * dw-time-api's COACH_ACTION_TYPES in
  * coach-proposals/dto/apply-proposals.dto.ts). Used to validate/normalize
  * proposals the model emits before they're ever shown or applied.
+ *
+ * This array and the union above are separate declarations — adding a type to
+ * only one of them fails in a different way each time (type-only vs runtime
+ * validation), so always change both. A type the API emits but this array
+ * omits is dropped by normalizeCoachActionType before the user ever sees it.
  */
 export const COACH_PROPOSAL_ACTION_TYPES: readonly CoachProposalActionType[] = [
   'RENAME_GOAL',
@@ -80,6 +91,8 @@ export const COACH_PROPOSAL_ACTION_TYPES: readonly CoachProposalActionType[] = [
   'UPDATE_TASK',
   'DELETE_TASK',
   'CREATE_PRACTICE',
+  'START_TIMER',
+  'STOP_TIMER',
 ]
 
 export interface CoachProposalAction {
