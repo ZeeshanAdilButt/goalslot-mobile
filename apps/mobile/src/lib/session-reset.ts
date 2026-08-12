@@ -29,10 +29,12 @@
 // path entirely, and the reset has to be guaranteed before new data is
 // fetched, not merely attempted on the way out.
 
+import { createExpoNotificationCapability } from "./notifications";
 import { outbox } from "./offline";
 import { asyncStoragePersister, queryClient } from "./query-client";
 import { useNotesUiStore } from "./notes-ui-store";
 import { useScheduleRemindersStore } from "./schedule-reminders-store";
+import { cancelTimerReminders } from "./timer-reminders";
 import { useTimerStore } from "./timer-store";
 
 /**
@@ -65,6 +67,16 @@ export async function resetSessionState(): Promise<void> {
 
   await step("offline outbox", () => outbox.clearOutbox());
   await step("timer", () => useTimerStore.getState().stop());
+
+  // Stopping the timer store is not enough on its own: the running-timer
+  // reminders (timer-reminders.ts) are already sitting in the OS queue with
+  // absolute fire times, and useTimerReminders can only cancel them while the
+  // Time Tracker screen is mounted — which it is not, by the time a logout
+  // has navigated away. Left alone they would keep nudging for up to the
+  // lookahead window after sign-out, naming the previous account's task.
+  // Cancelling needs no permission, so this is safe even for a user who
+  // refused notifications outright.
+  await step("timer reminders", () => cancelTimerReminders(createExpoNotificationCapability()));
   await step("schedule reminders", () => useScheduleRemindersStore.getState().reset());
   await step("notes ui state", () => useNotesUiStore.getState().reset());
 }
