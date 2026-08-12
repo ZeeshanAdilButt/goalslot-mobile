@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import Animated, {
   cancelAnimation,
@@ -119,6 +119,23 @@ export default function TimerScreen() {
       analytics.track({ name: "screenViewed", payload: { screenName: "timer" } });
     }, [analytics]),
   );
+
+  // Lets the iOS home-screen widget's "Start" button (see
+  // targets/widget/GoalSlotWidget.swift) jump straight into tracking instead
+  // of just opening the app to this tab — see deep-links.ts's
+  // `timerAutoStartDeepLink`. Guarded by a ref rather than clearing the
+  // params: this screen can remount (tab switch) while the params are still
+  // in the URL, and firing `start()` a second time against an already-
+  // running timer would silently reset its elapsed time.
+  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{ autostart?: string; goalId?: string }>();
+  const autoStartFired = useRef(false);
+  useEffect(() => {
+    if (autostart !== "1" || !autoStartGoalId || autoStartFired.current || status !== "idle") return;
+    autoStartFired.current = true;
+    start(undefined, autoStartGoalId);
+    hapticLight();
+    analytics.track({ name: "timerStarted", payload: { taskId: undefined } });
+  }, [analytics, autoStartGoalId, autostart, start, status]);
 
   // What's actually being tracked right now — resolved from the store's
   // persisted ids against the loaded task/goal lists, so this is correct

@@ -14,7 +14,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "io.goalslot.mobile",
-      "buildNumber": "1"
+      "buildNumber": "1",
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.io.goalslot.mobile"]
+      }
     },
     "android": {
       "package": "io.goalslot.mobile",
@@ -57,6 +60,7 @@
           "backgroundColor": "#F2CC0D"
         }
       ],
+      "@bacons/apple-targets",
       [
         "react-native-android-widget",
         {
@@ -65,12 +69,12 @@
               "name": "TodayWidget",
               "label": "GoalSlot — Today",
               "description": "Your next scheduled block, or today's progress. Tap to open the app.",
-              "minWidth": "180dp",
-              "minHeight": "110dp",
-              "targetCellWidth": 3,
+              "minWidth": "140dp",
+              "minHeight": "80dp",
+              "targetCellWidth": 5,
               "targetCellHeight": 2,
-              "maxResizeWidth": "360dp",
-              "maxResizeHeight": "220dp",
+              "maxResizeWidth": "600dp",
+              "maxResizeHeight": "450dp",
               "resizeMode": "horizontal|vertical",
               "updatePeriodMillis": 1800000
             }

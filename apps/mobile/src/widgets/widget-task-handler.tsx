@@ -12,9 +12,13 @@
 import { registerWidgetTaskHandler, type WidgetTaskHandlerProps } from "react-native-android-widget";
 
 import { TodayWidget } from "./TodayWidget";
-import { loadWidgetViewState } from "./widget-data";
+import { loadWidgetTrackingState, loadWidgetViewState } from "./widget-data";
 
-export async function widgetTaskHandler({ widgetAction, renderWidget }: WidgetTaskHandlerProps): Promise<void> {
+export async function widgetTaskHandler({
+  widgetAction,
+  widgetInfo,
+  renderWidget,
+}: WidgetTaskHandlerProps): Promise<void> {
   switch (widgetAction) {
     // These three are the only actions that need fresh content: a widget
     // was just placed on the home screen, Android's periodic timer fired
@@ -23,8 +27,15 @@ export async function widgetTaskHandler({ widgetAction, renderWidget }: WidgetTa
     case "WIDGET_ADDED":
     case "WIDGET_UPDATE":
     case "WIDGET_RESIZED": {
-      const state = await loadWidgetViewState();
-      renderWidget(<TodayWidget state={state} />);
+      // Independent reads (schedule vs. "what's actually being tracked
+      // right now") — see widget-data.ts's tracking-state header comment
+      // for why these can't be derived from each other.
+      const [state, tracking] = await Promise.all([loadWidgetViewState(), loadWidgetTrackingState()]);
+      // `widgetInfo.height`/`.width` (dp) is how TodayWidget decides
+      // whether there's enough room to show bonus content (today's overall
+      // progress) instead of leaving a big blank area on a large resize —
+      // see TodayWidget.tsx's `hasRoomForExtras`.
+      renderWidget(<TodayWidget state={state} tracking={tracking} heightDp={widgetInfo.height} />);
       return;
     }
 

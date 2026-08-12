@@ -1,0 +1,9 @@
+{
+  "name": "widget-bridge",
+  "version": "1.0.0",
+  "description": "Local Expo module bridging widget state into the shared App Group container that GoalSlot's iOS WidgetKit extension reads from.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "license": "UNLICENSED",
+  "private": true
+}

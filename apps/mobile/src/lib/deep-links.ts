@@ -35,6 +35,8 @@ const ROUTES = {
   goals: (goalId?: string): string => (goalId ? `/goals?goalId=${encodeURIComponent(goalId)}` : "/goals"),
   tasks: (taskId?: string): string => (taskId ? `/tasks?taskId=${encodeURIComponent(taskId)}` : "/tasks"),
   scheduleDay: (dayOfWeek: ScheduleDayOfWeek): string => `/schedule?day=${dayOfWeek}`,
+  timer: (): string => "/timer",
+  timerAutoStart: (goalId: string): string => `/timer?autostart=1&goalId=${encodeURIComponent(goalId)}`,
 } as const;
 
 /** Must match `expo.scheme` in app.json. */
@@ -78,6 +80,16 @@ export function taskDeepLink(taskId: string): string {
 /** Shareable deep link to the Schedule tab, scoped to a given day of week. */
 export function scheduleDayDeepLink(dayOfWeek: ScheduleDayOfWeek): string {
   return toDeepLinkUrl(ROUTES.scheduleDay(dayOfWeek));
+}
+
+/** Shareable deep link to the Timer tab as-is — e.g. for jumping to an already-running session. */
+export function timerDeepLink(): string {
+  return toDeepLinkUrl(ROUTES.timer());
+}
+
+/** Deep link to the Timer tab that immediately starts tracking against the given goal — see app/(app)/timer.tsx's `autostart` param handling. */
+export function timerAutoStartDeepLink(goalId: string): string {
+  return toDeepLinkUrl(ROUTES.timerAutoStart(goalId));
 }
 
 // ---------------------------------------------------------------------------

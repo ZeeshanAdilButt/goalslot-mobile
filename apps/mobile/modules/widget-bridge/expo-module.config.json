@@ -1,0 +1,7 @@
+{
+  "platforms": ["ios"],
+  "ios": {
+    "modules": ["WidgetBridgeModule"],
+    "podspecPath": "widget-bridge.podspec"
+  }
+}

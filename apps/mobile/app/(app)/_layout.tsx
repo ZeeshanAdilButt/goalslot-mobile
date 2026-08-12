@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { AppState, Pressable, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/Icon";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
+import { syncIOSWidget } from "@/widgets/ios-widget-sync";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
 export default function AppLayout() {
@@ -28,6 +29,22 @@ export default function AppLayout() {
     },
     [router],
   );
+
+  // Keeps the iOS home-screen widget's snapshot fresh — see
+  // src/widgets/ios-widget-sync.ts for why "on foreground" is the sync
+  // point rather than something timer-driven the way Android's widget is.
+  // No-ops on Android. Runs once now (this layout only mounts once
+  // authenticated, so this doubles as "just logged in / just opened app")
+  // and again on every foreground transition after that.
+  useEffect(() => {
+    void syncIOSWidget();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        void syncIOSWidget();
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   // No live session — bounce to login. `status` is 'authenticated' |
   // 'unauthenticated' by the time this layout can render at all, since the

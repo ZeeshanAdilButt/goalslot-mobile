@@ -6,7 +6,7 @@ dist/
 .env
 .env.local
 coverage/
-android/
-ios/
+apps/mobile/android/
+apps/mobile/ios/
 .DS_Store
 .claude/
