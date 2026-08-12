@@ -10,19 +10,21 @@ import {
   type CreateGoalInput,
   type CreateScheduleBlockInput,
   type CreateTaskInput,
+  type CreateTimeEntryInput,
   type Goal,
   type MessagingError,
   type MessagingMessage,
   type MessagingThreadMessage,
   type ScheduleBlock,
   type Task,
+  type TimeEntry,
 } from "@goalslot/shared";
 
 import { apiClient, notify } from "./api-client";
 import { asyncStorageAdapter } from "./async-storage-adapter";
 import { deriveOnline } from "./derive-online";
 import { messagingClient } from "./messaging-client";
-import { goalQueries, messagingQueries, scheduleQueries, taskQueries } from "./queries";
+import { goalQueries, messagingQueries, scheduleQueries, taskQueries, timeEntryQueries } from "./queries";
 import { queryClient } from "./query-client";
 
 // NetInfo has no synchronous "give me the current state" accessor, so we
@@ -95,6 +97,19 @@ operationRegistry.registerOperation<CreateTaskInput, Task>("task-create", {
 operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("schedule-block-create", {
   execute: async (payload) => (await apiClient.schedule.create(payload)).data,
   invalidateKeys: [scheduleQueries.scheduleQueries.root()],
+});
+
+// A stopped timer is the one create in this app whose payload exists nowhere
+// else. A goal or task the user typed can be typed again; elapsed time that
+// was measured and then failed to POST is simply gone. The Time Tracker used
+// to cover that with a Retry/Discard alert, which is fine for a one-off but
+// became the wrong default once starting a timer stopped requiring any setup:
+// far more sessions, and a "Discard" button standing between the user and
+// their own measured time. Queuing it here means an offline stop is banked
+// and replayed on reconnect like every other create.
+operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry-create", {
+  execute: async (payload) => (await apiClient.timeEntries.create(payload)).data,
+  invalidateKeys: [timeEntryQueries.timeEntryQueries.all],
 });
 
 // A message the user sent while offline.

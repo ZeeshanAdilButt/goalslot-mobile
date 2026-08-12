@@ -1,19 +1,24 @@
 // "What am I timing?" — the row directly under the ring.
 //
-// Two states in one component so the hero card's height never changes
+// Every state is one component so the hero card's height never changes
 // between them (a jumping card under the controls is what makes a timer
-// screen feel unstable):
-//   - nothing picked yet: a dashed CTA that reads as an empty slot to fill,
-//     which is the screen's real empty state — the ring is at zero and this
-//     is the one thing the user is meant to press.
-//   - something picked: a filled row carrying the goal's own colour as a
-//     left rail plus a dot, the same way goal colour is used as an
-//     identifying accent on rows elsewhere in the app (see the recent-entry
-//     rows below it, and dw-time-web's task-selector.tsx).
+// screen feel unstable).
 //
-// While a session is running the row is locked (not pressable): the store's
-// taskId/goalId is fixed for the life of a run, so offering "Change" there
-// would imply a re-target the timer doesn't support.
+// THE ROW IS ALWAYS PRESSABLE, including mid-session. It used to lock itself
+// the moment a session began, on the reasoning that the store's taskId/goalId
+// was fixed for the life of a run. That reasoning inverted when starting
+// stopped requiring a target: attaching a goal *while the clock runs* is now
+// the ordinary way a session gets attributed, so the row has to stay live.
+// The store's `retarget` action is what makes it safe — re-pointing a session
+// never touches startedAt or pausedElapsedMs, so the clock is undisturbed.
+//
+// THREE EMPTY STATES, NOT ONE. "Nothing is attached" and "we can't yet tell
+// what's attached" look identical on screen if you let them, and they need
+// opposite copy: the first is a perfectly fine end state the user chose, the
+// second is a transient cold-start gap where ids exist but the goal/task
+// lists haven't loaded. `hasTarget` is what separates them — without it a
+// deliberately unattributed session would announce itself as "Untitled",
+// which reads like something went wrong.
 
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -21,56 +26,59 @@ import { Icon } from "@/components/ui/Icon";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export interface TrackingTargetProps {
-  /** Task or goal title, or null when nothing has been picked yet. */
+  /** Resolved task or goal title, or null when there isn't one to show. */
   label: string | null;
-  /** Secondary line — the parent goal, or the kind of thing this is. */
+  /** Secondary line — the parent goal, or the goal's category. */
   sublabel?: string | null;
   /** Goal colour, used as the identifying accent. Null falls back to neutral. */
   accentColor?: string | null;
-  /** False while a session is running/paused — the target is fixed for the run. */
-  editable: boolean;
+  /**
+   * True when a task/goal id is actually set. Distinguishes "the user chose
+   * not to attach anything" (false) from "something is attached but its title
+   * hasn't resolved yet" (true) — see this file's header.
+   */
+  hasTarget: boolean;
+  /** True while a session is running or paused, which changes the copy. */
+  running: boolean;
   onPress: () => void;
 }
 
-export function TrackingTarget({ label, sublabel, accentColor, editable, onPress }: TrackingTargetProps) {
+export function TrackingTarget({ label, sublabel, accentColor, hasTarget, running, onPress }: TrackingTargetProps) {
   if (label === null) {
-    // The empty slot has to respect `editable` too. This branch used to
-    // return before the check further down, so a running session whose title
-    // hadn't resolved yet rendered a live "Choose what to track" CTA that
-    // opened the picker — offering a re-target mid-run that the timer doesn't
-    // support.
-    if (!editable) {
-      return (
-        <View style={styles.emptySlot} accessible accessibilityLabel="Tracking an unnamed session">
-          <View style={styles.emptyGlyph}>
-            {/* `timer` is the Icon set's Clock glyph — there is no bare
-                "clock" name; see src/components/ui/Icon.tsx. */}
-            <Icon name="timer" size={18} color={colors.mutedForeground} />
-          </View>
-          <View style={styles.body}>
-            <Text style={styles.emptyTitle}>Untitled session</Text>
-            <Text style={styles.emptySubtitle} numberOfLines={1}>
-              The clock is running
-            </Text>
-          </View>
-        </View>
-      );
-    }
+    // Ids are set but the lists haven't resolved them yet. Not an invitation
+    // to attach something — there already is something — so this state keeps
+    // the neutral clock glyph and doesn't promise an empty slot.
+    const unresolved = hasTarget;
+
+    const title = unresolved ? "Untitled session" : running ? "No goal attached" : "Add a goal (optional)";
+    const subtitle = unresolved
+      ? "The clock is running"
+      : running
+        ? "Tap to file this session under a goal"
+        : "Or just press start — you can attach one later";
 
     return (
       <Pressable
         style={({ pressed }) => [styles.emptySlot, pressed && styles.pressed]}
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel="Choose a task or goal to track"
+        accessibilityLabel={
+          unresolved
+            ? "Tracking an unnamed session. Change what this is tracked against"
+            : running
+              ? "No goal attached. Attach a goal or task to this session"
+              : "Add a goal or task to track against. Optional"
+        }
       >
         <View style={styles.emptyGlyph}>
-          <Icon name="add" size={18} color={colors.mutedForeground} />
+          {/* `timer` is the Icon set's Clock glyph — there is no bare "clock"
+              name; see src/components/ui/Icon.tsx. */}
+          <Icon name={unresolved ? "timer" : "add"} size={18} color={colors.mutedForeground} />
         </View>
         <View style={styles.body}>
-          <Text style={styles.emptyTitle}>Choose what to track</Text>
+          <Text style={styles.emptyTitle}>{title}</Text>
           <Text style={styles.emptySubtitle} numberOfLines={1}>
-            Pick a task or goal to start the clock
+            {subtitle}
           </Text>
         </View>
         <Icon name="chevron" size={18} color={colors.mutedForeground} />
@@ -80,8 +88,13 @@ export function TrackingTarget({ label, sublabel, accentColor, editable, onPress
 
   const accent = accentColor ?? colors.mutedForeground;
 
-  const content = (
-    <>
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.filledSlot, pressed && styles.pressed]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Tracking ${label}. Change what this is tracked against`}
+    >
       <View style={[styles.rail, { backgroundColor: accent }]} />
       <View style={styles.body}>
         <Text style={styles.title} numberOfLines={1}>
@@ -96,31 +109,10 @@ export function TrackingTarget({ label, sublabel, accentColor, editable, onPress
           </View>
         ) : null}
       </View>
-      {editable ? (
-        <View style={styles.changeAffordance}>
-          <Text style={styles.changeText}>Change</Text>
-          <Icon name="chevron" size={14} color={colors.mutedForeground} />
-        </View>
-      ) : null}
-    </>
-  );
-
-  if (!editable) {
-    return (
-      <View style={styles.filledSlot} accessible accessibilityLabel={`Tracking ${label}`}>
-        {content}
+      <View style={styles.changeAffordance}>
+        <Text style={styles.changeText}>Change</Text>
+        <Icon name="chevron" size={14} color={colors.mutedForeground} />
       </View>
-    );
-  }
-
-  return (
-    <Pressable
-      style={({ pressed }) => [styles.filledSlot, pressed && styles.pressed]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`Tracking ${label}. Change task or goal`}
-    >
-      {content}
     </Pressable>
   );
 }

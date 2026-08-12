@@ -119,22 +119,27 @@ function TransportButton({
 
 export interface TimerControlsProps {
   status: TimerStatus;
-  /** False while idle with nothing picked — the primary stays visible but inert. */
-  canStart: boolean;
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }
 
-export function TimerControls({ status, canStart, onStart, onPause, onResume, onStop }: TimerControlsProps) {
+/**
+ * Note the absence of a `canStart` prop. Start used to be disabled until a
+ * task or goal had been picked, which is the single piece of friction this
+ * screen was rebuilt to remove — "in the phone also we cant quickly track
+ * time". Start is now unconditionally live, and the prop is gone rather than
+ * merely being passed `true` so that nothing can quietly re-disable it later.
+ */
+export function TimerControls({ status, onStart, onPause, onResume, onStop }: TimerControlsProps) {
   const isRunning = status === "running";
   const isIdle = status === "idle";
 
   const primary = isRunning
     ? { label: "Pause", accessibilityLabel: "Pause timer", onPress: onPause, disabled: false }
     : isIdle
-      ? { label: "Start", accessibilityLabel: "Start timer", onPress: onStart, disabled: !canStart }
+      ? { label: "Start", accessibilityLabel: "Start timer", onPress: onStart, disabled: false }
       : { label: "Resume", accessibilityLabel: "Resume timer", onPress: onResume, disabled: false };
 
   return (

@@ -177,7 +177,19 @@ function humanizeCategory(raw: string): string {
     .join(" ");
 }
 
-const UNCATEGORIZED_KEY = "__uncategorized__";
+/**
+ * Bucket key for time that has no category to roll up under — which, since
+ * the Time Tracker stopped requiring a goal before you can start, means every
+ * session the user tracked without attaching anything.
+ *
+ * Exported so the Reports screen can find that slice and say what it is. It
+ * would otherwise render as an anonymous grey wedge indistinguishable from
+ * the chart's "Other (N)" long-tail bucket, which is a bad way to learn that
+ * a third of your week is unfiled. It is deliberately a sentinel that cannot
+ * collide with a real category value: categories are matched lowercased, and
+ * no category the user can create is wrapped in double underscores.
+ */
+export const UNCATEGORIZED_KEY = "__uncategorized__";
 
 /**
  * Time-by-category rollup, largest slice first.
