@@ -17,7 +17,13 @@
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from "react";
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
-import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomSheetBackdropProps } from "@gorhom/bottom-sheet";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+  type BottomSheetBackdropProps,
+} from "@gorhom/bottom-sheet";
 
 import {
   DAYS_OF_WEEK_FULL,
@@ -28,9 +34,19 @@ import {
 } from "@goalslot/shared";
 
 import { Icon } from "@/components/ui/Icon";
+import { SheetHandle } from "@/components/ui/SheetHandle";
 // Primitive half of the same token set (both resolve to theme/foundation.ts).
 import { typography as typeScale } from "@/theme";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+
+// The taller of this sheet's two detents. The shorter one comes from
+// `enableDynamicSizing` (the measured content height), so a short block still
+// opens as a compact card and only grows if the user asks it to.
+//
+// Two detents is the point: with dynamic sizing and no `snapPoints` the sheet
+// has exactly ONE, so a drag upward is clamped to where the sheet already is
+// and the handle does nothing at all. See SheetHandle.tsx.
+const EXPANDED_SNAP_POINT = "88%";
 
 export interface BlockDetailSheetProps {
   block: ScheduleBlock | null;
@@ -48,6 +64,23 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
   useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
+
+  // A BottomSheetModal is portalled to BottomSheetModalProvider at the app
+  // root (app/_layout.tsx), so it renders OUTSIDE the screen's
+  // `<SafeAreaView edges={["top"]}>` — and every screen in this app only
+  // claims the top edge anyway. Android has been edge-to-edge since SDK 54,
+  // so the sheet's bottom edge is the bottom of the physical display, behind
+  // the gesture pill (~24dp) or the three-button nav bar (~48dp); on iOS it's
+  // behind the home indicator (34pt). Without this the Edit/Delete row was
+  // drawn under the system bar — visible enough to look "merged into" it,
+  // and with the lower part of a 44pt target not tappable at all.
+  //
+  // Same reasoning and the same fix already applied in
+  // components/timer/TrackingPicker.tsx, which is the one sheet in the app
+  // that got this right.
+  const insets = useSafeAreaInsets();
+
+  const snapPoints = useMemo(() => [EXPANDED_SNAP_POINT], []);
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
@@ -88,12 +121,27 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
       ref={sheetRef}
       onDismiss={onDismiss}
       backdropComponent={renderBackdrop}
+      // Both together, deliberately: the library merges the measured content
+      // height into the provided list (useAnimatedDetents), so this sheet ends
+      // up with a content-hugging detent AND an expanded one, sorted shortest
+      // first. Index 0 — where a modal opens by default — stays the compact
+      // card for a short block, and a block with a long task list opens at 88%
+      // and can be dragged the rest of the way.
       enableDynamicSizing
+      snapPoints={snapPoints}
       enablePanDownToClose
-      handleIndicatorStyle={styles.handleIndicator}
+      handleComponent={SheetHandle}
       backgroundStyle={styles.sheetBackground}
     >
-      <BottomSheetView style={styles.content}>
+      {/* Scrollable, not a plain BottomSheetView: dynamic sizing caps the
+          sheet at the container height, and a BottomSheetView has no way to
+          reach whatever spills past that — a block with a dozen tasks simply
+          lost its Edit/Delete row off the bottom. It also makes the expanded
+          detent worth dragging to. */}
+      <BottomSheetScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: spacing.xl + insets.bottom }]}
+      >
         {block ? (
           <>
             {/* Web: `h-1.5 w-full rounded-full` in the block's category color. */}
@@ -162,7 +210,7 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
             </View>
           </>
         ) : null}
-      </BottomSheetView>
+      </BottomSheetScrollView>
     </BottomSheetModal>
   );
 });
@@ -187,16 +235,20 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
   },
-  handleIndicator: {
-    backgroundColor: colors.border,
-    width: 40,
-    height: 4,
-    borderRadius: radii.full,
+  // `flex: 1` on the scrollable itself, not on its content container: the
+  // sheet measures the CONTENT size for dynamic sizing (onContentSizeChange),
+  // so this doesn't inflate the collapsed height — it just lets the scrollable
+  // fill whichever detent the sheet is sitting at, which is what makes the
+  // overflow at the expanded one actually scroll. Same shape ScheduleBlockSheet
+  // uses.
+  scroll: {
+    flex: 1,
   },
   content: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
-    paddingBottom: spacing.xxxl,
+    // paddingBottom is applied at the call site — it has to add the bottom
+    // safe-area inset, which isn't a static value.
     gap: spacing.lg,
   },
   // Web: `h-1.5 w-full rounded-full`.
