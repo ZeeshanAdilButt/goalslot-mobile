@@ -38,8 +38,25 @@ jobs:
       # this step is skipped rather than failing the build. Once a human sets
       # up the real Sentry project, add SENTRY_AUTH_TOKEN (and SENTRY_ORG /
       # SENTRY_PROJECT) as repo secrets and this starts running for real.
+      #
+      # The secrets context can't be referenced directly in an `if:` -
+      # GitHub Actions rejects the whole workflow file for that before any
+      # job runs, which is what was actually failing every run here. Route
+      # it through a step output instead.
+      - name: Check for Sentry credentials
+        id: sentry_credentials
+        if: ${{ github.event_name == 'push' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload Sentry source maps (mobile)
-        if: ${{ github.event_name == 'push' && secrets.SENTRY_AUTH_TOKEN != '' }}
+        if: ${{ steps.sentry_credentials.outputs.present == 'true' }}
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
