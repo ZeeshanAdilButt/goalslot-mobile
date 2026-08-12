@@ -115,6 +115,7 @@ export default function MessageThreadScreen() {
 
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const loadingOlderRef = useRef(false);
   const isFocusedRef = useRef(false);
 
   // This screen is a tab and survives navigating between conversations, so
@@ -124,6 +125,7 @@ export default function MessageThreadScreen() {
   useEffect(() => {
     setHasMoreHistory(true);
     setLoadingOlder(false);
+    loadingOlderRef.current = false;
   }, [conversationId]);
 
   const conversationQuery = useQuery({
@@ -225,10 +227,16 @@ export default function MessageThreadScreen() {
   // --- Paging older history ----------------------------------------------
 
   const loadOlder = useCallback(async () => {
-    if (loadingOlder || !hasMoreHistory || messages.length === 0) return;
+    // Ref, not the `loadingOlder` state, as the in-flight guard. This is
+    // called from `onScroll` at 16ms — several events fire before a
+    // `setLoadingOlder(true)` re-render produces a callback that can see it,
+    // so a state-only guard lets the same page be requested three or four
+    // times. The state still exists, but only to drive the spinner.
+    if (loadingOlderRef.current || !hasMoreHistory || messages.length === 0) return;
     const before = oldestMessageTimestamp(messages);
     if (!before) return;
 
+    loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
       const older = await messagingClient.listMessages(conversationId, { limit: DEFAULT_PAGE_SIZE, before });
@@ -246,9 +254,10 @@ export default function MessageThreadScreen() {
       // Leave `hasMoreHistory` true so scrolling up again retries; a failed
       // page must not permanently truncate the thread.
     } finally {
+      loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
-  }, [conversationId, hasMoreHistory, loadingOlder, messages]);
+  }, [conversationId, hasMoreHistory, messages]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
