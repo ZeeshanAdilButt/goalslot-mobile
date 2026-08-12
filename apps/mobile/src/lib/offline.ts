@@ -1,13 +1,19 @@
 import NetInfo from "@react-native-community/netinfo";
 
 import {
+  confirmPendingMessage,
   createOfflineSync,
   createOperationRegistry,
   createOutbox,
+  markPendingMessage,
+  toMessagingError,
   type CreateGoalInput,
   type CreateScheduleBlockInput,
   type CreateTaskInput,
   type Goal,
+  type MessagingError,
+  type MessagingMessage,
+  type MessagingThreadMessage,
   type ScheduleBlock,
   type Task,
 } from "@goalslot/shared";
@@ -15,7 +21,8 @@ import {
 import { apiClient, notify } from "./api-client";
 import { asyncStorageAdapter } from "./async-storage-adapter";
 import { deriveOnline } from "./derive-online";
-import { goalQueries, scheduleQueries, taskQueries } from "./queries";
+import { messagingClient } from "./messaging-client";
+import { goalQueries, messagingQueries, scheduleQueries, taskQueries } from "./queries";
 import { queryClient } from "./query-client";
 
 // NetInfo has no synchronous "give me the current state" accessor, so we
@@ -32,15 +39,35 @@ NetInfo.fetch()
     // Leave the optimistic default in place if the initial fetch fails.
   });
 
-function isOnline(): boolean {
+/**
+ * Exported so features that need connectivity (the messaging WebSocket) reuse
+ * this one NetInfo subscription instead of opening a second one. A second
+ * listener is not just wasteful — the two can disagree for a tick, which is
+ * how you get a socket retrying while the rest of the app already knows it's
+ * offline.
+ *
+ * Deliberately NOT wired into TanStack's `onlineManager`. This app's offline
+ * story is the outbox below: a mutation is expected to FAIL while offline so
+ * `useQuickAdd`'s `hasResponse` check can decide whether to queue it. Handing
+ * `onlineManager` a real signal would make TanStack pause those mutations
+ * instead, which silently bypasses the outbox — a bigger behaviour change
+ * than any one feature should make on the way past.
+ */
+export function isOnline(): boolean {
   return online;
 }
 
-function subscribeOnline(callback: (online: boolean) => void): () => void {
+export function subscribeOnline(callback: (online: boolean) => void): () => void {
   return NetInfo.addEventListener((state) => {
     online = deriveOnline(state);
     callback(online);
   });
+}
+
+/** Payload of a queued `messaging-send`. Kept here beside its registration. */
+export interface MessagingSendPayload {
+  conversationId: string;
+  body: string;
 }
 
 export const outbox = createOutbox(asyncStorageAdapter);
@@ -69,6 +96,70 @@ operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("sc
   execute: async (payload) => (await apiClient.schedule.create(payload)).data,
   invalidateKeys: [scheduleQueries.scheduleQueries.root()],
 });
+
+// A message the user sent while offline.
+//
+// Unlike the creates above, this one patches a cache inside `execute` rather
+// than leaving everything to `invalidateKeys`, and it has to: the optimistic
+// bubble is still sitting in the thread cache marked 'queued', keyed by its
+// client id. A plain invalidate would refetch the thread, the server's row
+// would arrive alongside the still-present queued bubble, and the user would
+// see their message twice. The outbox entry's `idempotencyKey` IS that client
+// id (see useSendMessage), which is what lets the replay find and replace the
+// right bubble.
+//
+// Not idempotency-keyed at the service — jiffy-messaging has no dedupe header
+// — so a replay of something that did reach the server would post twice. The
+// send path only enqueues when the request produced NO response at all (the
+// `hasResponse` check, mirroring useQuickAdd), which is precisely the case
+// where nothing arrived.
+//
+// `invalidateKeys` is the conversation LIST, not the whole ['messaging']
+// namespace: the thread is already patched above, and the list needs
+// refreshing because a replayed send changes its ordering and preview.
+operationRegistry.registerOperation<MessagingSendPayload, MessagingMessage>("messaging-send", {
+  execute: async (payload, idempotencyKey) => {
+    const messagesKey = messagingQueries.messagingQueries.messages(payload.conversationId);
+    try {
+      const created = await messagingClient.sendMessage(payload.conversationId, payload.body);
+      queryClient.setQueryData<MessagingThreadMessage[]>(messagesKey, (existing) =>
+        existing ? confirmPendingMessage(existing, idempotencyKey, created) : existing,
+      );
+      return created;
+    } catch (error) {
+      const messagingError = toMessagingError(error);
+      if (messagingError.status !== undefined) {
+        // The service answered and refused (403 no longer a participant, 404
+        // conversation gone, 400 bad body). The sync engine is about to drop
+        // this entry, so the bubble has to stop claiming it's still queued —
+        // otherwise it sits there as "waiting for connection" forever, for a
+        // message that will never be sent.
+        queryClient.setQueryData<MessagingThreadMessage[]>(messagesKey, (existing) =>
+          existing ? markPendingMessage(existing, idempotencyKey, "failed") : existing,
+        );
+      }
+      // Rethrown in the shape the sync engine reads. It duck-types
+      // `err.response.status` to tell "the server said no, drop it" from
+      // "no response, we're still offline, stop draining" — and a bare
+      // MessagingError has neither, so an unmapped rejection here would
+      // wedge the entire outbox (every domain's, not just messaging's)
+      // behind an entry that can never succeed.
+      throw asOutboxError(messagingError);
+    }
+  },
+  invalidateKeys: [messagingQueries.messagingQueries.conversations()],
+});
+
+/**
+ * Gives a MessagingError the `{ response: { status } }` shape the shared sync
+ * engine duck-types on. A genuine network failure has no status and is
+ * rethrown untouched, which is exactly the "still offline" signal the drain
+ * wants.
+ */
+function asOutboxError(error: MessagingError): unknown {
+  if (error.status === undefined) return error;
+  return Object.assign(error, { response: { status: error.status } });
+}
 
 export const offlineSync = createOfflineSync({
   outbox,

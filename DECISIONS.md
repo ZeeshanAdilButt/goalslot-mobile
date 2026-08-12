@@ -165,3 +165,74 @@ tree/projection math shared with the web app).
 - **Routing**: the editor is a hidden tab rather than a stack push, which
   keeps the tab group's auth guard without restructuring the navigator —
   worth revisiting if the app grows a root stack.
+
+## Messaging feature
+
+Person-to-person messaging between users who already have a sharing
+relationship. Two backends, deliberately: GoalSlot's own API mints a
+short-lived token and creates conversations (that endpoint is where the
+"may these two people talk" rule lives, enforced server-side), and the
+standalone `jiffy-messaging` service owns conversations, messages, read
+state, and live delivery. The service holds no opinion about who may
+message whom, so the authorization check cannot move into it.
+
+- **Split across the packages**: everything platform-neutral is in
+  `packages/shared/src/messaging` (cache reconcilers, unread derivation,
+  contact assembly, the token store, the WebSocket manager) plus
+  `api/messaging.ts`, `api/sharing.ts` and `queries/messaging.ts` — the
+  web app can reuse all of it. Only React Native UI lives in
+  `apps/mobile`.
+- **Names come from the sharing graph.** jiffy-messaging identifies
+  participants by bare GoalSlot user id and has never heard of a user
+  record, so display names are joined client-side from
+  `/sharing/my-shares` + `/sharing/shared-with-me`. That list decides who
+  is *offered* in the new-conversation picker; the server decides who is
+  *allowed*, and a 403 is rendered as its own specific message rather
+  than a generic failure. A conversation whose counterpart has since left
+  the sharing graph still renders — the history is real even when the
+  relationship ended.
+- **One socket per process**, owned at module scope
+  (`src/lib/messaging-live.ts`) and driven by the (app) layout, so the
+  conversation list stays live from anywhere in the app. It is closed on
+  background and reopened on resume rather than held across the cycle: a
+  suspended socket is usually already dead and reports it minutes late,
+  during which the app silently receives nothing. Reconnect is
+  exponential with full jitter, and is *not* scheduled while offline —
+  the NetInfo edge in `src/lib/offline.ts` wakes it instead of a timer
+  burning radio on a handshake that cannot complete.
+- **`onlineManager` is deliberately still not wired.** This app's offline
+  story is the outbox: a mutation is expected to FAIL offline so the
+  `hasResponse` check can decide whether to queue it. Giving TanStack a
+  real connectivity signal would make it *pause* mutations instead, which
+  silently bypasses the outbox for every domain.
+- **Optimistic send** follows the `useQuickAdd` shape, with two chat-
+  specific changes: a failed message is never deleted (it stays marked
+  failed with retry/discard, because deleting it loses what the user
+  wrote), and the server's row replaces the optimistic one by `clientId`
+  rather than landing beside it. A queued send's outbox `idempotencyKey`
+  *is* that client id, which is what lets the drain replace the right
+  bubble instead of duplicating it.
+- **Refetches merge rather than replace** (`mergeServerMessages`, wired
+  as the query's `structuralSharing`). A refetch returns only the newest
+  page, so the default replace would drop both paged-in history and any
+  message queued offline — the latter reappearing minutes later when the
+  outbox drained.
+- **A normal list, not an `inverted` one.** `inverted` is a scaleY(-1)
+  transform on every cell, which reverses screen-reader traversal so the
+  thread reads newest-to-oldest. `useThreadScroll` does the pinning
+  explicitly instead, and only when the user is already at the bottom —
+  yanking someone out of history because a message arrived is the worst
+  thing a chat screen can do. Keyboard *hide* is handled as carefully as
+  show: without it the view strands above the last bubble.
+- **Config-gated**: service URLs come from `app.config.js`
+  (`EXPO_PUBLIC_MESSAGING_URL` / `EXPO_PUBLIC_MESSAGING_WS_URL`) and are
+  routinely unset. Unset is a normal state, not an error — the drawer
+  entry disappears, queries never fire, the socket stays idle, and the
+  service client rejects with a `not-configured` error kind instead of
+  requesting an undefined URL. A missing ws URL alone degrades to
+  refetch-on-focus rather than disabling the feature.
+- **Routing** follows the Notes pattern above: `messages.tsx` plus
+  `message/[id].tsx`, both hidden tabs, the thread hiding the tab bar.
+  The consequence worth remembering is that the thread screen stays
+  mounted between conversations, so read-marking, refetching and paging
+  state all key off focus and `conversationId` rather than mount.

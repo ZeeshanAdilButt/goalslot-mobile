@@ -38,6 +38,7 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  MessagesSquare,
   MessageSquareText,
   Menu,
   NotebookPen,
@@ -70,6 +71,10 @@ const ICONS = {
   journal: NotebookPen,
   // Coach AI chat and Notes — both reachable from the navigation drawer.
   coach: MessageSquareText,
+  // Person-to-person messaging, distinct from `coach` (the AI chat): a
+  // stacked pair of bubbles rather than one, so the drawer's two
+  // conversational entries aren't the same glyph twice.
+  messages: MessagesSquare,
   notes: StickyNote,
   add: Plus,
   // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.

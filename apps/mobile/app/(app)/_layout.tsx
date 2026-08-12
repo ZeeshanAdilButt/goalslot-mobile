@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/Icon";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
+import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
 export default function AppLayout() {
@@ -14,6 +15,18 @@ export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+
+  // One socket for the whole authenticated app, so an incoming message
+  // updates the conversation list from anywhere — not only while a Messages
+  // screen is mounted. Handles background/foreground and reconnect; a no-op
+  // when messaging isn't configured for this build. See the hook for why the
+  // socket is dropped on background rather than held across it.
+  //
+  // Sits with the other unconditional hooks, above the redirect below — the
+  // same rule the comment there spells out: `status` can flip to
+  // 'unauthenticated' while this layout is mounted, and a hook after an early
+  // return would break the hook order on that render.
+  useMessagingLiveUpdates(status === "authenticated");
 
   // Hooks above this point must all run unconditionally on every render —
   // `status` can flip from 'authenticated' to 'unauthenticated' (logout)
@@ -96,6 +109,15 @@ export default function AppLayout() {
         {/* The note editor is a route, not a tab: hiding the tab bar while
             it's focused makes it read as a full-screen push. */}
         <Tabs.Screen name="note/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
+        {/* Messaging, same shape as Notes: a list screen plus a detail route
+            that presents as a full-screen push. Both stay registered even
+            when the service isn't configured — expo-router routes off the
+            files on disk, so unregistering them here would leave two screens
+            reachable by URL with no options applied. The drawer entry is what
+            actually gates discovery (see DrawerContent), and both screens
+            degrade to a clear "not available" state rather than crashing. */}
+        <Tabs.Screen name="messages" options={{ title: "Messages", href: null }} />
+        <Tabs.Screen name="message/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
         <Tabs.Screen name="settings" options={{ title: "Settings", href: null }} />
       </Tabs>
 

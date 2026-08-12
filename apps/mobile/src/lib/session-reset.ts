@@ -6,7 +6,7 @@
 // was still sitting in the caches behind it, and the next person to sign in
 // on the device saw it.
 //
-// Four separate things outlive a logout, and all of them are per-account:
+// Six separate things outlive a logout, and all of them are per-account:
 //
 //   1. The React Query cache. Persisted to AsyncStorage with a 7-day gcTime
 //      (query-client.ts), so it survives not just logout but app restarts.
@@ -23,7 +23,12 @@
 //   4. Per-account UI state keyed by server ids — which schedule blocks have
 //      reminders switched off, which notes are expanded. Meaningless ids
 //      under a different account, and quietly wrong if any collide.
-//   5. Notifications already handed to the OS. Unlike the four above these
+//   5. The cached messaging token, and unsent message drafts. The token is a
+//      live credential for the previous account's conversations, so the next
+//      user's first messaging request would go out under the old identity
+//      until it expired; drafts are that person's unsent words, keyed by
+//      conversation ids that mean nothing under a different account.
+//   6. Notifications already handed to the OS. Unlike the five above these
 //      are not caches the app reads back — they are scheduled work the
 //      operating system will perform on its own, with the previous account's
 //      wording baked into them, whether or not this app is running. A
@@ -40,6 +45,8 @@
 // path entirely, and the reset has to be guaranteed before new data is
 // fetched, not merely attempted on the way out.
 
+import { messagingTokenStore } from "./messaging-client";
+import { useMessagingUiStore } from "./messaging-ui-store";
 import { createExpoNotificationCapability } from "./notifications";
 import { outbox } from "./offline";
 import { asyncStoragePersister, queryClient } from "./query-client";
@@ -79,6 +86,17 @@ export async function resetSessionState(): Promise<void> {
   await step("timer", () => useTimerStore.getState().stop());
   await step("schedule reminders", () => useScheduleRemindersStore.getState().reset());
   await step("notes ui state", () => useNotesUiStore.getState().reset());
+
+  // Messaging's two per-account leftovers. The cached jiffy-messaging JWT is
+  // in memory only, but it is a live credential for the previous account's
+  // conversations — left behind, the next signed-in user's first messaging
+  // request goes out under the old identity until it expires. Drafts are
+  // unsent text keyed by the old account's conversation ids.
+  //
+  // Before the notification sweep, deliberately: these are ordinary cache
+  // clears, and the sweep below has to stay the last thing that runs.
+  await step("messaging token", () => messagingTokenStore.clear());
+  await step("messaging drafts", () => useMessagingUiStore.getState().reset());
 
   // One sweep for every reminder this app has queued, rather than one
   // cancellation per feature.

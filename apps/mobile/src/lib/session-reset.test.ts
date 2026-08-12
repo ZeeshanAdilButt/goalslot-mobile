@@ -24,6 +24,8 @@ const mockClearOutbox = jest.fn(record("outbox"));
 const mockTimerStop = jest.fn(record("timer"));
 const mockScheduleRemindersReset = jest.fn(record("schedule reminders store"));
 const mockNotesUiReset = jest.fn(record("notes ui"));
+const mockMessagingTokenClear = jest.fn(record("messaging token"));
+const mockMessagingDraftsReset = jest.fn(record("messaging drafts"));
 const mockClearAllNotifications = jest.fn(record("notifications"));
 
 jest.mock("./query-client", () => ({
@@ -49,6 +51,19 @@ jest.mock("./notes-ui-store", () => ({
   useNotesUiStore: { getState: () => ({ reset: (...args: unknown[]) => mockNotesUiReset(...args) }) },
 }));
 
+// Mocked for the same reason as the stores above — but also because the real
+// module reaches api-client, and through it expo-secure-store and the app's
+// config, none of which a reset-ordering test should have to stand up.
+jest.mock("./messaging-client", () => ({
+  messagingTokenStore: { clear: (...args: unknown[]) => mockMessagingTokenClear(...args) },
+}));
+
+jest.mock("./messaging-ui-store", () => ({
+  useMessagingUiStore: {
+    getState: () => ({ reset: (...args: unknown[]) => mockMessagingDraftsReset(...args) }),
+  },
+}));
+
 jest.mock("./notifications", () => ({
   createExpoNotificationCapability: () => ({
     clearAllNotifications: (...args: unknown[]) => mockClearAllNotifications(...args),
@@ -65,6 +80,8 @@ describe("resetSessionState", () => {
       mockTimerStop,
       mockScheduleRemindersReset,
       mockNotesUiReset,
+      mockMessagingTokenClear,
+      mockMessagingDraftsReset,
       mockClearAllNotifications,
     ]) {
       fn.mockClear();
@@ -80,6 +97,16 @@ describe("resetSessionState", () => {
     expect(mockTimerStop).toHaveBeenCalled();
     expect(mockScheduleRemindersReset).toHaveBeenCalled();
     expect(mockNotesUiReset).toHaveBeenCalled();
+  });
+
+  // The messaging token is not a cache — it's a live credential for the
+  // outgoing account's conversations. Left in memory, the next user's first
+  // messaging request goes out under the previous identity.
+  it("drops the messaging credential and any unsent drafts", async () => {
+    await resetSessionState();
+
+    expect(mockMessagingTokenClear).toHaveBeenCalledTimes(1);
+    expect(mockMessagingDraftsReset).toHaveBeenCalledTimes(1);
   });
 
   // The privacy bug this file was extended for: a schedule-block reminder is
@@ -101,6 +128,9 @@ describe("resetSessionState", () => {
 
     expect(mockOrder[mockOrder.length - 1]).toBe("notifications");
     expect(mockOrder.indexOf("query cache")).toBeLessThan(mockOrder.indexOf("notifications"));
+    // Messaging's clears were added after this rule existed; they are ordinary
+    // cache clears and must not have displaced the sweep from last place.
+    expect(mockOrder.indexOf("messaging drafts")).toBeLessThan(mockOrder.indexOf("notifications"));
   });
 
   it("completes the sign-out even when clearing notifications fails", async () => {
