@@ -90,6 +90,14 @@ export function createOfflineSync(config: OfflineSyncConfig): OfflineSync {
           await outbox.removeFromOutbox(entry.id)
           dropped++
           operation.invalidateKeys?.forEach((key) => keysToInvalidate.add(key))
+
+          try {
+            operation.onDropped?.(entry.payload, err)
+          } catch {
+            // A hook throwing shouldn't take the rest of the drain down with
+            // it — the entry it was about is already gone from the outbox
+            // either way, so the drop itself already happened correctly.
+          }
         }
       }
     } finally {
