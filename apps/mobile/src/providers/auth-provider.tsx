@@ -44,11 +44,23 @@ interface AuthState {
   register: (data: RegisterInput) => Promise<void>;
   logout: () => Promise<void>;
   loadUser: () => Promise<void>;
+  setUser: (user: User) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   status: "loading",
+
+  // For screens that mutate the profile and get the updated row back —
+  // Settings' name edit is the first. Mirrors web's `useAuthStore.setUser`.
+  //
+  // Deliberately not "just call loadUser() again": loadUser treats any failed
+  // /auth/me as a dead session and clears the tokens, so a network blip in
+  // the seconds after a successful save would sign the user out over a
+  // change that already landed on the server.
+  setUser(user) {
+    set({ user });
+  },
 
   async login(email, password) {
     const response = await apiClient.auth.login({ email: normalizeEmail(email), password });

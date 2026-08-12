@@ -48,6 +48,15 @@ describe('createNoopCapabilities', () => {
     await expect(caps.notifications.cancelNotification('n1')).resolves.toBeUndefined()
   })
 
+  it('notifications: reports a status that matches what requestPermission will do', async () => {
+    // The pairing is the contract, not the literal value: a caller that shows
+    // an "Allow notifications" button on 'undetermined' would be showing a
+    // dead button here, since requestPermission can only ever return false.
+    const caps = createNoopCapabilities()
+    expect(await caps.notifications.getPermissionStatus()).toBe('denied')
+    expect(await caps.notifications.requestPermission()).toBe(false)
+  })
+
   it('notifications: the bulk sign-out sweep resolves without error', async () => {
     // Its one caller is a sign-out (apps/mobile/src/lib/session-reset.ts),
     // which must never be blocked by the notification layer — including when

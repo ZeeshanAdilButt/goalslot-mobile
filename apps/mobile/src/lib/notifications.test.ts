@@ -43,6 +43,37 @@ describe("createExpoNotificationCapability", () => {
     mockDismissAllNotificationsAsync.mockReset();
   });
 
+  describe("getPermissionStatus", () => {
+    it("reports 'granted' without prompting", async () => {
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: false });
+
+      const capability = createExpoNotificationCapability();
+
+      expect(await capability.getPermissionStatus()).toBe("granted");
+      expect(mockRequestPermissionsAsync).not.toHaveBeenCalled();
+    });
+
+    it("reports 'undetermined' while the OS will still show the prompt", async () => {
+      mockGetPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+
+      const capability = createExpoNotificationCapability();
+
+      expect(await capability.getPermissionStatus()).toBe("undetermined");
+      expect(mockRequestPermissionsAsync).not.toHaveBeenCalled();
+    });
+
+    it("reports 'denied' once the OS will no longer ask", async () => {
+      // The case that matters for the Settings screen: `granted: false` alone
+      // is ambiguous, and offering an in-app "Allow" button here would raise
+      // no prompt at all. Only the device settings app can undo this.
+      mockGetPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: false });
+
+      const capability = createExpoNotificationCapability();
+
+      expect(await capability.getPermissionStatus()).toBe("denied");
+    });
+  });
+
   describe("requestPermission", () => {
     it("returns true when the OS grants permission", async () => {
       mockRequestPermissionsAsync.mockResolvedValue({ granted: true });

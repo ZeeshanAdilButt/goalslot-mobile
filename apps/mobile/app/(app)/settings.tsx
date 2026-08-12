@@ -1,61 +1,99 @@
-// Settings tab: profile summary, logout, a notifications permission toggle,
-// and a theme preference picker. This is a plain settings LIST (rows with
-// labels + controls), not a design showcase — see DECISIONS.md's v1 screen
-// list, which scopes Settings to exactly profile/logout/notifications/theme.
+// Settings. A grouped list of rows, each opening a detail sheet — the phone
+// shape of dw-time-web's eight-tab settings page
+// (dw-time-web/src/app/dashboard/settings/page.tsx), which puts a persistent
+// sidebar next to a detail pane. There is room for one pane here, so the
+// sidebar becomes the screen and the pane becomes a sheet. The row
+// primitives and the sheets live in src/components/settings.
 //
-// Logout is the important one here: useAuth().logout() has existed since
-// the auth provider was built, but nothing in the app called it — once a
-// user logged in there was no way back out. This screen is the fix.
+// What each of web's eight tabs became, and why:
 //
-// Visually this now follows the platform "grouped list" convention (see
-// dw-time-web/src/app/dashboard/settings/page.tsx's sidebar card, which
-// uses the same bordered-card + divided-row + chevron pattern this screen
-// was missing): each section's rows sit inside one bordered card with
-// hairline dividers between rows, and only rows that actually navigate get
-// a trailing chevron. The "More" section below is intentionally left as-is
-// — it's being replaced by a drawer in a parallel effort.
+//   profile       ported. `PUT /users/profile` takes `{ name, avatar }`; name
+//                 is editable, email is read-only because no route changes it.
+//   appearance    dropped. Web hides this tab too (see the comment on its
+//                 TABS array) — the theme is not wired up on either platform.
+//                 Mobile used to ship a segmented control here whose own
+//                 helper text admitted it did nothing; it and its store field
+//                 are gone (src/lib/settings-store.ts).
+//   categories    linked. app/(app)/categories.tsx already manages categories
+//                 AND labels; a second copy inside Settings would be a second
+//                 thing to keep in step.
+//   billing       read-only plan badge, no purchase path. Not an oversight —
+//                 see the "Plan" row below.
+//   security      ported. The two-step emailed-OTP password change. SSO
+//                 accounts get an explanation instead, since the API rejects
+//                 a password change on them.
+//   data          partially ported. Delete account, with web's type-the-word
+//                 gate. There is no account data-export endpoint on the API
+//                 (only a time-report export, which belongs to Reports), so
+//                 nothing here pretends to offer one.
+//   integrations  ported as "AI provider key" — the BYOK credential the Coach
+//                 runs on, which is exactly the thing a user discovers is
+//                 missing while holding their phone.
+//   coach-profile ported. Three free-text/choice fields; cheap to port and
+//                 the kind of reflective writing people do on a phone.
+//
+// Logout stays the load-bearing one: useAuth().logout() existed since the
+// auth provider was built and nothing called it until this screen shipped.
 
 import { useCallback, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { Alert, Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Link, useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
+import type { NotificationPermissionStatus } from "@goalslot/shared";
+
+import { ScreenHeader } from "@/components/lists";
+import {
+  AiKeySheet,
+  ChangePasswordSheet,
+  CoachProfileSheet,
+  DeleteAccountSheet,
+  EditProfileSheet,
+  SettingsRow,
+  SettingsSection,
+} from "@/components/settings";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
-import { useSettingsStore, type ThemePreference } from "@/lib/settings-store";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
-];
-
 // The three screens that were cut from the tab bar (see app/(app)/_layout.tsx)
-// but still need a way in — Settings is that way in. Each is a plain
-// Tabs.Screen route (href: null just hides it from the tab bar), so a
-// normal Link/router navigation works exactly like any other route.
-const MORE_LINKS: { href: "/reports" | "/categories" | "/journal"; label: string; description: string }[] = [
+// but still need a way in. The navigation drawer is the primary route to them
+// now; these stay because "Categories" is one of web's own settings tabs, and
+// dropping the row would make Settings look like it lost a feature.
+const MORE_LINKS: { href: "/categories" | "/reports" | "/journal"; label: string; description: string }[] = [
+  { href: "/categories", label: "Categories & labels", description: "The colors your goals and tasks group by" },
   { href: "/reports", label: "Reports", description: "Weekly stats and trends" },
-  { href: "/categories", label: "Categories & labels", description: "Manage how you organize goals and tasks" },
   { href: "/journal", label: "Journal", description: "Your daily writing entries" },
 ];
+
+type SheetName = "profile" | "password" | "coach-profile" | "ai-key" | "delete-account";
+
+const PLAN_LABELS: Record<string, string> = {
+  FREE: "Free",
+  BASIC: "Basic",
+  PRO: "Pro",
+};
+
+/**
+ * Plan limits arrive as `null` for the unlimited tiers, not as a big number:
+ * the API computes them as JS `Infinity` and `JSON.stringify(Infinity)` is
+ * `null`. Rendering that raw would read as "0 goals" to anyone on Pro.
+ */
+function formatLimit(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value) ? "Unlimited" : String(value);
+}
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
   const { notifications } = useCapabilities();
   const analytics = useAnalytics();
+  const router = useRouter();
 
-  const themePreference = useSettingsStore((s) => s.themePreference);
-  const setThemePreference = useSettingsStore((s) => s.setThemePreference);
+  const [openSheet, setOpenSheet] = useState<SheetName | null>(null);
+  const [permission, setPermission] = useState<NotificationPermissionStatus | null>(null);
 
-  // Local UI reflection of "did the permission request succeed" — there's
-  // no persisted/queryable OS permission state exposed through the
-  // NotificationCapability seam yet, so this is intentionally just a
-  // best-effort mirror of the last requestPermission() result, not a source
-  // of truth read back from the OS on every mount.
-  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const closeSheet = useCallback(() => setOpenSheet(null), []);
 
   useFocusEffect(
     useCallback(() => {
@@ -63,152 +101,206 @@ export default function SettingsScreen() {
     }, [analytics]),
   );
 
-  const handleNotificationsToggle = useCallback(
-    async (value: boolean) => {
-      if (!value) {
-        // Turning off is just a local UI preference — there's no OS API to
-        // revoke a permission that's already been granted, so this doesn't
-        // call into the capability at all.
-        setNotificationsEnabled(false);
-        return;
-      }
-      const granted = await notifications.requestPermission();
-      setNotificationsEnabled(granted);
-    },
-    [notifications],
+  // Re-read on every focus rather than once on mount. Granting notifications
+  // means leaving for the OS settings app and coming back, and the row has to
+  // be right when the user returns — this screen is the one place they'll
+  // look to check whether it worked.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void notifications.getPermissionStatus().then((status) => {
+        if (!cancelled) setPermission(status);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [notifications]),
   );
 
+  const handleNotificationsPress = useCallback(async () => {
+    if (permission === "granted") return;
+    if (permission === "denied") {
+      // iOS only ever shows the system prompt once. After a decline the only
+      // way back is the device's own settings, so send them there rather than
+      // firing a request that raises nothing.
+      await Linking.openSettings();
+      return;
+    }
+    const granted = await notifications.requestPermission();
+    setPermission(granted ? "granted" : await notifications.getPermissionStatus());
+  }, [notifications, permission]);
+
   const confirmLogout = useCallback(() => {
-    // Destructive + irreversible from the user's point of view (they land
-    // back on the login screen), so this needs a confirm step rather than
-    // firing on a single accidental tap. No analytics event fires here —
-    // "loggedOut" isn't part of the v1 AnalyticsEventMap (packages/shared/
-    // src/growth/index.ts), which is deliberately scoped to the five
-    // existing screens' events; adding one is out of scope for this screen.
+    // Destructive from the user's point of view — they land back on the login
+    // screen — so it needs a confirm step rather than firing on one stray tap.
+    // No analytics event: "loggedOut" isn't in the v1 AnalyticsEventMap
+    // (packages/shared/src/growth/index.ts).
     Alert.alert("Log out?", "You'll need to sign in again to access your schedule.", [
       { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: () => void logout(),
-      },
+      { text: "Log out", style: "destructive", onPress: () => void logout() },
     ]);
   }, [logout]);
+
+  const isSso = user?.userType === "SSO";
+  const plan = user?.plan ?? "FREE";
+  const planLabel = PLAN_LABELS[plan] ?? plan;
+
+  const notificationsValue =
+    permission === "granted" ? "On" : permission === "denied" ? "Blocked" : permission ? "Off" : "—";
+  const notificationsDescription =
+    permission === "granted"
+      ? "Schedule blocks and timer nudges can reach you."
+      : permission === "denied"
+        ? "Turned off in your device settings. Tap to open them."
+        : "Tap to allow schedule reminders and timer nudges.";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
-          <Text style={styles.eyebrow}>Account</Text>
-          <Text style={styles.headerTitle}>Settings</Text>
-        </View>
+        <ScreenHeader eyebrow="Account" title="Settings" subtitle="Your profile, security and preferences." />
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Profile</Text>
-          <View style={styles.card}>
-            <View style={styles.profileRow}>
-              <View style={styles.avatar}>
+        <SettingsSection title="Profile">
+          <SettingsRow
+            label={user?.name || "Add your name"}
+            description={user?.email || undefined}
+            onPress={() => setOpenSheet("profile")}
+            accessibilityLabel={`Edit profile. ${user?.name || "No name set"}, ${user?.email ?? ""}`}
+            leading={
+              // Decorative — the initial repeats the name in the row's own
+              // label, so announcing it again would just be noise.
+              <View style={styles.avatar} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
                 <Text style={styles.avatarInitial}>
                   {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
                 </Text>
               </View>
-              <View style={styles.profileText}>
-                <Text style={styles.profileName} numberOfLines={1}>
-                  {user?.name || "—"}
-                </Text>
-                <Text style={styles.profileEmail} numberOfLines={1}>
-                  {user?.email || "—"}
-                </Text>
-              </View>
-            </View>
-          </View>
-        </View>
+            }
+          />
+          {/* Web's Billing tab, reduced to the one thing that is safe to show
+              in a native app. Apple's rules forbid an iOS app from pointing
+              users at an outside purchase flow for digital content, and this
+              product's only upgrade path is a Stripe checkout page on the
+              web. Displaying the plan you already have is fine; a button that
+              takes you somewhere to buy one is not. So: no upgrade CTA, no
+              "email us to switch" link (web has one — it does not belong
+              here), no external URL. Cancelling and upgrading happen on the
+              web app. */}
+          <SettingsRow
+            label="Plan"
+            icon="credit-card"
+            value={user?.unlimitedAccess ? `${planLabel} · Unlimited` : planLabel}
+            description={`${formatLimit(user?.limits?.maxGoals)} goals · ${formatLimit(
+              user?.limits?.maxTasksPerDay,
+            )} tasks a day`}
+            divider={false}
+          />
+        </SettingsSection>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Notifications</Text>
-          <View style={styles.card}>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Enable notifications</Text>
-              <Switch
-                value={notificationsEnabled}
-                onValueChange={(value) => void handleNotificationsToggle(value)}
-                accessibilityRole="switch"
-                accessibilityLabel="Enable notifications"
-                accessibilityState={{ checked: notificationsEnabled }}
-              />
-            </View>
-          </View>
-        </View>
+        <SettingsSection
+          title="Notifications"
+          footnote="How often the running timer nudges you is set on the Timer screen."
+        >
+          <SettingsRow
+            label="Notifications"
+            icon={permission === "granted" ? "bell" : "bell-off"}
+            value={notificationsValue}
+            description={notificationsDescription}
+            onPress={permission === "granted" ? undefined : () => void handleNotificationsPress()}
+            accessibilityHint={
+              permission === "denied" ? "Opens your device settings for this app" : undefined
+            }
+            divider={false}
+          />
+        </SettingsSection>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Theme</Text>
-          <View style={[styles.card, styles.themeCard]}>
-            <View style={styles.segmentedControl}>
-              {THEME_OPTIONS.map((option) => (
-                <Pressable
-                  key={option.value}
-                  style={[styles.segmentButton, themePreference === option.value && styles.segmentButtonActive]}
-                  onPress={() => setThemePreference(option.value)}
-                  accessibilityRole="radio"
-                  accessibilityLabel={`${option.label} theme`}
-                  accessibilityState={{ selected: themePreference === option.value }}
-                >
-                  <Text
-                    style={[styles.segmentLabel, themePreference === option.value && styles.segmentLabelActive]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            <Text style={styles.themeNote}>
-              Theme switching isn't wired up across the app yet — your choice is saved and will take effect once
-              full theme support ships.
-            </Text>
-          </View>
-        </View>
+        <SettingsSection title="Security">
+          {isSso ? (
+            <SettingsRow
+              label="Single sign-on"
+              icon="shield"
+              description="Your password is managed by your SSO provider. Change it there."
+              divider={false}
+            />
+          ) : (
+            <SettingsRow
+              label="Change password"
+              icon="shield"
+              description="We'll email you a code to confirm it's you."
+              onPress={() => setOpenSheet("password")}
+              divider={false}
+            />
+          )}
+        </SettingsSection>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>More</Text>
-        <View style={styles.card}>
+        <SettingsSection
+          title="Coach"
+          footnote="Without your own key the coach runs on a small shared allowance."
+        >
+          <SettingsRow
+            label="Coach profile"
+            icon="sparkles"
+            description="Your why, and any context the coach should respect."
+            onPress={() => setOpenSheet("coach-profile")}
+          />
+          <SettingsRow
+            label="AI provider key"
+            icon="key-round"
+            description="Bring your own OpenAI, Anthropic, Gemini or OpenRouter key."
+            onPress={() => setOpenSheet("ai-key")}
+            divider={false}
+          />
+        </SettingsSection>
+
+        <SettingsSection title="More">
           {MORE_LINKS.map((link, index) => (
-            <Link key={link.href} href={link.href} asChild>
-              <Pressable
-                // Link's `asChild` forwards this Pressable straight into
-                // expo-router's Slot, which throws on an array `style` (see
-                // expo-router/build/ui/Slot.js) — must be flattened here,
-                // not just left as [a, b && c].
-                style={StyleSheet.flatten([
-                  styles.moreRow,
-                  index < MORE_LINKS.length - 1 && styles.moreRowDivider,
-                ])}
-                accessibilityRole="link"
-                accessibilityLabel={link.label}
-              >
-                <View style={styles.moreRowText}>
-                  <Text style={styles.moreRowLabel}>{link.label}</Text>
-                  <Text style={styles.moreRowDescription}>{link.description}</Text>
-                </View>
-                <Text style={styles.moreRowChevron}>›</Text>
-              </Pressable>
-            </Link>
+            // `router.push` rather than `<Link asChild>`: asChild clones the
+            // child into expo-router's Slot and injects its own `onPress`,
+            // `href` and a ref, which needs the child to be a forwardRef that
+            // tolerates unknown props. SettingsRow is neither, and the
+            // navigation drawer already navigates this way
+            // (src/components/navigation/DrawerContent.tsx).
+            <SettingsRow
+              key={link.href}
+              label={link.label}
+              description={link.description}
+              isLink
+              onPress={() => router.push(link.href)}
+              divider={index < MORE_LINKS.length - 1}
+            />
           ))}
-        </View>
-      </View>
+        </SettingsSection>
 
-        <View style={[styles.section, styles.logoutSection]}>
-          <View style={styles.card}>
-            <Pressable
-              style={styles.logoutRow}
-              onPress={confirmLogout}
-              accessibilityRole="button"
-              accessibilityLabel="Log out"
-            >
-              <Text style={styles.logoutButtonText}>Log out</Text>
-            </Pressable>
-          </View>
-        </View>
+        <SettingsSection
+          title="Data & privacy"
+          footnote="Exporting your account data isn't available yet — the API has no endpoint for it. Time reports can be exported from the web app."
+        >
+          <SettingsRow
+            label="Delete account"
+            icon="trash"
+            description="Permanently removes your account and everything in it."
+            destructive
+            onPress={() => setOpenSheet("delete-account")}
+            accessibilityHint="Opens a confirmation you have to type into"
+            divider={false}
+          />
+        </SettingsSection>
+
+        <SettingsSection style={styles.logoutSection}>
+          <SettingsRow
+            label="Log out"
+            icon="logout"
+            destructive
+            onPress={confirmLogout}
+            divider={false}
+            chevron={false}
+          />
+        </SettingsSection>
       </ScrollView>
+
+      <EditProfileSheet visible={openSheet === "profile"} onClose={closeSheet} />
+      <ChangePasswordSheet visible={openSheet === "password"} onClose={closeSheet} />
+      <CoachProfileSheet visible={openSheet === "coach-profile"} onClose={closeSheet} />
+      <AiKeySheet visible={openSheet === "ai-key"} onClose={closeSheet} />
+      <DeleteAccountSheet visible={openSheet === "delete-account"} onClose={closeSheet} />
     </SafeAreaView>
   );
 }
@@ -221,162 +313,21 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: spacing.xxxl,
   },
-  header: {
-    paddingHorizontal: spacing.xl,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
-    gap: 2,
-  },
-  eyebrow: {
-    ...typography.caption,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-    color: colors.mutedForeground,
-  },
-  headerTitle: {
-    ...typography.h1,
-    color: colors.foreground,
-  },
-  section: {
-    marginTop: spacing.xl,
-    paddingHorizontal: spacing.xl,
-    gap: spacing.sm,
-  },
-  sectionTitle: {
-    ...typography.label,
-    color: colors.mutedForeground,
-    marginBottom: spacing.xs,
-  },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    overflow: "hidden",
-    ...shadows.card,
-  },
-  profileRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
-  },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
     backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
+    ...shadows.subtle,
   },
   avatarInitial: {
     color: colors.primaryForeground,
-    fontSize: 18,
+    fontSize: typography.body.fontSize,
     fontWeight: "700",
-  },
-  profileText: {
-    flex: 1,
-    gap: spacing.xxs,
-  },
-  profileName: {
-    ...typography.title,
-    color: colors.foreground,
-  },
-  profileEmail: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    minHeight: 56,
-    paddingHorizontal: spacing.lg,
-  },
-  rowLabel: {
-    ...typography.body,
-    color: colors.foreground,
-  },
-  themeCard: {
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  segmentedControl: {
-    flexDirection: "row",
-    gap: spacing.sm,
-  },
-  segmentButton: {
-    flex: 1,
-    minHeight: 44,
-    justifyContent: "center",
-    borderRadius: radii.md,
-    alignItems: "center",
-    backgroundColor: colors.secondary,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  segmentButtonActive: {
-    backgroundColor: colors.foreground,
-    borderColor: colors.foreground,
-  },
-  segmentLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: colors.foreground,
-  },
-  segmentLabelActive: {
-    color: colors.white,
-  },
-  themeNote: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  moreRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    minHeight: 56,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    gap: spacing.md,
-  },
-  moreRowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  moreRowText: {
-    flex: 1,
-    gap: spacing.xxs,
-  },
-  moreRowLabel: {
-    ...typography.body,
-    fontWeight: "600",
-    color: colors.foreground,
-  },
-  moreRowDescription: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
-  },
-  moreRowChevron: {
-    fontSize: 20,
-    color: colors.mutedForeground,
   },
   logoutSection: {
     marginBottom: spacing.md,
-  },
-  logoutRow: {
-    minHeight: 48,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingVertical: spacing.md,
-  },
-  logoutButtonText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: colors.destructive,
   },
 });

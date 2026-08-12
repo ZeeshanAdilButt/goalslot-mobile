@@ -18,6 +18,17 @@ import type { NotificationCapability, NotificationInput } from "@goalslot/shared
 
 export function createExpoNotificationCapability(): NotificationCapability {
   return {
+    async getPermissionStatus() {
+      const current = await Notifications.getPermissionsAsync();
+      if (current.granted) return "granted";
+      // `canAskAgain` is the distinction that matters, not expo's `status`
+      // string. On iOS `status` is 'undetermined' only before the very first
+      // prompt; after a decline it is 'denied' and the system will never
+      // show the prompt again, so the app has to send the user to the
+      // Settings app instead of offering a button that no-ops.
+      return current.canAskAgain ? "undetermined" : "denied";
+    },
+
     async requestPermission() {
       const response = await Notifications.requestPermissionsAsync();
       return response.granted;

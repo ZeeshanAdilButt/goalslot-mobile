@@ -32,10 +32,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  CreditCard,
   Eye,
   EyeOff,
   Flag,
   Inbox,
+  Key,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -45,6 +48,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  Shield,
   Sparkles,
   StickyNote,
   Plus,
@@ -106,6 +110,15 @@ const ICONS = {
   user: User,
   bell: Bell,
   "bell-off": BellOff,
+  // Added for the Settings screen's section rows. Same 1:1-with-web rule as
+  // above — these are the exact glyphs dw-time-web's settings page hangs off
+  // its sidebar tabs (src/app/dashboard/settings/page.tsx:9,29-40): Shield
+  // for Security, KeyRound for Integrations, Key for the change-password
+  // form's heading, CreditCard for Billing.
+  shield: Shield,
+  key: Key,
+  "key-round": KeyRound,
+  "credit-card": CreditCard,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;
