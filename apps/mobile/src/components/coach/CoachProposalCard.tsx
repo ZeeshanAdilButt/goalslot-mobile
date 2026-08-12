@@ -39,6 +39,8 @@ const ACTION_LABELS: Record<CoachProposalActionType, string> = {
   UPDATE_TASK: "Update task",
   DELETE_TASK: "Delete task",
   CREATE_PRACTICE: "Add active practice",
+  START_TIMER: "Start live timer",
+  STOP_TIMER: "Stop live timer",
 };
 
 const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>([
@@ -61,6 +63,27 @@ export function isDestructiveProposal(block: CoachProposalBlock): boolean {
  */
 function describeProposalAction(action: CoachProposalAction): string | null {
   const payload = action.payload ?? {};
+
+  // The timer actions carry none of the fields the generic path below looks
+  // for: START_TIMER is only "who is this for" (no duration — nobody knows it
+  // until the user stops), and STOP_TIMER's payload is usually empty because
+  // its fields exist only to override what the running session already holds.
+  // Spell out what Apply does instead of leaving a bare label on a card the
+  // user is about to act on.
+  if (action.type === "START_TIMER" || action.type === "STOP_TIMER") {
+    const taskName = typeof payload.taskName === "string" ? payload.taskName.trim() : "";
+    const goalName = typeof payload.goalName === "string" ? payload.goalName.trim() : "";
+    const target = taskName || goalName || null;
+    if (action.type === "START_TIMER") {
+      return target
+        ? `Starts the clock on "${target}" now, and runs until you stop it`
+        : "Starts the clock now, and runs until you stop it";
+    }
+    return target
+      ? `Stops the running timer and logs the time to "${target}"`
+      : "Stops the running timer and saves the elapsed time as an entry";
+  }
+
   const bits: string[] = [];
   if (typeof payload.title === "string") bits.push(`"${payload.title}"`);
   if (typeof payload.startTime === "string" && typeof payload.endTime === "string") {

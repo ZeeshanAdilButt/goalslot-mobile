@@ -51,6 +51,15 @@ const ACTION_TYPE_SYNONYMS: Record<string, CoachProposalActionType> = {
   REMOVE_TIME_ENTRY: 'DELETE_TIME_ENTRY',
   ADD_PRACTICE: 'CREATE_PRACTICE',
   NEW_PRACTICE: 'CREATE_PRACTICE',
+  // The live stopwatch is the one action users reach for by voice ("start
+  // tracking my deen goal"), and dictated phrasing drifts further from the
+  // canonical name than typed phrasing does. An unmapped type is dropped
+  // silently, so the near-misses are worth spelling out.
+  START_TRACKING: 'START_TIMER',
+  BEGIN_TIMER: 'START_TIMER',
+  TRACK_TIME: 'START_TIMER',
+  STOP_TRACKING: 'STOP_TIMER',
+  END_TIMER: 'STOP_TIMER',
 }
 
 /**
