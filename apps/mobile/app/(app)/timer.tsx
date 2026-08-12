@@ -34,24 +34,33 @@ import Animated, {
 import {
   createTimeEntrySchema,
   formatDuration,
+  genId,
   getLocalDateString,
+  updateTimeEntrySchema,
+  type CreateTimeEntryInput,
   type Goal,
   type Task,
+  type TimeEntry,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { SessionHistory } from "@/components/timer/SessionHistory";
 import { TimerControls } from "@/components/timer/TimerControls";
 import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
+import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
+import { outbox } from "@/lib/offline";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
+import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -66,11 +75,34 @@ const RECENT_SKELETON_ROWS = 4;
 const HAMBURGER_CLEARANCE = 64;
 
 /**
- * Shown in place of the real title while a session is running but its
- * task/goal hasn't resolved yet — see `activeLabel` below. Matches the
- * fallback wording useTimerNotification.ts uses for the same situation.
+ * The name a session is logged under when there is no task or goal title to
+ * use — either because the user deliberately tracked without attaching
+ * anything (now the common case) or because a target was set but never
+ * resolved. Matches the fallback wording useTimerNotification.ts uses.
+ *
+ * One string covers both because the entry itself keeps them apart: an
+ * unattributed entry carries no goalId, an unresolved one does. Inventing a
+ * second placeholder would put two near-identical strings in the user's
+ * history that mean the same thing to them.
+ *
+ * `taskName` is required and non-empty by both createTimeEntrySchema and the
+ * API's CreateTimeEntryDto, so some string has to be sent here; only
+ * `taskTitle` (the denormalised snapshot of a real task's title) is left
+ * unset, which is what keeps a placeholder out of the reporting field.
  */
 const UNRESOLVED_TARGET_LABEL = "Focus session";
+
+/** Matches `hasResponse` in src/hooks/useQuickAdd.ts and packages/shared/src/offline/sync.ts. */
+function hasResponse(err: unknown): boolean {
+  return Boolean((err as { response?: unknown } | undefined)?.response);
+}
+
+/**
+ * What the tracking picker is currently choosing for: the live session
+ * (whether idle-and-not-yet-started or already running), or a specific entry
+ * already in the history that the user is filing after the fact.
+ */
+type PickerTarget = { kind: "session" } | { kind: "entry"; entry: TimeEntry };
 
 /** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
 const MAX_RING_SIZE = 300;
@@ -99,14 +131,21 @@ export default function TimerScreen() {
   const timerTaskId = useTimerStore((s) => s.taskId);
   const timerGoalId = useTimerStore((s) => s.goalId);
   const start = useTimerStore((s) => s.start);
+  const retarget = useTimerStore((s) => s.retarget);
   const pause = useTimerStore((s) => s.pause);
   const resume = useTimerStore((s) => s.resume);
   const stop = useTimerStore((s) => s.stop);
 
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const reminderIntervalMinutes = useSettingsStore((s) => s.timerReminderIntervalMinutes);
+  const setReminderIntervalMinutes = useSettingsStore((s) => s.setTimerReminderIntervalMinutes);
+
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
+  // Which already-logged entry is mid-attach, so its history row can show
+  // the in-flight state instead of the list looking inert for a round trip.
+  const [attachingEntryId, setAttachingEntryId] = useState<string | null>(null);
   // What the *next* run will be tracked against, chosen before pressing
-  // Start. Once running, the store's own taskId/goalId (set by `start`) is
-  // the source of truth instead — this only matters pre-start.
+  // Start. Once running, the store's own taskId/goalId is the source of truth
+  // instead — this only matters pre-start.
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
 
@@ -165,12 +204,25 @@ export default function TimerScreen() {
   if (resolvedLabel !== null) labelLatch.current = { key: targetKey, label: resolvedLabel };
   const latchedLabel = labelLatch.current?.key === targetKey ? labelLatch.current.label : null;
 
-  // Null here means "we genuinely do not know what this is": only possible on
-  // a cold start where nothing has ever resolved. A running timer still needs
-  // *something* on screen, but it must not be a fabricated title that then
-  // gets written to the API — hence the split below.
+  // Null here means "there is no title to show", which since one-tap
+  // tracking landed covers two genuinely different situations: nothing is
+  // attached (the ordinary case now), or something is attached but hasn't
+  // resolved yet on a cold start. `hasTarget` is what tells them apart —
+  // TrackingTarget needs both to pick its copy, and conflating them would
+  // label a deliberately unattributed session "Untitled", which reads as a
+  // failure rather than a choice.
+  //
+  // No placeholder is substituted here any more. It used to be, which meant
+  // a running session with nothing attached rendered as though it were
+  // tracking a thing called "Focus session". The placeholder now lives only
+  // where it is genuinely needed: the API's required `taskName` (see
+  // handleStop) and the notification's own `label ?? "Focus session"`.
   const knownLabel = resolvedLabel ?? latchedLabel;
-  const activeLabel = knownLabel ?? (status === "idle" ? null : UNRESOLVED_TARGET_LABEL);
+  const activeLabel = knownLabel;
+  const hasTarget =
+    status === "idle"
+      ? selectedTask !== null || selectedGoal !== null
+      : timerTaskId !== null || timerGoalId !== null;
   const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
   // A task shows its parent goal; a goal shows its category — either way the
   // second line answers "which bucket does this belong to?".
@@ -181,20 +233,96 @@ export default function TimerScreen() {
   // nothing at all if notification permission is refused.
   useTimerNotification({ status, startedAt, pausedElapsedMs, label: activeLabel });
 
-  const handlePickTask = useCallback((task: Task) => {
-    setSelectedTask(task);
-    setSelectedGoal(null);
-    setPickerOpen(false);
-  }, []);
+  // The recurring "still strictly focused?" nudge, ported from web's
+  // REMINDER control. Separate from the ongoing shade entry above: these are
+  // future-dated notifications handed to the OS so they still arrive while
+  // the app is suspended. Also degrades to nothing if permission is refused.
+  //
+  // `activeLabel` can now be null for a session the user deliberately started
+  // without attaching anything, where before it was only ever null during the
+  // brief cold-start gap before a target resolved. Both land on the same
+  // branch: describeTimerReminder() substitutes "Focus session", the same
+  // wording the shade entry uses, so a reminder for an unattributed session
+  // reads "You are working on: Focus session" rather than leaking an empty
+  // string or "undefined".
+  useTimerReminders({ status, startedAt, label: activeLabel });
 
-  const handlePickGoal = useCallback((goal: Goal) => {
-    setSelectedGoal(goal);
+  /**
+   * Files an already-logged entry under a goal/task after the fact. This is
+   * the other half of one-tap tracking: if attribution is optional up front,
+   * there has to be a cheap way to add it later, or "later" never happens.
+   *
+   * PUT /time-entries/:id already accepts goalId and taskId and recalculates
+   * progress on both the old and the new goal (see the API's
+   * time-entries.service.ts) — no backend change was needed for this.
+   */
+  const attachToEntry = useCallback(
+    async (entry: TimeEntry, patch: { taskId?: string; taskTitle?: string; goalId?: string }) => {
+      setAttachingEntryId(entry.id);
+      try {
+        await apiClient.timeEntries.update(entry.id, updateTimeEntrySchema.parse(patch));
+        hapticCompletion();
+        void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+        // The goal's logged hours move with the entry, so the goal list is
+        // stale too — Reports and Today both read it.
+        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      } catch {
+        Alert.alert("Couldn't attach that", "Your logged time is safe. Please try again.");
+      } finally {
+        setAttachingEntryId(null);
+      }
+    },
+    [],
+  );
+
+  const handlePickTask = useCallback(
+    (task: Task) => {
+      const target = pickerTarget;
+      setPickerTarget(null);
+      if (target?.kind === "entry") {
+        void attachToEntry(target.entry, {
+          taskId: task.id,
+          taskTitle: task.title,
+          ...(task.goalId ? { goalId: task.goalId } : {}),
+        });
+        return;
+      }
+      setSelectedTask(task);
+      setSelectedGoal(null);
+      // A session already in flight gets re-pointed in the store; the local
+      // selection above only governs the *next* start.
+      retarget(task.id, task.goalId);
+    },
+    [attachToEntry, pickerTarget, retarget],
+  );
+
+  const handlePickGoal = useCallback(
+    (goal: Goal) => {
+      const target = pickerTarget;
+      setPickerTarget(null);
+      if (target?.kind === "entry") {
+        void attachToEntry(target.entry, { goalId: goal.id });
+        return;
+      }
+      setSelectedGoal(goal);
+      setSelectedTask(null);
+      retarget(undefined, goal.id);
+    },
+    [attachToEntry, pickerTarget, retarget],
+  );
+
+  /** "Just track time" — clears the target, pre-start or mid-run. */
+  const handlePickNone = useCallback(() => {
+    setPickerTarget(null);
     setSelectedTask(null);
-    setPickerOpen(false);
-  }, []);
+    setSelectedGoal(null);
+    retarget(undefined, undefined);
+  }, [retarget]);
 
   const handleStart = useCallback(() => {
-    if (!selectedTask && !selectedGoal) return;
+    // No guard. Pressing Start with nothing selected is the point: the timer
+    // begins immediately and the session can be attributed during the run or
+    // from its history row afterwards — or left unattributed for good.
     start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
     hapticLight();
     analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
@@ -227,10 +355,11 @@ export default function TimerScreen() {
     const stoppedTaskId = timerTaskId ?? undefined;
     const stoppedGoalId = activeTask?.goalId ?? timerGoalId ?? undefined;
     const stoppedStartedAt = startedAt;
-    // Only a title we actually resolved is fit to persist. When it's null the
-    // display falls back to "Focus session" (see `activeLabel`), but writing
-    // that placeholder into `taskTitle` would overwrite a real task's
-    // denormalised title with a made-up one.
+    // Only a title we actually resolved is fit to persist. Null is the normal
+    // case for an unattributed session and also covers the cold-start gap
+    // where a target exists but never resolved; either way, writing the
+    // "Focus session" placeholder into `taskTitle` would put a made-up value
+    // in the field reporting treats as a real task's denormalised title.
     const stoppedTitle = knownLabel;
     const label = stoppedTitle ?? UNRESOLVED_TARGET_LABEL;
 
@@ -241,8 +370,18 @@ export default function TimerScreen() {
     // timer that genuinely ran.
     const durationMinutes = Math.max(1, Math.round(elapsed / 60000));
 
-    const submit = async () => {
-      const payload = createTimeEntrySchema.parse({
+    // Parsed inside its own guard, not inline at the call site: the store has
+    // already been reset by `stop()` above, so an exception escaping here
+    // would take the elapsed time with it AND leave `stopping` latched true,
+    // which disables the Stop button for the rest of the app session.
+    let payload: CreateTimeEntryInput;
+    try {
+      payload = createTimeEntrySchema.parse({
+        // Always a non-empty string — see UNRESOLVED_TARGET_LABEL. For a
+        // session tracked against nothing this is the only name the entry
+        // gets, and it is deliberately a plain human phrase rather than a
+        // marker like "(no goal)": the row it renders should read as a real
+        // session, because it is one.
         taskName: label,
         taskId: stoppedTaskId,
         taskTitle: stoppedTaskId && stoppedTitle ? stoppedTitle : undefined,
@@ -260,6 +399,16 @@ export default function TimerScreen() {
         // session stopped from Paused sends nothing, same as on web.
         startedAt: stoppedStartedAt !== null ? new Date(stoppedStartedAt).toISOString() : undefined,
       });
+    } catch {
+      stopping.current = false;
+      Alert.alert(
+        "Couldn't save time entry",
+        `${formatDuration(durationMinutes)} was tracked but couldn't be prepared for saving. Please add it manually.`,
+      );
+      return;
+    }
+
+    const submit = async () => {
       await apiClient.timeEntries.create(payload);
       hapticCompletion();
       analytics.track({
@@ -269,16 +418,43 @@ export default function TimerScreen() {
       setSelectedTask(null);
       setSelectedGoal(null);
       void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+      if (stoppedGoalId) {
+        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      }
     };
 
     try {
       await submit();
-    } catch {
-      // The store is already back to idle at this point, so the elapsed time
-      // exists nowhere but this closure — a bare "please try again" would
-      // discard the session outright. Offer the retry here, and name the
-      // duration either way so it can be re-entered by hand if the retry
-      // fails too.
+    } catch (err) {
+      // Offline or a timeout — the server never saw this. Bank it in the
+      // outbox and let the sync engine replay it on reconnect, the same
+      // treatment quick-add gives its creates. This matters more here than
+      // anywhere else in the app: a goal the user typed can be typed again,
+      // but elapsed time that was measured and then dropped is unrecoverable,
+      // and the old Retry/Discard alert put a "Discard" button directly
+      // between the user and their own measured time.
+      if (!hasResponse(err)) {
+        await outbox.addToOutbox({
+          id: genId(),
+          kind: "time-entry-create",
+          payload,
+          idempotencyKey: genId(),
+          createdAt: Date.now(),
+          retries: 0,
+        });
+        setSelectedTask(null);
+        setSelectedGoal(null);
+        Alert.alert(
+          "Saved offline",
+          `${formatDuration(durationMinutes)} is queued and will sync the next time you're online.`,
+        );
+        return;
+      }
+
+      // The server responded and refused. Replaying a payload it has already
+      // rejected won't help, so this keeps the manual retry — and names the
+      // duration either way, so the session can be re-entered by hand if the
+      // retry fails too.
       Alert.alert(
         "Couldn't save time entry",
         `Your timer was stopped, but saving ${formatDuration(durationMinutes)} against "${label}" failed.`,
@@ -302,7 +478,18 @@ export default function TimerScreen() {
     }
   }, [activeTask, analytics, knownLabel, startedAt, status, stop, timerGoalId, timerTaskId]);
 
-  const canStart = status === "idle" && (selectedTask !== null || selectedGoal !== null);
+  // The picker serves three jobs from one sheet — setting up the next run,
+  // re-pointing a live one, and filing an entry that's already in history —
+  // so what counts as "currently selected" depends on which one opened it.
+  const pickerMode =
+    pickerTarget?.kind === "entry" ? "logged" : status === "idle" ? "prestart" : "running";
+  const pickerSelectedId =
+    pickerTarget?.kind === "entry"
+      ? (pickerTarget.entry.taskId ?? pickerTarget.entry.goalId ?? null)
+      : status === "idle"
+        ? (selectedTask?.id ?? selectedGoal?.id ?? null)
+        : (timerTaskId ?? timerGoalId);
+
   const statusMeta = STATUS_META[status];
   const ringSize = Math.max(
     150,
@@ -346,19 +533,32 @@ export default function TimerScreen() {
           label={activeLabel}
           sublabel={activeSublabel}
           accentColor={activeColor}
-          editable={status === "idle"}
-          onPress={() => setPickerOpen(true)}
+          hasTarget={hasTarget}
+          running={status !== "idle"}
+          onPress={() => setPickerTarget({ kind: "session" })}
+        />
+
+        <ReminderIntervalPicker
+          value={reminderIntervalMinutes}
+          disabled={status === "running"}
+          onChange={setReminderIntervalMinutes}
         />
 
         <TimerControls
           status={status}
-          canStart={canStart}
           onStart={handleStart}
           onPause={handlePause}
           onResume={handleResume}
           onStop={() => void handleStop()}
         />
       </View>
+
+      {/* Tracking-scoped voice control. Self-contained — it reads the timer
+          store and the goal/task lists itself — except for stopping, which
+          is handed back to this screen's own handler so there stays exactly
+          one path that writes a TimeEntry. See the component's header for
+          why this mic behaves differently from the one in the tab bar. */}
+      <TrackerVoiceButton onStopSession={() => void handleStop()} />
 
       <View style={styles.listArea}>
         {recentQuery.isPending ? (
@@ -372,25 +572,29 @@ export default function TimerScreen() {
         ) : !recentQuery.data || recentQuery.data.length === 0 ? (
           <EmptyState
             message="No sessions yet"
-            description="Pick a task or goal above and press start — logged sessions land here."
+            description="Just press start — logged sessions land here. Attaching a goal is optional."
           />
         ) : (
           <SessionHistory
             entries={recentQuery.data}
             refreshing={recentQuery.isFetching && !recentQuery.isPending}
             onRefresh={() => void recentQuery.refetch()}
+            onAttachGoal={(entry) => setPickerTarget({ kind: "entry", entry })}
+            attachingEntryId={attachingEntryId}
           />
         )}
       </View>
 
       <TrackingPicker
-        visible={pickerOpen}
+        visible={pickerTarget !== null}
         tasks={tasksQuery.data ?? []}
         goals={goalsQuery.data ?? []}
-        selectedId={selectedTask?.id ?? selectedGoal?.id ?? null}
+        selectedId={pickerSelectedId}
+        mode={pickerMode}
         onPickTask={handlePickTask}
         onPickGoal={handlePickGoal}
-        onClose={() => setPickerOpen(false)}
+        onPickNone={handlePickNone}
+        onClose={() => setPickerTarget(null)}
       />
     </SafeAreaView>
   );

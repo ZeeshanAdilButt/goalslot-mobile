@@ -22,6 +22,25 @@ describe('normalizeCoachActionType', () => {
   it('returns null for a non-string input', () => {
     expect(normalizeCoachActionType(42)).toBeNull()
   })
+
+  it('accepts the live timer types', () => {
+    expect(normalizeCoachActionType('START_TIMER')).toBe('START_TIMER')
+    expect(normalizeCoachActionType('STOP_TIMER')).toBe('STOP_TIMER')
+  })
+
+  it.each([
+    ['START_TRACKING', 'START_TIMER'],
+    ['BEGIN_TIMER', 'START_TIMER'],
+    ['TRACK_TIME', 'START_TIMER'],
+    ['STOP_TRACKING', 'STOP_TIMER'],
+    ['END_TIMER', 'STOP_TIMER'],
+  ])('maps the near-miss %s to %s', (raw, expected) => {
+    expect(normalizeCoachActionType(raw)).toBe(expected)
+  })
+
+  it('maps a lowercase timer near-miss, as dictated input tends to arrive', () => {
+    expect(normalizeCoachActionType('start_tracking')).toBe('START_TIMER')
+  })
 })
 
 describe('extractCoachProposals', () => {
@@ -59,6 +78,26 @@ describe('extractCoachProposals', () => {
 
     const { proposals } = extractCoachProposals(raw)
     expect(proposals[0]?.actions[0]?.type).toBe('CREATE_SCHEDULE_BLOCK')
+  })
+
+  it('keeps a START_TIMER action rather than dropping it as unknown', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"summary":"Start tracking time against \'Deen\'","actions":[{"type":"START_TIMER","payload":{"goalId":"g1","taskName":"Deen"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0]?.actions).toEqual([
+      { type: 'START_TIMER', payload: { goalId: 'g1', taskName: 'Deen' } },
+    ])
+  })
+
+  it('keeps a STOP_TIMER action with an empty payload', () => {
+    const raw = ['```coach-proposal', '{"actions":[{"type":"STOP_TIMER","payload":{}}]}', '```'].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0]?.actions).toEqual([{ type: 'STOP_TIMER', payload: {} }])
   })
 
   it('drops an unmappable action but keeps the rest of the batch', () => {

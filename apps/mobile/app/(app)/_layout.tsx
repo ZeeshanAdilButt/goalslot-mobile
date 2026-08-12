@@ -4,9 +4,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
 import { Icon } from "@/components/ui/Icon";
+import { ScheduleRemindersSync } from "@/components/schedule";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
+import { VoiceTabButton } from "@/components/voice/VoiceTabButton";
+import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
 import { syncIOSWidget } from "@/widgets/ios-widget-sync";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
@@ -15,6 +18,18 @@ export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+
+  // One socket for the whole authenticated app, so an incoming message
+  // updates the conversation list from anywhere — not only while a Messages
+  // screen is mounted. Handles background/foreground and reconnect; a no-op
+  // when messaging isn't configured for this build. See the hook for why the
+  // socket is dropped on background rather than held across it.
+  //
+  // Sits with the other unconditional hooks, above the redirect below — the
+  // same rule the comment there spells out: `status` can flip to
+  // 'unauthenticated' while this layout is mounted, and a hook after an early
+  // return would break the hook order on that render.
+  useMessagingLiveUpdates(status === "authenticated");
 
   // Hooks above this point must all run unconditionally on every render —
   // `status` can flip from 'authenticated' to 'unauthenticated' (logout)
@@ -54,10 +69,21 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  // Five tabs on the bar (Today/Schedule/Goals/Tasks/Timer) — more than that
-  // is unreadable at phone width. The other five routes stay registered but
-  // off the bar via `href: null`, and every one of them is reachable from the
+  // Five slots on the bar — more than that is unreadable at phone width —
+  // and the middle one is the voice mic rather than a screen: Today,
+  // Schedule, [mic], Tasks, Timer. The other routes stay registered but off
+  // the bar via `href: null`, and every one of them is reachable from the
   // slide-out drawer opened by the hamburger below.
+  //
+  // GOALS CAME OFF THE BAR to make room, and that is a real trade, not an
+  // oversight. A raised centre control has to be the geometric centre or it
+  // reads as a sixth tab someone bolted on, and five slots means one of the
+  // existing five moves. Goals is the one that survives the move best: it is
+  // the longest-horizon surface of the five (the others are all "today" or
+  // "this week"), Today already renders goal progress and links into it, the
+  // Timer attaches sessions to it, and it keeps a top-level row in the
+  // drawer under Plan. Schedule, Tasks and Timer are all daily-use screens
+  // where a second tap would be felt every day.
   //
   // The drawer exists because relying on a link buried in Settings was a real
   // discoverability failure: "I can't see notes. There is no way for me to
@@ -66,6 +92,10 @@ export default function AppLayout() {
   // than expo-router's own Drawer navigator.
   return (
     <View style={styles.root}>
+      {/* Renders nothing. Owns re-arming every schedule alarm for the whole
+          signed-in session, so they survive a sign-in's notification sweep
+          and edits made outside the Schedule tab. See the component. */}
+      <ScheduleRemindersSync />
       <Tabs
         screenOptions={{
           headerShown: false,
@@ -75,6 +105,10 @@ export default function AppLayout() {
             backgroundColor: colors.card,
             borderTopColor: colors.border,
             borderTopWidth: 1,
+            // The voice mic is drawn with a negative top margin so it breaks
+            // the bar's top line. Without this it is clipped flat against it
+            // and stops reading as raised at all.
+            overflow: "visible",
           },
           tabBarLabelStyle: {
             fontSize: 11,
@@ -93,9 +127,16 @@ export default function AppLayout() {
             tabBarIcon: ({ color, size }) => <Icon name="schedule" color={color} size={size} />,
           }}
         />
+        {/* The mic. `tabBarButton` replaces the whole tab item, which is what
+            lets the control break the bar's top line — see VoiceTabButton.
+            It stays a real route so a screen reader announces it as a tab
+            and the back gesture behaves normally. */}
         <Tabs.Screen
-          name="goals"
-          options={{ title: "Goals", tabBarIcon: ({ color, size }) => <Icon name="goals" color={color} size={size} /> }}
+          name="voice"
+          options={{
+            title: "Voice",
+            tabBarButton: (props) => <VoiceTabButton {...props} />,
+          }}
         />
         <Tabs.Screen
           name="tasks"
@@ -105,6 +146,9 @@ export default function AppLayout() {
           name="timer"
           options={{ title: "Timer", tabBarIcon: ({ color, size }) => <Icon name="timer" color={color} size={size} /> }}
         />
+        {/* Off the bar to make room for the mic (see the note above), still a
+            first-class row in the drawer's Plan group. */}
+        <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
         <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
         <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
         <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />
@@ -113,6 +157,15 @@ export default function AppLayout() {
         {/* The note editor is a route, not a tab: hiding the tab bar while
             it's focused makes it read as a full-screen push. */}
         <Tabs.Screen name="note/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
+        {/* Messaging, same shape as Notes: a list screen plus a detail route
+            that presents as a full-screen push. Both stay registered even
+            when the service isn't configured — expo-router routes off the
+            files on disk, so unregistering them here would leave two screens
+            reachable by URL with no options applied. The drawer entry is what
+            actually gates discovery (see DrawerContent), and both screens
+            degrade to a clear "not available" state rather than crashing. */}
+        <Tabs.Screen name="messages" options={{ title: "Messages", href: null }} />
+        <Tabs.Screen name="message/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
         <Tabs.Screen name="settings" options={{ title: "Settings", href: null }} />
       </Tabs>
 

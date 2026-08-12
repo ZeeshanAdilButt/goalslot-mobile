@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { CategoriesApi } from '../api/categories'
 import type { GoalsApi } from '../api/goals'
+import type { MessagingServiceClient } from '../api/messaging'
+import type { SharingApi } from '../api/sharing'
 import type { JournalApi } from '../api/journal'
 import type { LabelsApi } from '../api/labels'
 import type { ScheduleApi } from '../api/schedule'
@@ -14,6 +16,7 @@ import { createTimeEntryQueries } from './time-entries'
 import { createCategoryQueries } from './categories'
 import { createLabelQueries } from './labels'
 import { createJournalQueries } from './journal'
+import { createMessagingQueries } from './messaging'
 
 describe('goal queries', () => {
   it('builds stable, filter-sensitive query keys and wires the fetcher to goalsApi.getAll', async () => {
@@ -123,5 +126,62 @@ describe('journal queries', () => {
     const { byDate } = createJournalQueries(journalApi)
 
     await expect(byDate('2026-08-08').queryFn?.({} as never)).rejects.toBe(serverError)
+  })
+})
+
+describe('messaging queries', () => {
+  function build() {
+    const client = {
+      listConversations: vi.fn().mockResolvedValue([{ id: 'c1', participants: [] }]),
+      getConversation: vi.fn().mockResolvedValue({ id: 'c1', participants: [] }),
+      listMessages: vi.fn().mockResolvedValue([]),
+      sendMessage: vi.fn(),
+      markRead: vi.fn(),
+    } as unknown as MessagingServiceClient
+
+    const sharingApi = {
+      getMyShares: vi.fn().mockResolvedValue({ data: [{ id: 's1', sharedWith: { id: 'u2', email: 'z@e.com', name: 'Zoe' } }] }),
+      getSharedWithMe: vi.fn().mockResolvedValue({ data: [] }),
+    } as unknown as SharingApi
+
+    return { client, sharingApi, queries: createMessagingQueries(client, sharingApi) }
+  }
+
+  it('namespaces every key under `messaging` so the whole feature invalidates as one', () => {
+    const { queries } = build()
+    const { messagingQueries } = queries
+
+    expect(messagingQueries.all).toEqual(['messaging'])
+    expect(messagingQueries.conversations()).toEqual(['messaging', 'conversations'])
+    expect(messagingQueries.conversation('c1')).toEqual(['messaging', 'conversation', 'c1'])
+    expect(messagingQueries.messages('c1')).toEqual(['messaging', 'messages', 'c1'])
+    expect(messagingQueries.contacts()).toEqual(['messaging', 'contacts'])
+  })
+
+  it('keys a thread by conversation id only, so paging never changes the key a socket push patches', () => {
+    const { queries } = build()
+    expect(queries.messages('c1').queryKey).toEqual(queries.messagingQueries.messages('c1'))
+  })
+
+  it('wires the fetchers to the messaging service client', async () => {
+    const { client, queries } = build()
+
+    await queries.conversations().queryFn?.({} as never)
+    await queries.messages('c1').queryFn?.({} as never)
+
+    expect(client.listConversations).toHaveBeenCalled()
+    expect(client.listMessages).toHaveBeenCalledWith('c1')
+  })
+
+  it('builds the contact list from both sharing directions in one query', async () => {
+    const { sharingApi, queries } = build()
+
+    const contacts = await queries.contacts().queryFn?.({} as never)
+
+    expect(sharingApi.getMyShares).toHaveBeenCalled()
+    expect(sharingApi.getSharedWithMe).toHaveBeenCalled()
+    expect(contacts).toEqual([
+      { userId: 'u2', name: 'Zoe', email: 'z@e.com', relationship: 'shared-with-them' },
+    ])
   })
 })

@@ -8,14 +8,23 @@
 //
 // Rows keep the goal-colour dot and `formatDuration` formatting they already
 // had, so a logged entry reads the same here as everywhere else in the app.
+//
+// UNATTRIBUTED ENTRIES are a first-class row shape here, not an edge case:
+// now that a session can be started without picking anything, "logged but not
+// filed" is a normal state a lot of entries will sit in. Such a row gets a
+// hollow dot rather than the brand-coloured one (a filled brand dot made it
+// look identical to a goal that happens to use the brand colour) and an
+// "Add goal" affordance that attaches one after the fact. Everything else
+// about the row is unchanged.
 
 import { useMemo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 
 import { formatDuration, getLocalDateString, type TimeEntry } from "@goalslot/shared";
 
-import { colors, radii, spacing, typography } from "@/theme/tokens";
+import { Icon } from "@/components/ui/Icon";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 type SessionListItem =
   | { kind: "header"; key: string; label: string; minutes: number }
@@ -74,9 +83,19 @@ export interface SessionHistoryProps {
   entries: TimeEntry[];
   refreshing: boolean;
   onRefresh: () => void;
+  /** Attaches a goal to an already-logged entry. Only offered on rows that have none. */
+  onAttachGoal: (entry: TimeEntry) => void;
+  /** Id of the entry currently being saved, so its row can show the in-flight state. */
+  attachingEntryId?: string | null;
 }
 
-export function SessionHistory({ entries, refreshing, onRefresh }: SessionHistoryProps) {
+export function SessionHistory({
+  entries,
+  refreshing,
+  onRefresh,
+  onAttachGoal,
+  attachingEntryId,
+}: SessionHistoryProps) {
   const items = useMemo(() => buildItems(entries), [entries]);
 
   return (
@@ -90,7 +109,11 @@ export function SessionHistory({ entries, refreshing, onRefresh }: SessionHistor
         item.kind === "header" ? (
           <DayHeader label={item.label} minutes={item.minutes} />
         ) : (
-          <SessionRow entry={item.entry} />
+          <SessionRow
+            entry={item.entry}
+            onAttachGoal={onAttachGoal}
+            attaching={attachingEntryId === item.entry.id}
+          />
         )
       }
       refreshing={refreshing}
@@ -110,19 +133,53 @@ function DayHeader({ label, minutes }: { label: string; minutes: number }) {
   );
 }
 
-function SessionRow({ entry }: { entry: TimeEntry }) {
+function SessionRow({
+  entry,
+  onAttachGoal,
+  attaching,
+}: {
+  entry: TimeEntry;
+  onAttachGoal: (entry: TimeEntry) => void;
+  attaching: boolean;
+}) {
+  const goal = entry.goal;
+  const title = entry.taskTitle || entry.taskName;
+
   return (
     <View style={styles.row}>
-      <View style={[styles.rowDot, { backgroundColor: entry.goal?.color ?? colors.primary }]} />
+      {/* Hollow ring for an unattributed entry: a filled dot in the brand
+          colour was indistinguishable from a goal whose colour is the brand
+          colour, so "no goal" and "the yellow goal" looked the same. */}
+      <View
+        style={[
+          styles.rowDot,
+          goal ? { backgroundColor: goal.color } : styles.rowDotUnattributed,
+        ]}
+      />
       <View style={styles.rowBody}>
         <Text style={styles.rowTitle} numberOfLines={1}>
-          {entry.taskTitle || entry.taskName}
+          {title}
         </Text>
-        {entry.goal?.title ? (
+        {goal?.title ? (
           <Text style={styles.rowSubtitle} numberOfLines={1}>
-            {entry.goal.title}
+            {goal.title}
           </Text>
-        ) : null}
+        ) : (
+          <Pressable
+            style={({ pressed }) => [styles.attachButton, pressed && styles.attachButtonPressed]}
+            onPress={() => onAttachGoal(entry)}
+            disabled={attaching}
+            accessibilityRole="button"
+            accessibilityLabel={`Add a goal to "${title}", ${formatDuration(entry.duration)}`}
+            accessibilityState={{ disabled: attaching, busy: attaching }}
+            // The row is only ~64pt tall and this control sits inside it, so
+            // the 44pt minimum comes from hitSlop rather than from height.
+            hitSlop={spacing.sm}
+          >
+            <Icon name="add" size={13} color={colors.mutedForeground} />
+            <Text style={styles.attachText}>{attaching ? "Saving…" : "Add goal"}</Text>
+          </Pressable>
+        )}
       </View>
       <View style={styles.durationPill}>
         <Text style={styles.durationText}>{formatDuration(entry.duration)}</Text>
@@ -173,6 +230,26 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  rowDotUnattributed: {
+    backgroundColor: "transparent",
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
+  attachButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: spacing.xxs,
+    minHeight: minTouchTarget / 2,
+  },
+  attachButtonPressed: {
+    opacity: 0.6,
+  },
+  attachText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.mutedForeground,
   },
   rowBody: {
     flex: 1,

@@ -1,5 +1,5 @@
 // The full schedule-block editor: title, one-or-many days, real start/end
-// time, category, an optional goal link, and a private toggle. This is what
+// time, an optional goal link, category, and a private toggle. This is what
 // QuickAddSheet (kind="slot") deliberately is NOT — that sheet is the
 // title-only "3-tap add" (see its own header comment), a fast path for "get
 // something on the calendar right now". This sheet is where a user who needs
@@ -24,6 +24,20 @@
 //     real categories (categoryQueries), same intent as the web's derivation
 //     without adding new UI.
 //
+// GOAL BEFORE CATEGORY, and the dependency only ever runs that way. Picking
+// a goal fills in the category it belongs to; typing a category never
+// narrows which goals are offered. That asymmetry is the whole point: on web
+// these were the other way round and a pre-selected category quietly filtered
+// the goal list, so typing a real goal's name returned "No matches" for a
+// goal that plainly existed. Ordering the fields goal-first makes the
+// supported direction the obvious one, and the goal list below is rendered
+// from `goals` untouched — there is deliberately no category term anywhere in
+// its render path for a future edit to start filtering on.
+//
+// The auto-fill is tracked (`autoFilledCategory`) rather than unconditional,
+// so it can replace a value it wrote itself when the user switches goals, but
+// never a category the user typed or one loaded from an existing block.
+//
 // MULTI-DAY CREATE is not a single API call — CreateScheduleBlockInput is
 // one dayOfWeek per block. Mirrors the web's handleSubmit exactly: when more
 // than one day is selected, generate ONE shared seriesId up front, then fire
@@ -42,6 +56,7 @@
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -70,6 +85,7 @@ import { apiClient } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { categoryQueries, goalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { findLinkedBlocks } from "@/lib/schedule-series";
 import { useAnalytics } from "@/providers/growth-provider";
 import { Icon } from "@/components/ui/Icon";
 import { TimePicker } from "@/components/ui/TimePicker";
@@ -119,6 +135,19 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const sheetRef = useRef<BottomSheetModal>(null);
   const analytics = useAnalytics();
 
+  // See BlockDetailSheet.tsx for the full reasoning. Short version: this sheet
+  // is portalled to the app root, outside every screen's
+  // `<SafeAreaView edges={["top"]}>`, and Android is edge-to-edge, so nothing
+  // between this content and the physical edges of the display is accounted
+  // for unless the sheet accounts for it.
+  //
+  // Both edges matter here, because this form is tall enough that dynamic
+  // sizing clamps it to the full container height:
+  //   - bottom, or Cancel/Save sit under the navigation bar,
+  //   - top, or the "Edit time slot" heading and the grab handle slide under
+  //     the status bar once the sheet reaches its maximum height.
+  const insets = useSafeAreaInsets();
+
   const [mode, setMode] = useState<"create" | "edit">("create");
   const [editingBlock, setEditingBlock] = useState<ScheduleBlock | null>(null);
 
@@ -128,6 +157,10 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const [category, setCategory] = useState("");
   const [selectedDays, setSelectedDays] = useState<number[]>([0]);
   const [goalId, setGoalId] = useState("");
+  // The last category value this sheet auto-filled from a goal. Anything else
+  // in the category field is the user's (or the saved block's) and is never
+  // overwritten — see the header note.
+  const [autoFilledCategory, setAutoFilledCategory] = useState<string | null>(null);
   const [isPrivate, setIsPrivate] = useState(false);
   const [updateScope, setUpdateScope] = useState<ScheduleUpdateScope>("single");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -140,6 +173,10 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       present: (options) => {
         setError(null);
         setUpdateScope("single");
+        // Neither branch below has auto-filled anything yet, so a stale value
+        // from the previous open must not license overwriting this one's
+        // category.
+        setAutoFilledCategory(null);
         if (options.mode === "edit") {
           const block = options.block;
           setMode("edit");
@@ -185,15 +222,17 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const { data: categories = [] } = useQuery(categoryQueries.list());
   const { data: goals = [], isPending: isGoalsPending } = useQuery(goalQueries.list({ status: "ACTIVE" }));
 
-  // A block is "in a series" when other blocks in the week share its
-  // seriesId — same derivation as web's schedule-page.tsx `seriesBlockCount`
-  // (`allBlocks.filter(b => b.seriesId === editingBlock.seriesId).length`).
-  const seriesBlockCount = useMemo(() => {
-    if (!editingBlock || !weeklyQuery.data) return 0;
-    return Object.values(weeklyQuery.data)
-      .flat()
-      .filter((b) => b.seriesId === editingBlock.seriesId).length;
+  // Which other blocks this edit can reach. A real series (shared seriesId)
+  // is the web's `seriesBlockCount` derivation; the "lookalike" case is the
+  // one the web has no answer for — five separately-created "Reading" blocks
+  // that are visibly one routine but carry five unrelated seriesIds, and so
+  // can only be fanned out client-side. See src/lib/schedule-series.ts.
+  const linked = useMemo(() => {
+    if (!editingBlock || !weeklyQuery.data) return null;
+    return findLinkedBlocks(editingBlock, Object.values(weeklyQuery.data).flat());
   }, [editingBlock, weeklyQuery.data]);
+
+  const seriesBlockCount = linked && linked.kind !== "solo" ? linked.members.length : 0;
   const isSeriesEdit = mode === "edit" && seriesBlockCount > 1;
   const scopeToApply: ScheduleUpdateScope = isSeriesEdit ? updateScope : "single";
   const dayPickerDisabled = isSeriesEdit && scopeToApply === "series";
@@ -231,6 +270,40 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const handleCancel = useCallback(() => {
     sheetRef.current?.dismiss();
   }, []);
+
+  /**
+   * Links a goal and, where it's safe to, fills the category in from it.
+   *
+   * "Safe" means the category box is empty or still holds the value a
+   * previous goal pick put there — so switching goals re-fills correctly,
+   * while a category the user typed (or one loaded from the block being
+   * edited) is left alone. Note what this does NOT do: it never touches the
+   * goal list. Category depends on goal here, never the reverse.
+   */
+  const handlePickGoal = useCallback(
+    (goal: { id: string; category: string }) => {
+      dayHaptic();
+      setGoalId(goal.id);
+
+      const next = goal.category.trim();
+      if (!next) return;
+      setCategory((current) => {
+        const trimmed = current.trim();
+        if (trimmed !== "" && trimmed !== autoFilledCategory) return current;
+        setAutoFilledCategory(next);
+        return next;
+      });
+    },
+    [autoFilledCategory],
+  );
+
+  const handleClearGoal = useCallback(() => {
+    dayHaptic();
+    setGoalId("");
+    // Only retract a category this sheet filled in itself.
+    setCategory((current) => (current.trim() === autoFilledCategory ? "" : current));
+    setAutoFilledCategory(null);
+  }, [autoFilledCategory]);
 
   const toggleDay = useCallback((day: number) => {
     dayHaptic();
@@ -363,9 +436,20 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       patch.dayOfWeek = selectedDays[0];
     }
 
+    // A real series is fanned out by the SERVER (`updateMany` keyed on
+    // seriesId, with dayOfWeek stripped so the days can't collapse). A
+    // lookalike group has no shared seriesId for the server to key on, so the
+    // fan-out happens here instead: one plain `single` update per member,
+    // same shape as multi-day create. Either way `dayOfWeek` is left off, so
+    // no member is moved onto another member's day.
+    const fanOutClientSide = scopeToApply === "series" && linked?.kind === "lookalike";
+
     let payload: UpdateScheduleBlockInput;
     try {
-      payload = updateScheduleBlockSchema.parse({ ...patch, updateScope: scopeToApply });
+      payload = updateScheduleBlockSchema.parse({
+        ...patch,
+        updateScope: fanOutClientSide ? "single" : scopeToApply,
+      });
     } catch {
       setError("Please check the fields above and try again.");
       return;
@@ -401,13 +485,23 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     }
 
     try {
-      await apiClient.schedule.update(editingBlock.id, payload);
+      const targets = fanOutClientSide ? (linked?.members ?? [editingBlock]) : [editingBlock];
+      await Promise.all(targets.map((target) => apiClient.schedule.update(target.id, payload)));
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
       hapticCompletion();
-      analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: editingBlock.id } });
+      for (const target of targets) {
+        analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: target.id } });
+      }
       sheetRef.current?.dismiss();
     } catch {
       queryClient.setQueryData(weeklyKey, previous);
+      // A client-side fan-out is N independent requests; some may have landed
+      // before one failed, so the rollback above can restore blocks to values
+      // the server no longer holds. Refetch rather than leave a cache that is
+      // confidently wrong. (Same reasoning as multi-day create.)
+      if (fanOutClientSide) {
+        void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
+      }
       Alert.alert("Couldn't save", "Please try again.");
     } finally {
       setIsSubmitting(false);
@@ -420,6 +514,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     endTime,
     goalId,
     isPrivate,
+    linked,
     resolvedColor,
     scopeToApply,
     selectedDays,
@@ -435,17 +530,25 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
     <BottomSheetModal
       ref={sheetRef}
       enableDynamicSizing
+      topInset={insets.top}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
       android_keyboardInputMode="adjustResize"
       enablePanDownToClose
+      // Only one detent here (dynamic sizing with no `snapPoints`), and for
+      // this form that's correct — it already opens at the tallest size the
+      // container allows, so there is nothing to expand to and the handle's
+      // job is purely drag-down-to-close. What it did need was a target big
+      // enough to hit: the library's default handle is a 4pt indicator in 10pt
+      // of padding, i.e. 24pt. This pads it out to 44.
+      handleStyle={styles.handle}
       handleIndicatorStyle={styles.handleIndicator}
       backgroundStyle={styles.sheetBackground}
     >
       <BottomSheetScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: spacing.xxl + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.title}>{mode === "edit" ? "Edit time slot" : "New time slot"}</Text>
@@ -493,7 +596,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
               {(
                 [
                   { label: "This day only", value: "single" as ScheduleUpdateScope },
-                  { label: `All ${seriesBlockCount} linked days`, value: "series" as ScheduleUpdateScope },
+                  { label: `All ${seriesBlockCount} days`, value: "series" as ScheduleUpdateScope },
                 ] as const
               ).map((option) => (
                 <TouchableOpacity
@@ -515,6 +618,15 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
                 </TouchableOpacity>
               ))}
             </View>
+            {/* Names the other days outright. "All 5 days" is not something a
+                user should have to accept on trust before pressing Save on a
+                change they can't undo — especially for a lookalike group,
+                which the app inferred rather than being told about. */}
+            <Text style={styles.scopeHint}>
+              {scopeToApply === "series"
+                ? `Changes ${linked?.members.map((b) => DAY_SHORT_LABELS[b.dayOfWeek]).join(", ")}. The day picker is locked while this is selected.`
+                : `Leaves the other ${seriesBlockCount - 1} day${seriesBlockCount - 1 === 1 ? "" : "s"} untouched.`}
+            </Text>
           </View>
         ) : null}
 
@@ -539,33 +651,14 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
         </View>
         {!timeRangeValid ? <Text style={styles.fieldError}>End time must be after start time.</Text> : null}
 
-        <View style={styles.field}>
-          <Text style={styles.label}>Category</Text>
-          <View style={styles.categoryInputRow}>
-            {resolvedColor ? <View style={[styles.categorySwatch, { backgroundColor: resolvedColor }]} /> : null}
-            <BottomSheetTextInput
-              style={[
-                styles.input,
-                styles.categoryInput,
-                focusedField === "category" && styles.inputFocused,
-              ]}
-              placeholder="e.g. Work"
-              placeholderTextColor={colors.mutedForeground}
-              value={category}
-              onChangeText={setCategory}
-              onFocus={() => setFocusedField("category")}
-              onBlur={() => setFocusedField(null)}
-              accessibilityLabel="Time slot category"
-            />
-          </View>
-        </View>
-
+        {/* Goal first — see the header note. `goals` is rendered as-is; the
+            category field below is never consulted here. */}
         <View style={styles.field}>
           <Text style={styles.label}>Link to goal (optional)</Text>
           <View style={styles.goalRow}>
             <TouchableOpacity
               style={[styles.goalChip, goalId === "" && styles.goalChipSelected]}
-              onPress={() => setGoalId("")}
+              onPress={handleClearGoal}
               accessibilityRole="button"
               accessibilityLabel="No goal"
               accessibilityState={{ selected: goalId === "" }}
@@ -581,9 +674,9 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
                   <TouchableOpacity
                     key={goal.id}
                     style={[styles.goalChip, selected && styles.goalChipSelected]}
-                    onPress={() => setGoalId(goal.id)}
+                    onPress={() => handlePickGoal(goal)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Link to goal ${goal.title}`}
+                    accessibilityLabel={`Link to goal ${goal.title}, category ${goal.category}`}
                     accessibilityState={{ selected }}
                   >
                     <View style={[styles.goalChipSwatch, { backgroundColor: goal.color }]} />
@@ -595,6 +688,43 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
               })
             )}
           </View>
+          {/* An empty goal list used to render as the lone "No goal" chip and
+              nothing else, which looks like a list that failed to load. Say
+              which it is. */}
+          {!isGoalsPending && goals.length === 0 ? (
+            <Text style={styles.goalHint}>
+              No active goals to link yet. You can still save this slot and link one later.
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Category</Text>
+          <View style={styles.categoryInputRow}>
+            {resolvedColor ? <View style={[styles.categorySwatch, { backgroundColor: resolvedColor }]} /> : null}
+            <BottomSheetTextInput
+              style={[
+                styles.input,
+                styles.categoryInput,
+                focusedField === "category" && styles.inputFocused,
+              ]}
+              placeholder="e.g. Work"
+              placeholderTextColor={colors.mutedForeground}
+              value={category}
+              onChangeText={(next) => {
+                setCategory(next);
+                // Now the user's value, so a later goal pick must not
+                // overwrite it.
+                setAutoFilledCategory(null);
+              }}
+              onFocus={() => setFocusedField("category")}
+              onBlur={() => setFocusedField(null)}
+              accessibilityLabel="Time slot category"
+            />
+          </View>
+          {autoFilledCategory !== null && category.trim() === autoFilledCategory ? (
+            <Text style={styles.goalHint}>Filled in from the goal you linked. Edit it if you like.</Text>
+          ) : null}
         </View>
 
         {/* Same intent as the web modal's private checkbox: hide this block
@@ -654,6 +784,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
   },
+  // 20 + 4 + 20 = the 44pt minimum touch target.
+  handle: {
+    paddingVertical: spacing.xl,
+  },
   handleIndicator: {
     backgroundColor: colors.border,
     width: 40,
@@ -666,7 +800,8 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied at the call site — it has to add the bottom
+    // safe-area inset, which isn't a static value.
     gap: spacing.lg,
   },
   title: {
@@ -746,6 +881,12 @@ const styles = StyleSheet.create({
   scopeChipTextSelected: {
     color: colors.primaryForeground,
   },
+  scopeHint: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
+  },
   fieldError: {
     color: colors.destructive,
     fontSize: 12,
@@ -801,6 +942,12 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     color: colors.mutedForeground,
     paddingVertical: spacing.sm,
+  },
+  goalHint: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
   privateRow: {
     flexDirection: "row",

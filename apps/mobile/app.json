@@ -17,12 +17,23 @@
       "buildNumber": "1",
       "entitlements": {
         "com.apple.security.application-groups": ["group.io.goalslot.mobile"]
+      },
+      "_infoPlistComment": "Both usage strings below are ALSO written by the expo-speech-recognition config plugin, which supplies generic defaults. They are declared here explicitly because these two are App Store review copy, not plumbing: a missing NSMicrophoneUsageDescription is an outright rejection and a silent crash the first time the mic is touched, and a vague one ('Allow GoalSlot to use the microphone') gets flagged for not saying what the data is used for. Keeping them in app.json means they are reviewable in a diff instead of buried in a node_modules plugin's fallback. The plugin honours an existing value rather than overwriting it. This key sits outside infoPlist on purpose — anything inside that object is written verbatim into Info.plist.",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "GoalSlot uses the microphone so you can speak commands like \"start tracking my deen goal\" instead of typing them. Audio is only captured while you are holding the mic button.",
+        "NSSpeechRecognitionUsageDescription": "GoalSlot turns what you say into text so it can start timers, add tasks, and move schedule blocks for you. Recognition runs on your device where the device supports it."
       }
     },
     "android": {
       "package": "io.goalslot.mobile",
       "softwareKeyboardLayoutMode": "resize",
       "versionCode": 1,
+      "_permissionsComment": "EXACT ALARMS — what makes a schedule reminder land ON the minute. expo-notifications picks its AlarmManager method at runtime: `if (SDK_INT < S || canScheduleExactAlarms()) setExactAndAllowWhileIdle(...) else setAndAllowWhileIdle(...)`. Without these, that check fails on Android 12+ and every reminder degrades to the INEXACT branch, which Doze can defer by many minutes — a 9:00 block announcing itself at 9:20. SCHEDULE_EXACT_ALARM covers API 31-32; USE_EXACT_ALARM covers API 33+ and is required on Android 14+, where the former is no longer auto-granted. PLAY POLICY: USE_EXACT_ALARM is restricted to apps whose core function is an alarm clock or calendar — confirm before the next Play submission. Dropping it still leaves exact alarms working on Android 12-13. RECORD_AUDIO — voice control; also added by the expo-speech-recognition plugin, declared here so the app's full permission set is readable from app.json alone. That plugin additionally writes the Android 11+ <queries> entry for the android.speech.RecognitionService intent, which cannot be expressed here and without which SpeechRecognizer reports itself unavailable on every device running Android 11 or later.",
+      "permissions": [
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM",
+        "android.permission.RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#F2CC0D",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -49,6 +60,13 @@
         "@sentry/react-native",
         {
           "_comment": "NON-FUNCTIONAL PLACEHOLDER. No `organization`/`project` set — no real Sentry project exists yet (out of scope for this change, same rule as `eas init`/EAS Updates below). Without them the plugin falls back to SENTRY_ORG/SENTRY_PROJECT env vars at native-build time, which also aren't set, so this stays inert. It only affects native source-map upload config, not JS runtime behavior — see src/lib/sentry.ts for the runtime guard."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "GoalSlot uses the microphone so you can speak commands like \"start tracking my deen goal\" instead of typing them. Audio is only captured while you are holding the mic button.",
+          "speechRecognitionPermission": "GoalSlot turns what you say into text so it can start timers, add tasks, and move schedule blocks for you. Recognition runs on your device where the device supports it."
         }
       ],
       [
@@ -86,7 +104,10 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": "https://api.goalslot.io"
+      "apiBaseUrl": "https://api.goalslot.io",
+      "_messagingComment": "Origin of the jiffy-messaging deployment. Null = messaging is off in this build: the Messages screens stay unregistered, the drawer entry is hidden, and no socket or token request is ever made. Override per environment with EXPO_PUBLIC_MESSAGING_URL / EXPO_PUBLIC_MESSAGING_WS_URL — app.config.js layers those on top of these, and derives the ws:// URL from the http:// one when only the latter is set.",
+      "messagingUrl": null,
+      "messagingWsUrl": null
     },
     "runtimeVersion": {
       "policy": "appVersion"

@@ -15,13 +15,17 @@ import type { ApiClientConfig } from './types'
 import { createAuthApi } from './auth'
 import { createCategoriesApi } from './categories'
 import { createCoachApi, postCoachStream, type CoachStreamChunk } from './coach'
+import { createCoachSettingsApi } from './coach-settings'
 import { createGoalsApi } from './goals'
 import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
+import { createMessagingApi } from './messaging'
 import { createNotesApi } from './notes'
+import { createSharingApi } from './sharing'
 import { createScheduleApi } from './schedule'
 import { createTasksApi } from './tasks'
 import { createTimeEntriesApi } from './time-entries'
+import { createUsersApi } from './users'
 
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
@@ -168,6 +172,7 @@ export function createApiClient(config: ApiClientConfig) {
   return {
     api,
     auth: createAuthApi(api),
+    users: createUsersApi(api),
     goals: createGoalsApi(api),
     notes: createNotesApi(api),
     tasks: createTasksApi(api),
@@ -176,6 +181,19 @@ export function createApiClient(config: ApiClientConfig) {
     categories: createCategoriesApi(api),
     labels: createLabelsApi(api),
     journal: createJournalApi(api),
+    // GoalSlot's half of messaging only: mint a service token, open a
+    // conversation (which is where the sharing-relationship check lives).
+    // Everything else — conversations, messages, read state, live delivery —
+    // is the jiffy-messaging service, reached through
+    // `createMessagingServiceClient` with the token this mints, because it's
+    // a different origin with a different credential and is separately
+    // configurable (and frequently not configured at all).
+    messaging: createMessagingApi(api),
+    sharing: createSharingApi(api),
+    // Namespaced under /coach on the API, but account settings rather than
+    // anything the chat screen calls — kept as its own key so the two don't
+    // have to grow into one object. See ./coach-settings.ts.
+    coachSettings: createCoachSettingsApi(api),
     coach: {
       ...coachApi,
       // Not axios-based (see api/coach.ts's header comment for why) — goes

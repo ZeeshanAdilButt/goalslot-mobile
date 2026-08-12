@@ -7,7 +7,7 @@
     "dev": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "build": "expo export",
+    "build": "expo export --platform android && expo export --platform ios",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "jest"
@@ -31,6 +31,7 @@
     "expo-notifications": "~57.0.9",
     "expo-router": "~57.0.11",
     "expo-secure-store": "~57.0.1",
+    "expo-speech-recognition": "~56.0.1",
     "expo-splash-screen": "~57.0.5",
     "expo-status-bar": "~57.0.1",
     "expo-updates": "~57.0.12",

@@ -44,11 +44,23 @@ interface AuthState {
   register: (data: RegisterInput) => Promise<void>;
   logout: () => Promise<void>;
   loadUser: () => Promise<void>;
+  setUser: (user: User) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   status: "loading",
+
+  // For screens that mutate the profile and get the updated row back —
+  // Settings' name edit is the first. Mirrors web's `useAuthStore.setUser`.
+  //
+  // Deliberately not "just call loadUser() again": loadUser treats any failed
+  // /auth/me as a dead session and clears the tokens, so a network blip in
+  // the seconds after a successful save would sign the user out over a
+  // change that already landed on the server.
+  setUser(user) {
+    set({ user });
+  },
 
   async login(email, password) {
     const response = await apiClient.auth.login({ email: normalizeEmail(email), password });
@@ -95,6 +107,15 @@ export const useAuthStore = create<AuthState>((set) => ({
       // network error on the very first request). Either way there's no
       // usable session to show — fall back to unauthenticated rather than
       // getting stuck in `loading` forever.
+      //
+      // Deliberately NOT resetSessionState(), unlike logout() above: the two
+      // causes are indistinguishable from here, and on the network-blip one
+      // the user is still legitimately signed in — wiping the offline outbox
+      // would silently destroy writes they queued while offline. The cost is
+      // that reminders queued by the previous account survive this
+      // particular exit until someone signs in (login/register both reset).
+      // Distinguishing a rejected token from an unreachable server is the
+      // fix; until then the destructive option is the worse trade.
       await secureTokenStorage.clear();
       set({ user: null, status: "unauthenticated" });
     }

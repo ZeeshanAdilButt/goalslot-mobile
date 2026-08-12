@@ -32,18 +32,25 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  CreditCard,
   Eye,
   EyeOff,
   Flag,
   Inbox,
+  Key,
+  KeyRound,
   LayoutDashboard,
   LogOut,
+  MessagesSquare,
   MessageSquareText,
   Menu,
+  Mic,
+  MicOff,
   NotebookPen,
   Pencil,
   RefreshCw,
   Search,
+  Shield,
   Sparkles,
   StickyNote,
   Plus,
@@ -70,6 +77,10 @@ const ICONS = {
   journal: NotebookPen,
   // Coach AI chat and Notes — both reachable from the navigation drawer.
   coach: MessageSquareText,
+  // Person-to-person messaging, distinct from `coach` (the AI chat): a
+  // stacked pair of bubbles rather than one, so the drawer's two
+  // conversational entries aren't the same glyph twice.
+  messages: MessagesSquare,
   notes: StickyNote,
   add: Plus,
   // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.
@@ -101,6 +112,21 @@ const ICONS = {
   user: User,
   bell: Bell,
   "bell-off": BellOff,
+  // Added for the Settings screen's section rows. Same 1:1-with-web rule as
+  // above — these are the exact glyphs dw-time-web's settings page hangs off
+  // its sidebar tabs (src/app/dashboard/settings/page.tsx:9,29-40): Shield
+  // for Security, KeyRound for Integrations, Key for the change-password
+  // form's heading, CreditCard for Billing.
+  shield: Shield,
+  key: Key,
+  "key-round": KeyRound,
+  "credit-card": CreditCard,
+  // Voice control. `mic-off` is not a mute toggle — it's the resting mark
+  // for the two states where the microphone cannot be used at all
+  // (permission refused, no recognizer on the device), which need to look
+  // visibly different from an idle mic rather than merely dimmer.
+  mic: Mic,
+  "mic-off": MicOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

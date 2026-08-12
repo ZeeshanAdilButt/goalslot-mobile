@@ -32,6 +32,27 @@ Go, not bare RN.
   local-notification rebooking on iOS) need native AndroidManifest
   entries and likely a native alarm-ringing module — `expo-notifications`
   alone doesn't reach the exact-alarm + full-screen-intent pattern.
+
+  Partly settled since. The *exact-alarm* half turned out not to need a
+  module at all, only manifest permissions: `expo-notifications` already
+  schedules through `AlarmManager` and already calls
+  `setExactAndAllowWhileIdle` — it just gates that on
+  `canScheduleExactAlarms()`, which is false on Android 12+ until the app
+  declares `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`. Those are now in
+  `app.json`, and the library also handles the two things this bullet
+  worried about most: weekly triggers re-arm themselves after firing
+  (`ExpoSchedulingDelegate.triggerNotification` reschedules), and a
+  `BOOT_COMPLETED` receiver restores the queue after a reboot.
+
+  What still needs a native module is the *full-screen intent* — the
+  alarm-clock experience that takes over a locked screen and rings until
+  dismissed. Everything short of that is reachable today: a MAX-importance
+  channel with sound and vibration on Android, and
+  `interruptionLevel: 'timeSensitive'` on iOS, which is as far as a
+  notification can go without Apple's Critical Alerts entitlement. That is
+  a heads-up alert with sound, not a ringing alarm you must dismiss, and
+  the gap is deliberate rather than pending — see
+  `src/lib/notifications.ts`.
 - What Expo buys over bare RN: `expo-updates` for OTA updates, `eas
   build`/`eas submit` for toolchain-free native builds (no local Android
   SDK or Xcode required per machine), and a maintained upgrade path
@@ -77,9 +98,10 @@ already proven in production:
   (Keychain/Keystore-backed), explicitly not AsyncStorage — long-lived
   tokens with no server-side revocation make secure storage
   non-negotiable.
-- **Local app state** (theme, timer, offline-queue UI): zustand with
-  `AsyncStorage`-backed persistence, matching the web app's existing
-  stores.
+- **Local app state** (timer, reminder interval, offline-queue UI): zustand
+  with `AsyncStorage`-backed persistence, matching the web app's existing
+  stores. Theme was originally an example here; it never became one — see
+  the note under §5.
 - **Optimistic writes**: `useOfflineMutation` ports as-is; only the
   toast/notifier call is swapped for an injected notifier.
 
@@ -90,6 +112,15 @@ from schedule, tasks, and timer data), Schedule (a day-agenda redesign of
 the web app's weekly drag-grid), Goals, Tasks, Time Tracker, a
 cross-cutting quick-add sheet, and a trimmed Settings screen
 (profile/logout/notifications/theme only).
+
+> **Amended.** Theme never shipped: no ThemeProvider was ever built, so the
+> picker saved a preference nothing read and the screen said so in its own
+> helper text. It and its store field have been removed — web reached the
+> same conclusion and hides its Appearance tab. Settings has since grown to
+> track web's remaining tabs: profile editing, an OTP password change,
+> delete account, the Coach's BYOK key and habits profile, and a read-only
+> plan badge. Billing stays read-only deliberately; see the comment at the
+> top of `app/(app)/settings.tsx`.
 
 **Cut from v1** (deferred, not dropped): an AI coaching chat screen,
 Journal, Notes (shipped later — see below), a Reports view, Whiteboards
@@ -110,7 +141,8 @@ library/templates, and admin screens.
 - **Whiteboards** — the web canvas library has no practical native port;
   stays web-only permanently.
 - **Web notification handling** — rewritten against `expo-notifications`,
-  eventually backed by a native alarm module for real alarms.
+  which now covers exact, audible, weekly-recurring schedule alarms (see
+  §2); only a full-screen ringing alarm would still need a native module.
 - **Auth token storage and the auth interceptor chain** — every storage
   touchpoint gets rewritten against `expo-secure-store`; the
   request/response interceptor logic itself is portable, just not its
@@ -121,6 +153,55 @@ library/templates, and admin screens.
 - **Cross-tab cache invalidation** — no RN equivalent and no equivalent
   problem on mobile (a single "tab"), so this is dropped rather than
   rebuilt.
+
+## Voice control
+
+Two microphones, deliberately, because they answer different questions.
+
+**The tab-bar mic** (`apps/mobile/app/(app)/voice.tsx`) is open-ended and
+adds no intelligence of its own. Speech becomes a transcript, the
+transcript goes into the assistant that already exists — the same
+`apiClient.coach.streamChat` the Coach chat screen calls, the same
+`extractCoachProposals` parser in `packages/shared/src/coach`, the same
+`POST /coach/proposals/apply` endpoint — and the answer is rendered with
+the same `CoachProposalCard` the Coach screen now renders. There is no
+second prompt pipeline and no second way to mutate a goal. The card grew
+an Apply button in the process, so a change the user typed and one they
+spoke are the same code path rather than two that can drift.
+
+**The Time Tracker mic** (`src/components/voice/TrackerVoiceButton.tsx`) is
+scoped to tracking, where the vocabulary is small and closed: start, stop,
+pause, resume, log N minutes. Those are parsed on the device by
+`packages/shared/src/voice` with no model round trip, because "pause" has
+to feel as fast as pressing Pause or nobody says it twice. Anything the
+parser does not recognise is forwarded to the tab-bar assistant with the
+transcript attached, rather than guessed at.
+
+- **Confirmation policy.** Start/stop/pause/resume run immediately: each is
+  undone by saying the opposite word, and confirming them would remove the
+  only reason to speak instead of tapping. `log 30 minutes to X` writes a
+  record with a duration nobody measured, so it confirms. Every Coach
+  proposal confirms, and a batch containing a delete confirms twice. A
+  misheard word must never be able to remove a goal.
+- **Name resolution over parsing.** The complaint that started this work was
+  a goal called "deen" that could not be found in a picker, so an
+  unrecognised name is never allowed to become an unattributed timer. The
+  resolver classifies every spoken name as confident / needs-confirmation /
+  unresolved and carries ranked runners-up, and the UI asks whenever it is
+  not the first.
+- **`packages/shared/src/voice` mirrors the `jiffy-voice` package's public
+  contract** (`VoiceIntent`, `ResolvedTarget`, `TargetCandidate`, the
+  resolution statuses) rather than importing it: that package is
+  unpublished and does not commit its `dist/`, so it cannot be a dependency
+  yet. When it ships to a registry, `src/voice/index.ts` becomes a
+  re-export.
+- **Speech library: `expo-speech-recognition`, not `@react-native-voice/voice`.**
+  This app runs the New Architecture; the latter ships no `codegenConfig`
+  and its bundled config plugin pins `@expo/config-plugins@^2` (SDK 41
+  era). The former is an Expo module, and its plugin writes the Android 11+
+  `<queries>` entry for `android.speech.RecognitionService` — without which
+  `SpeechRecognizer` silently reports unavailable on every recent Android
+  device. Full reasoning in `src/lib/speech-recognition.ts`.
 
 ## Notes feature
 
@@ -165,3 +246,74 @@ tree/projection math shared with the web app).
 - **Routing**: the editor is a hidden tab rather than a stack push, which
   keeps the tab group's auth guard without restructuring the navigator —
   worth revisiting if the app grows a root stack.
+
+## Messaging feature
+
+Person-to-person messaging between users who already have a sharing
+relationship. Two backends, deliberately: GoalSlot's own API mints a
+short-lived token and creates conversations (that endpoint is where the
+"may these two people talk" rule lives, enforced server-side), and the
+standalone `jiffy-messaging` service owns conversations, messages, read
+state, and live delivery. The service holds no opinion about who may
+message whom, so the authorization check cannot move into it.
+
+- **Split across the packages**: everything platform-neutral is in
+  `packages/shared/src/messaging` (cache reconcilers, unread derivation,
+  contact assembly, the token store, the WebSocket manager) plus
+  `api/messaging.ts`, `api/sharing.ts` and `queries/messaging.ts` — the
+  web app can reuse all of it. Only React Native UI lives in
+  `apps/mobile`.
+- **Names come from the sharing graph.** jiffy-messaging identifies
+  participants by bare GoalSlot user id and has never heard of a user
+  record, so display names are joined client-side from
+  `/sharing/my-shares` + `/sharing/shared-with-me`. That list decides who
+  is *offered* in the new-conversation picker; the server decides who is
+  *allowed*, and a 403 is rendered as its own specific message rather
+  than a generic failure. A conversation whose counterpart has since left
+  the sharing graph still renders — the history is real even when the
+  relationship ended.
+- **One socket per process**, owned at module scope
+  (`src/lib/messaging-live.ts`) and driven by the (app) layout, so the
+  conversation list stays live from anywhere in the app. It is closed on
+  background and reopened on resume rather than held across the cycle: a
+  suspended socket is usually already dead and reports it minutes late,
+  during which the app silently receives nothing. Reconnect is
+  exponential with full jitter, and is *not* scheduled while offline —
+  the NetInfo edge in `src/lib/offline.ts` wakes it instead of a timer
+  burning radio on a handshake that cannot complete.
+- **`onlineManager` is deliberately still not wired.** This app's offline
+  story is the outbox: a mutation is expected to FAIL offline so the
+  `hasResponse` check can decide whether to queue it. Giving TanStack a
+  real connectivity signal would make it *pause* mutations instead, which
+  silently bypasses the outbox for every domain.
+- **Optimistic send** follows the `useQuickAdd` shape, with two chat-
+  specific changes: a failed message is never deleted (it stays marked
+  failed with retry/discard, because deleting it loses what the user
+  wrote), and the server's row replaces the optimistic one by `clientId`
+  rather than landing beside it. A queued send's outbox `idempotencyKey`
+  *is* that client id, which is what lets the drain replace the right
+  bubble instead of duplicating it.
+- **Refetches merge rather than replace** (`mergeServerMessages`, wired
+  as the query's `structuralSharing`). A refetch returns only the newest
+  page, so the default replace would drop both paged-in history and any
+  message queued offline — the latter reappearing minutes later when the
+  outbox drained.
+- **A normal list, not an `inverted` one.** `inverted` is a scaleY(-1)
+  transform on every cell, which reverses screen-reader traversal so the
+  thread reads newest-to-oldest. `useThreadScroll` does the pinning
+  explicitly instead, and only when the user is already at the bottom —
+  yanking someone out of history because a message arrived is the worst
+  thing a chat screen can do. Keyboard *hide* is handled as carefully as
+  show: without it the view strands above the last bubble.
+- **Config-gated**: service URLs come from `app.config.js`
+  (`EXPO_PUBLIC_MESSAGING_URL` / `EXPO_PUBLIC_MESSAGING_WS_URL`) and are
+  routinely unset. Unset is a normal state, not an error — the drawer
+  entry disappears, queries never fire, the socket stays idle, and the
+  service client rejects with a `not-configured` error kind instead of
+  requesting an undefined URL. A missing ws URL alone degrades to
+  refetch-on-focus rather than disabling the feature.
+- **Routing** follows the Notes pattern above: `messages.tsx` plus
+  `message/[id].tsx`, both hidden tabs, the thread hiding the tab bar.
+  The consequence worth remembering is that the thread screen stays
+  mounted between conversations, so read-marking, refetching and paging
+  state all key off focus and `conversationId` rather than mount.

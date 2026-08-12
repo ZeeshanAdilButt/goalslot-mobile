@@ -38,6 +38,18 @@ interface TimerPersistedState {
 
 interface TimerState extends TimerPersistedState {
   start: (taskId?: string, goalId?: string) => void;
+  /**
+   * Re-points a session that is already running (or paused) at a different
+   * task/goal — or, with both arguments omitted, at nothing at all.
+   *
+   * Attribution used to be a precondition of starting, so the target was
+   * fixed for the life of a run and this action didn't need to exist. Now
+   * that a session can start with nothing attached, "attach it while it
+   * runs" is the normal way a session gets its goal, so the target has to be
+   * mutable mid-run. Only the attribution changes: startedAt and
+   * pausedElapsedMs are untouched, so re-targeting never disturbs the clock.
+   */
+  retarget: (taskId?: string, goalId?: string) => void;
   pause: () => void;
   resume: () => void;
   /** Stops the timer, resets to idle, and returns the total elapsed ms for the session that just ended. */
@@ -65,6 +77,14 @@ export const useTimerStore = create<TimerState>()(
           taskId: taskId ?? null,
           goalId: goalId ?? null,
         });
+      },
+
+      retarget(taskId, goalId) {
+        // Idle is a no-op on purpose: there is no session to attribute, and
+        // `start` overwrites both ids anyway, so writing them here would only
+        // create a window where the store claims a target it isn't timing.
+        if (get().status === "idle") return;
+        set({ taskId: taskId ?? null, goalId: goalId ?? null });
       },
 
       pause() {

@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import { createNoopCapabilities, type Capabilities } from "@goalslot/shared";
 
 import { createExpoNotificationCapability } from "@/lib/notifications";
+import { createSpeechRecognitionCapability } from "@/lib/speech-recognition";
 
 const CapabilitiesContext = createContext<Capabilities | null>(null);
 
@@ -23,14 +24,18 @@ Notifications.setNotificationHandler({
 });
 
 export function CapabilitiesProvider({ children }: { children: ReactNode }) {
-  // Real alarm/voice implementations land later (Phase 3+ per
-  // dw-time-mobile/DECISIONS.md); notifications are real now, backed by
-  // expo-notifications. This is the one seam the rest of the app reaches
-  // through instead of touching a platform API directly.
+  // Alarms are still the inert stand-in (Phase 3+ per DECISIONS.md).
+  // Notifications and voice are real: expo-notifications and
+  // expo-speech-recognition respectively. This is the one seam the rest of
+  // the app reaches through instead of touching a platform API directly —
+  // which is why the voice screens never import expo-speech-recognition,
+  // and why the capability degrading to "unavailable" on a device with no
+  // recognizer needs no handling anywhere but the UI that renders it.
   const capabilities = useMemo(
     () => ({
       ...createNoopCapabilities(),
       notifications: createExpoNotificationCapability(),
+      voice: createSpeechRecognitionCapability(),
     }),
     [],
   );

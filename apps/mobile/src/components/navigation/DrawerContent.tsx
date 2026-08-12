@@ -38,6 +38,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-nati
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "@/providers/auth-provider";
+import { messagingEnabled } from "@/lib/messaging-config";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { Icon, type IconName } from "@/components/ui/Icon";
@@ -57,6 +58,7 @@ export type DrawerHref =
   | "/categories"
   | "/journal"
   | "/notes"
+  | "/messages"
   | "/coach"
   | "/settings";
 
@@ -102,6 +104,15 @@ const NAV_GROUPS: DrawerNavGroup[] = [
     label: "Workspace",
     items: [
       { href: "/notes", label: "Notes", icon: "notes" },
+      // Messaging is deployed as a separate service and is absent from
+      // builds that don't point at one (see src/lib/messaging-config.ts).
+      // A nav row to a screen that can only ever say "unavailable" is worse
+      // than no row, so the entry is omitted rather than disabled — this is
+      // a build-time constant, not per-user state, so nothing here becomes
+      // conditional at runtime.
+      ...(messagingEnabled
+        ? ([{ href: "/messages", label: "Messages", icon: "messages" }] as DrawerNavItem[])
+        : []),
       { href: "/reports", label: "Reports", icon: "reports" },
       { href: "/categories", label: "Categories", icon: "categories" },
       { href: "/settings", label: "Settings", icon: "settings" },
