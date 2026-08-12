@@ -7,9 +7,16 @@
 // `YYYY-MM-DD` string comparisons the module deliberately uses instead of
 // Date math (see its header for why).
 
-import { buildDayBuckets, computeTrend, getPeriodRanges, sumMinutesInRange } from "./aggregate";
+import {
+  buildCategoryBreakdown,
+  buildDayBuckets,
+  computeTrend,
+  getPeriodRanges,
+  sumMinutesInRange,
+  UNCATEGORIZED_KEY,
+} from "./aggregate";
 
-import type { TimeEntry } from "@goalslot/shared";
+import type { Category, TimeEntry } from "@goalslot/shared";
 
 function entry(date: string, duration: number): TimeEntry {
   return { id: `${date}-${duration}`, date, duration } as TimeEntry;
@@ -56,6 +63,83 @@ describe("sumMinutesInRange", () => {
     expect(sumMinutesInRange([entry("2026-08-10T23:30:00.000Z", 25)], { start: "2026-08-10", end: "2026-08-10" })).toBe(
       25,
     );
+  });
+});
+
+describe("buildCategoryBreakdown", () => {
+  // A session tracked with nothing attached — the shape the Time Tracker now
+  // produces whenever the user just presses start. It must still be counted.
+  function unattributed(date: string, duration: number): TimeEntry {
+    return { id: `u-${date}-${duration}`, date, duration } as TimeEntry;
+  }
+
+  function attributed(date: string, duration: number, category: string, color = "#123456"): TimeEntry {
+    return {
+      id: `a-${date}-${duration}-${category}`,
+      date,
+      duration,
+      goal: { id: `goal-${category}`, title: category, color, category },
+    } as TimeEntry;
+  }
+
+  const range = { start: "2026-08-10", end: "2026-08-16" };
+  const categories: Category[] = [{ value: "work", name: "Deep Work", color: "#ff0000" } as Category];
+  const neutral = "#999999";
+
+  it("counts an entry with no goal instead of dropping it", () => {
+    // The bug this guards is silent: time that saves fine, then vanishes from
+    // the user's own report because it had nothing to group under.
+    const slices = buildCategoryBreakdown([unattributed("2026-08-11", 45)], range, categories, neutral);
+    expect(slices).toHaveLength(1);
+    expect(slices[0].minutes).toBe(45);
+  });
+
+  it("files unattributed time under a stable, identifiable key", () => {
+    // The Reports screen looks this key up by name to caption the slice.
+    const slices = buildCategoryBreakdown([unattributed("2026-08-11", 45)], range, categories, neutral);
+    expect(slices[0].key).toBe(UNCATEGORIZED_KEY);
+    expect(slices[0].name).toBe("Uncategorized");
+    expect(slices[0].color).toBe(neutral);
+  });
+
+  it("pools every unattributed entry into one slice rather than one each", () => {
+    const slices = buildCategoryBreakdown(
+      [unattributed("2026-08-11", 30), unattributed("2026-08-12", 20)],
+      range,
+      categories,
+      neutral,
+    );
+    expect(slices).toHaveLength(1);
+    expect(slices[0].minutes).toBe(50);
+  });
+
+  it("keeps attributed and unattributed time in separate slices, largest first", () => {
+    const slices = buildCategoryBreakdown(
+      [unattributed("2026-08-11", 30), attributed("2026-08-11", 90, "work")],
+      range,
+      categories,
+      neutral,
+    );
+    expect(slices.map((slice) => [slice.name, slice.minutes])).toEqual([
+      ["Deep Work", 90],
+      ["Uncategorized", 30],
+    ]);
+  });
+
+  it("still honours the range bounds for unattributed entries", () => {
+    const slices = buildCategoryBreakdown([unattributed("2026-08-20", 45)], range, categories, neutral);
+    expect(slices).toEqual([]);
+  });
+
+  it("falls back to the schedule block's category when the entry has no goal", () => {
+    const fromBlock = {
+      id: "sb",
+      date: "2026-08-11",
+      duration: 25,
+      scheduleBlock: { id: "b1", title: "Standup", category: "work" },
+    } as TimeEntry;
+    const slices = buildCategoryBreakdown([fromBlock], range, categories, neutral);
+    expect(slices[0].name).toBe("Deep Work");
   });
 });
 

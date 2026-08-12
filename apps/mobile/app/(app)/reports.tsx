@@ -38,6 +38,7 @@ import {
   computeTrend,
   getPeriodRanges,
   sumMinutesInRange,
+  UNCATEGORIZED_KEY,
   type PeriodRange,
   type ReportPeriod,
 } from "@/components/reports/aggregate";
@@ -153,6 +154,18 @@ export default function ReportsScreen() {
     () => buildCategoryBreakdown(timeEntries, ranges.current, categories, colors.mutedForeground),
     [timeEntries, ranges, categories],
   );
+
+  // Time tracked without a goal attached. Sessions can now be started with
+  // nothing selected, so this is ordinary rather than exceptional — and it
+  // has to be named. Left unlabelled it is just an anonymous grey wedge that
+  // looks identical to the donut's "Other (N)" long-tail bucket, so a user
+  // whose week is mostly unfiled would have no way to tell why their
+  // categories look wrong, or that anything is attachable.
+  const unattributedMinutes = useMemo(
+    () => slices.find((slice) => slice.key === UNCATEGORIZED_KEY)?.minutes ?? 0,
+    [slices],
+  );
+  const onlyUnattributed = slices.length === 1 && unattributedMinutes > 0;
 
   // Average over days that have actually happened, so a Monday doesn't show
   // a seventh of the week's real pace.
@@ -338,8 +351,27 @@ export default function ReportsScreen() {
                   <Text style={styles.emptyChartText}>
                     Categories show up once your logged time is attached to a goal.
                   </Text>
+                ) : onlyUnattributed ? (
+                  // Every slice is the uncategorized one, so the donut would
+                  // be a single featureless ring. Say what it is instead —
+                  // and, critically, confirm the time was counted. Time that
+                  // silently vanished from a user's own report would be a
+                  // worse bug than the friction one-tap tracking removed.
+                  <Text style={styles.emptyChartText}>
+                    All {formatDuration(unattributedMinutes)} logged{" "}
+                    {period === "week" ? "this week" : "this month"} is counted, but none of it is attached
+                    to a goal yet. Tap “Add goal” on a session in the Time Tracker to file it here.
+                  </Text>
                 ) : (
-                  <CategoryDonut slices={slices} size={donutSize} />
+                  <>
+                    <CategoryDonut slices={slices} size={donutSize} />
+                    {unattributedMinutes > 0 ? (
+                      <Text style={styles.chartFootnote}>
+                        {formatDuration(unattributedMinutes)} isn’t attached to a goal yet — it’s the
+                        “Uncategorized” slice.
+                      </Text>
+                    ) : null}
+                  </>
                 )}
               </View>
             </Reveal>
@@ -448,5 +480,15 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
     textAlign: "center",
     paddingVertical: spacing.xxl,
+  },
+  // Sits under a chart that did render, so it gets the tighter spacing the
+  // full-height empty state doesn't need.
+  chartFootnote: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
+    textAlign: "center",
+    paddingTop: spacing.md,
   },
 });

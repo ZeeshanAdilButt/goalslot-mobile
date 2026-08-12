@@ -104,7 +104,10 @@ export interface TimerReminderScheduleArgs {
   /** Epoch ms the current running segment began — timer-store's `startedAt`. */
   anchorMs: number;
   intervalMinutes: number;
-  /** Task or goal title being tracked, or null when it hasn't resolved. */
+  /**
+   * Task or goal title being tracked, or null when there is none to show —
+   * an unattributed session or one whose target hasn't resolved yet.
+   */
   label: string | null;
   /** Injectable for tests; defaults to the current wall clock. */
   nowMs?: number;

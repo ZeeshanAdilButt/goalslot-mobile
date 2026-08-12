@@ -1,5 +1,5 @@
 // The full schedule-block editor: title, one-or-many days, real start/end
-// time, category, an optional goal link, and a private toggle. This is what
+// time, an optional goal link, category, and a private toggle. This is what
 // QuickAddSheet (kind="slot") deliberately is NOT — that sheet is the
 // title-only "3-tap add" (see its own header comment), a fast path for "get
 // something on the calendar right now". This sheet is where a user who needs
@@ -23,6 +23,20 @@
 //     resolved automatically by matching the typed text against the user's
 //     real categories (categoryQueries), same intent as the web's derivation
 //     without adding new UI.
+//
+// GOAL BEFORE CATEGORY, and the dependency only ever runs that way. Picking
+// a goal fills in the category it belongs to; typing a category never
+// narrows which goals are offered. That asymmetry is the whole point: on web
+// these were the other way round and a pre-selected category quietly filtered
+// the goal list, so typing a real goal's name returned "No matches" for a
+// goal that plainly existed. Ordering the fields goal-first makes the
+// supported direction the obvious one, and the goal list below is rendered
+// from `goals` untouched — there is deliberately no category term anywhere in
+// its render path for a future edit to start filtering on.
+//
+// The auto-fill is tracked (`autoFilledCategory`) rather than unconditional,
+// so it can replace a value it wrote itself when the user switches goals, but
+// never a category the user typed or one loaded from an existing block.
 //
 // MULTI-DAY CREATE is not a single API call — CreateScheduleBlockInput is
 // one dayOfWeek per block. Mirrors the web's handleSubmit exactly: when more
@@ -143,6 +157,10 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const [category, setCategory] = useState("");
   const [selectedDays, setSelectedDays] = useState<number[]>([0]);
   const [goalId, setGoalId] = useState("");
+  // The last category value this sheet auto-filled from a goal. Anything else
+  // in the category field is the user's (or the saved block's) and is never
+  // overwritten — see the header note.
+  const [autoFilledCategory, setAutoFilledCategory] = useState<string | null>(null);
   const [isPrivate, setIsPrivate] = useState(false);
   const [updateScope, setUpdateScope] = useState<ScheduleUpdateScope>("single");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -155,6 +173,10 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       present: (options) => {
         setError(null);
         setUpdateScope("single");
+        // Neither branch below has auto-filled anything yet, so a stale value
+        // from the previous open must not license overwriting this one's
+        // category.
+        setAutoFilledCategory(null);
         if (options.mode === "edit") {
           const block = options.block;
           setMode("edit");
@@ -248,6 +270,40 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const handleCancel = useCallback(() => {
     sheetRef.current?.dismiss();
   }, []);
+
+  /**
+   * Links a goal and, where it's safe to, fills the category in from it.
+   *
+   * "Safe" means the category box is empty or still holds the value a
+   * previous goal pick put there — so switching goals re-fills correctly,
+   * while a category the user typed (or one loaded from the block being
+   * edited) is left alone. Note what this does NOT do: it never touches the
+   * goal list. Category depends on goal here, never the reverse.
+   */
+  const handlePickGoal = useCallback(
+    (goal: { id: string; category: string }) => {
+      dayHaptic();
+      setGoalId(goal.id);
+
+      const next = goal.category.trim();
+      if (!next) return;
+      setCategory((current) => {
+        const trimmed = current.trim();
+        if (trimmed !== "" && trimmed !== autoFilledCategory) return current;
+        setAutoFilledCategory(next);
+        return next;
+      });
+    },
+    [autoFilledCategory],
+  );
+
+  const handleClearGoal = useCallback(() => {
+    dayHaptic();
+    setGoalId("");
+    // Only retract a category this sheet filled in itself.
+    setCategory((current) => (current.trim() === autoFilledCategory ? "" : current));
+    setAutoFilledCategory(null);
+  }, [autoFilledCategory]);
 
   const toggleDay = useCallback((day: number) => {
     dayHaptic();
@@ -595,33 +651,14 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
         </View>
         {!timeRangeValid ? <Text style={styles.fieldError}>End time must be after start time.</Text> : null}
 
-        <View style={styles.field}>
-          <Text style={styles.label}>Category</Text>
-          <View style={styles.categoryInputRow}>
-            {resolvedColor ? <View style={[styles.categorySwatch, { backgroundColor: resolvedColor }]} /> : null}
-            <BottomSheetTextInput
-              style={[
-                styles.input,
-                styles.categoryInput,
-                focusedField === "category" && styles.inputFocused,
-              ]}
-              placeholder="e.g. Work"
-              placeholderTextColor={colors.mutedForeground}
-              value={category}
-              onChangeText={setCategory}
-              onFocus={() => setFocusedField("category")}
-              onBlur={() => setFocusedField(null)}
-              accessibilityLabel="Time slot category"
-            />
-          </View>
-        </View>
-
+        {/* Goal first — see the header note. `goals` is rendered as-is; the
+            category field below is never consulted here. */}
         <View style={styles.field}>
           <Text style={styles.label}>Link to goal (optional)</Text>
           <View style={styles.goalRow}>
             <TouchableOpacity
               style={[styles.goalChip, goalId === "" && styles.goalChipSelected]}
-              onPress={() => setGoalId("")}
+              onPress={handleClearGoal}
               accessibilityRole="button"
               accessibilityLabel="No goal"
               accessibilityState={{ selected: goalId === "" }}
@@ -637,9 +674,9 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
                   <TouchableOpacity
                     key={goal.id}
                     style={[styles.goalChip, selected && styles.goalChipSelected]}
-                    onPress={() => setGoalId(goal.id)}
+                    onPress={() => handlePickGoal(goal)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Link to goal ${goal.title}`}
+                    accessibilityLabel={`Link to goal ${goal.title}, category ${goal.category}`}
                     accessibilityState={{ selected }}
                   >
                     <View style={[styles.goalChipSwatch, { backgroundColor: goal.color }]} />
@@ -651,6 +688,43 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
               })
             )}
           </View>
+          {/* An empty goal list used to render as the lone "No goal" chip and
+              nothing else, which looks like a list that failed to load. Say
+              which it is. */}
+          {!isGoalsPending && goals.length === 0 ? (
+            <Text style={styles.goalHint}>
+              No active goals to link yet. You can still save this slot and link one later.
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Category</Text>
+          <View style={styles.categoryInputRow}>
+            {resolvedColor ? <View style={[styles.categorySwatch, { backgroundColor: resolvedColor }]} /> : null}
+            <BottomSheetTextInput
+              style={[
+                styles.input,
+                styles.categoryInput,
+                focusedField === "category" && styles.inputFocused,
+              ]}
+              placeholder="e.g. Work"
+              placeholderTextColor={colors.mutedForeground}
+              value={category}
+              onChangeText={(next) => {
+                setCategory(next);
+                // Now the user's value, so a later goal pick must not
+                // overwrite it.
+                setAutoFilledCategory(null);
+              }}
+              onFocus={() => setFocusedField("category")}
+              onBlur={() => setFocusedField(null)}
+              accessibilityLabel="Time slot category"
+            />
+          </View>
+          {autoFilledCategory !== null && category.trim() === autoFilledCategory ? (
+            <Text style={styles.goalHint}>Filled in from the goal you linked. Edit it if you like.</Text>
+          ) : null}
         </View>
 
         {/* Same intent as the web modal's private checkbox: hide this block
@@ -868,6 +942,12 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     color: colors.mutedForeground,
     paddingVertical: spacing.sm,
+  },
+  goalHint: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
   privateRow: {
     flexDirection: "row",
