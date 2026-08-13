@@ -84,7 +84,25 @@ export const Timeline = memo(function Timeline({
       {labels.map((hour) => (
         <Text
           key={hour}
-          style={[styles.hourLabel, { top: minuteToY(hour * 60, window) - HOUR_LABEL_OFFSET }]}
+          style={[
+            styles.hourLabel,
+            {
+              // Every label is nudged up by half its line box so it centres
+              // on the rule it belongs to — except the very first, which has
+              // no rule above it to centre against. Nudging it anyway pushed
+              // its top past the canvas's own top edge into negative space,
+              // which `overflow: "hidden"` on the canvas then clipped: the
+              // window always starts at hour 0 now (see layout.ts), so this
+              // was "12 AM" specifically, visibly cut off at the top of the
+              // day. Nothing else here changes — scroll-to-now positioning
+              // (schedule.tsx's `pendingScrollY`) is computed from
+              // `minuteToY` directly and doesn't read this offset.
+              top:
+                hour === window.startHour
+                  ? minuteToY(hour * 60, window)
+                  : minuteToY(hour * 60, window) - HOUR_LABEL_OFFSET,
+            },
+          ]}
           numberOfLines={1}
           // Decorative scaffolding: every block already announces its own time
           // range, so a screen reader shouldn't have to walk 16 hour labels.
