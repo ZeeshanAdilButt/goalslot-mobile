@@ -39,6 +39,7 @@ import * as Notifications from "expo-notifications";
 
 import { formatDuration } from "@goalslot/shared";
 
+import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors } from "@/theme/tokens";
@@ -64,7 +65,9 @@ interface TimerNotificationArgs {
 }
 
 function describeSession(args: TimerNotificationArgs): { title: string; body: string } | null {
-  const what = args.label ?? "Focus session";
+  // Same shared constant timer.tsx's UNRESOLVED_TARGET_LABEL points at —
+  // see src/lib/session-label.ts.
+  const what = args.label ?? DEFAULT_SESSION_LABEL;
 
   if (args.status === "running") {
     // Wall-clock start, not elapsed — see the header note on staleness.
