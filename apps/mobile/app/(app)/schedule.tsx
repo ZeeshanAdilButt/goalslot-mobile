@@ -36,7 +36,6 @@ import {
   BlockDetailSheet,
   DayStrip,
   getDayWindow,
-  HOUR_HEIGHT,
   minuteToY,
   positionBlocks,
   ScheduleBlockSheet,
@@ -81,12 +80,6 @@ export default function ScheduleScreen() {
   const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
   const [now, setNow] = useState(() => new Date());
   const [detailBlock, setDetailBlock] = useState<ScheduleBlock | null>(null);
-  // The ScrollView's own on-screen height, measured once via onLayout below.
-  // Threaded into getDayWindow so a lightly-scheduled day's trimmed hour
-  // range (±1hr around its content, see layout.ts) is widened to actually
-  // fill this device's viewport instead of leaving blank page background
-  // beneath a canvas that's shorter than the screen.
-  const [viewportHeight, setViewportHeight] = useState(0);
 
   const blockSheetRef = useRef<ScheduleBlockSheetRef>(null);
   const detailRef = useRef<BottomSheetModal>(null);
@@ -176,13 +169,9 @@ export default function ScheduleScreen() {
     [detailBlock, allBlocks],
   );
 
-  // Rounded up: a partial trailing hour still needs its full row to avoid
-  // landing back below the viewport by a few px.
-  const minWindowHours = viewportHeight > 0 ? Math.ceil(viewportHeight / HOUR_HEIGHT) : undefined;
-
   const dayWindow = useMemo(
-    () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? [], minWindowHours),
-    [weeklyQuery.data, selectedDay, minWindowHours],
+    () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? []),
+    [weeklyQuery.data, selectedDay],
   );
 
   const scheduledMinutes = useMemo(
@@ -424,14 +413,6 @@ export default function ScheduleScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        // Measures this ScrollView's own frame (not its content) — feeds
-        // `minWindowHours` above. Only grows: a transient shrink (keyboard,
-        // rotation mid-gesture) shouldn't yank the window back down and
-        // reintroduce blank space for the frames until it re-measures.
-        onLayout={(e) => {
-          const height = e.nativeEvent.layout.height;
-          setViewportHeight((current) => Math.max(current, height));
-        }}
         // Lands the offset the day-change effect asked for, once the new
         // canvas has actually been measured. See `pendingScrollY`.
         onContentSizeChange={() => {

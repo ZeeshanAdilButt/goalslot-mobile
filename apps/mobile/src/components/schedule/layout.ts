@@ -10,12 +10,16 @@
 // that information away, which is why the previous version of this screen
 // read as "a list that happens to mention times" rather than a schedule.
 //
-// WHY the window is trimmed rather than always 00:00-24:00 like the web's
-// DAY_START_MIN/DAY_END_MIN: the web canvas is a 960px-wide desktop grid where
-// an empty morning still reads fine at a glance. At a legible phone scale the
-// same 24 hours is ~1600px of mostly-empty scrolling, so the visible range is
-// clamped to one hour either side of the day's real content (and to a sane
-// waking-hours default when the day is empty).
+// WHY the window is always the full 00:00-24:00 day, matching the web's
+// DAY_START_MIN/DAY_END_MIN: an earlier version trimmed this to ±1hr around
+// the day's real content, on the reasoning that the full 24 hours is ~1600px
+// of mostly-empty scrolling on a phone. That traded away something users
+// actually wanted — "I need to be able to see all 24 hours" — for a
+// convenience the auto-scroll-to-now behaviour (schedule.tsx's
+// `pendingScrollY`/`landedDay`) already provides without it: the screen
+// lands on the relevant time on open, so showing the full day doesn't cost
+// an extra scroll for the common case, it just stops hiding the hours
+// outside whatever happened to be scheduled.
 
 import { timeToMinutes, type ScheduleBlock } from "@goalslot/shared";
 
@@ -42,10 +46,6 @@ export const MIN_BLOCK_HEIGHT = 30;
 /** Breathing room under the last hour rule so the final block isn't flush. */
 export const CANVAS_BOTTOM_PADDING = 32;
 
-/** Fallback window for a day with nothing on it: a normal waking day. */
-const EMPTY_DAY_START_HOUR = 7;
-const EMPTY_DAY_END_HOUR = 22;
-
 export interface DayWindow {
   /** First hour rule drawn, 0-23. */
   startHour: number;
@@ -54,37 +54,15 @@ export interface DayWindow {
 }
 
 /**
- * Below this, a lightly-scheduled day's trimmed window (±1hr around its
- * content) renders shorter than a typical phone viewport — the canvas ends
- * a few hundred px down and the rest of the screen is just blank page
- * background beneath the ScrollView's content. The default keeps every
- * existing caller and test exactly as it was (nothing here changes without
- * `minHours` being passed); it's `schedule.tsx` that raises it to match the
- * canvas's own measured on-screen height, so the timeline reliably fills
- * whatever viewport it's actually given rather than leaving dead space
- * below it on a light day.
+ * Always the full day — see this file's header for why a trimmed window
+ * was tried and reverted. `blocks` is no longer read, but stays as a
+ * parameter so every existing call site (which passes the day's blocks for
+ * good reason — it's the natural thing to hand a "day window" function)
+ * doesn't need to change, and so a future per-day override (e.g. "start an
+ * unusually early day's window earlier") has an obvious place to read from.
  */
-const DEFAULT_MIN_WINDOW_HOURS = 3;
-
-export function getDayWindow(
-  blocks: readonly ScheduleBlock[],
-  minHours: number = DEFAULT_MIN_WINDOW_HOURS,
-): DayWindow {
-  if (blocks.length === 0) {
-    const endHour = Math.max(EMPTY_DAY_END_HOUR, EMPTY_DAY_START_HOUR + minHours);
-    return { startHour: EMPTY_DAY_START_HOUR, endHour: Math.min(24, endHour) };
-  }
-
-  let earliest = 24 * 60;
-  let latest = 0;
-  for (const block of blocks) {
-    earliest = Math.min(earliest, timeToMinutes(block.startTime));
-    latest = Math.max(latest, timeToMinutes(block.endTime));
-  }
-
-  const startHour = Math.max(0, Math.floor(earliest / 60) - 1);
-  const endHour = Math.min(24, Math.max(startHour + minHours, Math.ceil(latest / 60) + 1));
-  return { startHour, endHour };
+export function getDayWindow(_blocks: readonly ScheduleBlock[]): DayWindow {
+  return { startHour: 0, endHour: 24 };
 }
 
 export function windowHeight(window: DayWindow): number {

@@ -39,36 +39,34 @@ function block(id: string, startTime: string, endTime: string): ScheduleBlock {
 }
 
 describe("getDayWindow", () => {
-  it("falls back to waking hours for an empty day", () => {
-    expect(getDayWindow([])).toEqual({ startHour: 7, endHour: 22 });
+  // Always the full day now — see layout.ts's header for why a trimmed
+  // window was tried and reverted (users want to see all 24 hours, and
+  // auto-scroll-to-now already lands on the relevant time without it).
+  it("is the full day for an empty day", () => {
+    expect(getDayWindow([])).toEqual({ startHour: 0, endHour: 24 });
   });
 
-  it("pads one hour either side of the day's real content", () => {
-    expect(getDayWindow([block("a", "09:00", "10:00")])).toEqual({ startHour: 8, endHour: 11 });
+  it("is the full day regardless of where the content falls", () => {
+    expect(getDayWindow([block("a", "09:00", "10:00")])).toEqual({ startHour: 0, endHour: 24 });
   });
 
-  it("clamps to the start of the day rather than going negative", () => {
-    // A 00:15 block would pad to hour -1; the window must not scroll above midnight.
-    expect(getDayWindow([block("a", "00:15", "01:00")]).startHour).toBe(0);
+  it("is the full day for content near midnight on either end", () => {
+    expect(getDayWindow([block("a", "00:15", "01:00")])).toEqual({ startHour: 0, endHour: 24 });
+    expect(getDayWindow([block("a", "22:00", "23:59")])).toEqual({ startHour: 0, endHour: 24 });
   });
 
-  it("clamps to the end of the day rather than past midnight", () => {
-    expect(getDayWindow([block("a", "22:00", "23:59")]).endHour).toBe(24);
+  it("is the full day for a short block", () => {
+    expect(getDayWindow([block("a", "09:00", "09:15")])).toEqual({ startHour: 0, endHour: 24 });
   });
 
-  it("guarantees a minimum three-hour window so a short block is not squashed", () => {
-    const window = getDayWindow([block("a", "09:00", "09:15")]);
-    expect(window.endHour - window.startHour).toBeGreaterThanOrEqual(3);
-  });
-
-  it("spans the earliest start to the latest end across many blocks", () => {
+  it("is the full day across many blocks", () => {
     expect(
       getDayWindow([
         block("late", "16:00", "17:00"),
         block("early", "09:00", "10:00"),
         block("mid", "12:00", "13:00"),
       ]),
-    ).toEqual({ startHour: 8, endHour: 18 });
+    ).toEqual({ startHour: 0, endHour: 24 });
   });
 });
 
