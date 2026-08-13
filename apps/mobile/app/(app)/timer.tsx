@@ -259,7 +259,14 @@ export default function TimerScreen() {
       : hasServerSession
         ? null
         : startedAt;
-  const effectivePausedElapsedMs = hasServerSession ? serverSession.accumulatedMs : pausedElapsedMs;
+  // `serverSession.accumulatedMs` crosses the network with no runtime
+  // validation despite its `number` type — a live case, not a hypothetical
+  // one, produced a paused session whose ring read "NaN:NaN:NaN" instead of
+  // a duration. `?? 0` here (not just inside getElapsedMs, which only
+  // covers callers that route through it) is what protects
+  // useTimerNotification below, which does its own `pausedElapsedMs / 60000`
+  // arithmetic directly rather than through that helper.
+  const effectivePausedElapsedMs = hasServerSession ? (serverSession.accumulatedMs ?? 0) : pausedElapsedMs;
   const effectiveTaskId = hasServerSession ? (serverSession.taskId ?? null) : timerTaskId;
   const effectiveGoalId = hasServerSession ? (serverSession.goalId ?? null) : timerGoalId;
 

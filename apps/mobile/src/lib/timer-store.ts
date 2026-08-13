@@ -139,8 +139,21 @@ export const useTimerStore = create<TimerState>()(
 export function getElapsedMs(
   state: Pick<TimerState, "status" | "startedAt" | "pausedElapsedMs">,
 ): number {
+  // `pausedElapsedMs` is typed as a plain `number` everywhere it's produced,
+  // but timer.tsx's `effectivePausedElapsedMs` can source it from a
+  // server-authoritative session's `accumulatedMs` — a value that crosses a
+  // network boundary with no runtime validation. When that field is ever
+  // missing/null (a live case, not hypothetical: a paused server session
+  // rendered "NaN:NaN:NaN" on the ring instead of a duration), the bad value
+  // used to propagate straight through `Math.floor(NaN / 1000)` and every
+  // arithmetic step after it. This is the one place both the running and
+  // paused branches read `pausedElapsedMs`, so guarding it here protects
+  // every caller (TimerRing's clock, the notification shade, the eventual
+  // TimeEntry payload) at once, rather than needing the same `??`/`isFinite`
+  // check re-added at each call site.
+  const safePausedElapsedMs = Number.isFinite(state.pausedElapsedMs) ? state.pausedElapsedMs : 0;
   if (state.status === "running" && state.startedAt !== null) {
-    return state.pausedElapsedMs + Math.max(0, Date.now() - state.startedAt);
+    return safePausedElapsedMs + Math.max(0, Date.now() - state.startedAt);
   }
-  return state.pausedElapsedMs;
+  return safePausedElapsedMs;
 }
