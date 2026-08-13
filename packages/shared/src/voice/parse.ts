@@ -15,11 +15,13 @@
 
 import {
   clampConfidence,
+  isNamedTarget,
   namedTarget,
   NO_TARGET,
   unknownIntent,
   type ActionableVoiceIntent,
   type IntentTarget,
+  type NamedTarget,
   type SpokenTargetKind,
   type TargetKind,
   type VoiceIntent,
@@ -44,6 +46,10 @@ export const DEFAULT_KIND_WORDS: Readonly<Record<string, TargetKind>> = {
   project: 'category',
   bucket: 'category',
   area: 'category',
+  note: 'note',
+  notes: 'note',
+  page: 'note',
+  pages: 'note',
 }
 
 const COMBINING_MARKS = /[̀-ͯ]/g
@@ -232,6 +238,40 @@ const RULE_GROUPS: readonly RuleGroup[] = [
     type: 'LOG_TIME',
     needsDuration: true,
     phrases: ['log', 'record', 'bill', 'credit', 'ive spent', 'i spent', 'spent', 'i worked', 'worked for', 'worked'],
+  },
+  {
+    // "Add this to my shopping notes." The verb is deliberately bare where
+    // the spec's phrasing only illustrated it wrapped in a preposition
+    // ("add this to", "add to") — those still match here (see
+    // splitContentAndTarget below: a phrase like "add to" just leaves an
+    // empty content span, which is rejected downstream), but a bare "add"
+    // is what lets the ordinary case — "add CONTENT to my NAME notes" —
+    // match at all, since the actual content sits between the verb and the
+    // connective rather than being one of these fixed words.
+    type: 'APPEND_NOTE',
+    phrases: [
+      'add this to',
+      'add that to',
+      'add to',
+      'add',
+      'append this to',
+      'append that to',
+      'append to',
+      'append',
+      'jot this down in',
+      'jot that down in',
+      'jot down in',
+      'jot this down',
+      'jot down',
+      'note this in',
+      'note that in',
+      'note in',
+      'note',
+      'put this in',
+      'put that in',
+      'put in',
+      'put',
+    ],
   },
 ]
 
@@ -692,6 +732,136 @@ function extractTarget(
   return namedTarget(kind, trimmed.join(' '))
 }
 
+/**
+ * The connectives APPEND_NOTE's split point is allowed to sit on. A narrower
+ * set than the generic `CONNECTIVES` above on purpose: "add my rent to the
+ * budget notes for March" should not be allowed to split on "for", only on a
+ * word that plausibly introduces the page itself.
+ */
+const APPEND_CONNECTIVES = new Set(['to', 'in', 'into', 'under', 'onto'])
+
+export interface ContentTargetSplit {
+  readonly target: NamedTarget
+  /** Index into `tail` the chosen connective sits at — everything before it is content. */
+  readonly contentEnd: number
+}
+
+/**
+ * "CONTENT to my NAME notes" — the shape every other rule group does not
+ * need, because every other command's tail is *only* a target. Here the tail
+ * is two things at once, and nothing marks where one ends and the other
+ * begins except the connective in front of an explicitly note-flavoured
+ * name.
+ *
+ * Scans `tail` from the END rather than the front, and returns on the FIRST
+ * (i.e. rightmost) connective whose remainder resolves to a `note` target.
+ * That direction is what keeps a "to" inside the content from being mistaken
+ * for the split: "remind him to call back to my errands notes" has two
+ * "to"s, and trying the rightmost one first finds the valid split (my
+ * errands notes) immediately, so the earlier "to" — sitting inside what the
+ * user actually wants written down — is never considered as a candidate at
+ * all.
+ *
+ * Requiring the remainder's kind to resolve to exactly `'note'` (not
+ * `'unspecified'`) is the whole disambiguator: it is what a plain "add milk
+ * to my shopping" (no kind word) fails, and what "add milk to my shopping
+ * notes" (an explicit kind word) passes. Without it, the connective would
+ * split on the FIRST "to" it tried and hand ordinary "add a task to X"
+ * phrasing to this rule instead of leaving it for the Coach.
+ */
+export function splitContentAndTarget(
+  tail: readonly string[],
+  kindWords: Readonly<Record<string, TargetKind>> = DEFAULT_KIND_WORDS,
+): ContentTargetSplit | null {
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    const token = tail[i]
+    if (token === undefined || !APPEND_CONNECTIVES.has(token)) continue
+
+    const targetTokens = tail.slice(i + 1)
+    if (targetTokens.length === 0) continue
+
+    const candidate = extractTarget(targetTokens, kindWords)
+    if (isNamedTarget(candidate) && candidate.kind === 'note') {
+      return { target: candidate, contentEnd: i }
+    }
+  }
+  return null
+}
+
+/**
+ * One raw, whitespace-delimited word from the transcript, paired with its
+ * individually-folded form. Used ONLY to recover APPEND_NOTE's `content` in
+ * the speaker's original casing and punctuation — every other rule here
+ * works purely on the whole-string-folded `tokens` above and never needs to
+ * see the original text again once it has been folded.
+ *
+ * Folded per word rather than over the whole string (the way `tokenize`
+ * does) so one raw word always maps to exactly one paired token; whole-
+ * string folding can turn a single hyphenated word into two folded tokens,
+ * which would desynchronise the two arrays. `parseVoiceCommand` checks for
+ * that desync before trusting `.raw` and falls back to the folded text if it
+ * finds one, so a transcript that hits it loses only casing, never content.
+ */
+interface WordToken {
+  readonly raw: string
+  readonly folded: string
+}
+
+function matchesAtPaired(tokens: readonly WordToken[], index: number, phrase: readonly string[]): boolean {
+  if (index < 0 || index + phrase.length > tokens.length) return false
+  for (let offset = 0; offset < phrase.length; offset += 1) {
+    if (tokens[index + offset]?.folded !== phrase[offset]) return false
+  }
+  return true
+}
+
+function stripLeadingPaired(tokens: readonly WordToken[], phrases: readonly (readonly string[])[]): readonly WordToken[] {
+  let result = tokens
+  let stripping = true
+  while (stripping && result.length > 0) {
+    stripping = false
+    for (const phrase of phrases) {
+      if (matchesAtPaired(result, 0, phrase)) {
+        result = result.slice(phrase.length)
+        stripping = true
+        break
+      }
+    }
+  }
+  return result
+}
+
+function stripTrailingPaired(tokens: readonly WordToken[], phrases: readonly (readonly string[])[]): readonly WordToken[] {
+  let result = tokens
+  let stripping = true
+  while (stripping && result.length > 0) {
+    stripping = false
+    for (const phrase of phrases) {
+      if (matchesAtPaired(result, result.length - phrase.length, phrase)) {
+        result = result.slice(0, result.length - phrase.length)
+        stripping = true
+        break
+      }
+    }
+  }
+  return result
+}
+
+function pairedTokens(transcript: string, wakeWords: readonly string[]): readonly WordToken[] {
+  const wake = splitPhrases(wakeWords.map(foldText).filter((word) => word.length > 0))
+  const trimmed = transcript.trim()
+  const words = trimmed.length === 0 ? [] : trimmed.split(/\s+/)
+
+  const pairs: WordToken[] = []
+  for (const raw of words) {
+    const folded = foldText(raw)
+    if (folded.length === 0 || DISFLUENCIES.has(folded)) continue
+    pairs.push({ raw, folded })
+  }
+
+  return stripTrailingPaired(stripLeadingPaired(pairs, [...wake, ...LEADING]), TRAILING)
+}
+
 /** True when what follows the verb only qualifies it rather than naming anything. */
 function isTimeQualifierOnly(tokens: readonly string[]): boolean {
   const cleaned = stripTargetNoise(tokens)
@@ -729,6 +899,48 @@ export function parseVoiceCommand(transcript: string, options: ParseVoiceCommand
 
   const { rule, lead } = match
   let rest = tokens.slice(lead + rule.phrase.length)
+
+  if (rule.type === 'APPEND_NOTE') {
+    const split = splitContentAndTarget(rest, kindWords)
+    // No connective led to something explicitly note-flavoured — "add a
+    // task to call the bank" ends up here exactly like "add milk to my
+    // shopping" does, and both fall through to the Coach unchanged.
+    if (split === null) return unknownIntent(transcript)
+
+    const contentFolded = rest.slice(0, split.contentEnd)
+
+    // Recover the content in its original casing by re-deriving the same
+    // lead + verb-phrase + content span against a word stream that kept the
+    // raw text beside its fold. Only trusted when it folds to exactly the
+    // same tokens `tokens` did — see `pairedTokens`'s header for when it
+    // will not.
+    const paired = pairedTokens(transcript, options.wakeWords ?? [])
+    const aligned = paired.length === tokens.length && paired.every((word, index) => word.folded === tokens[index])
+    const contentStart = lead + rule.phrase.length
+    const content = aligned
+      ? paired
+          .slice(contentStart, contentStart + split.contentEnd)
+          .map((word) => word.raw)
+          .join(' ')
+          .trim()
+      : contentFolded.join(' ')
+
+    // "add to my shopping notes" — a connective and a valid page, but
+    // nothing to write. Asking which page before establishing there is
+    // anything to add to it would be answering a question nobody meant to
+    // ask.
+    if (content.length === 0) return unknownIntent(transcript)
+
+    let score = BASE_CONFIDENCE
+    if (lead > 0) score -= LEADING_NOISE_PENALTY
+    if (rule.weak) score -= WEAK_PHRASE_PENALTY
+
+    const confidence = clampConfidence(score)
+    if (confidence < (options.minConfidence ?? 0)) return unknownIntent(transcript, confidence)
+
+    return { type: 'APPEND_NOTE', target: split.target, content, transcript, confidence }
+  }
+
   let durationMinutes = 0
   let assumedUnit = false
 

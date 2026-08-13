@@ -46,9 +46,9 @@
 // fit a phone-width chat screen in this pass.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -59,16 +59,21 @@ import {
   todayKey,
   type CoachMessageDto,
   type CoachProposalAction,
+  type ConversationTurnSnapshot,
   type DayAnalysisTimeEntryInput,
   type TimeEntry,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton } from "@/components";
+import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { FormattedText } from "@/components/ui/FormattedText";
+import { Icon } from "@/components/ui/Icon";
+import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { apiClient } from "@/lib/api-client";
+import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
 import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
@@ -150,9 +155,7 @@ function ChatBubble({
             accessibilityLabel="Coach is typing"
             accessibilityLiveRegion="polite"
           >
-            <Text style={styles.typingDot}>●</Text>
-            <Text style={styles.typingDot}>●</Text>
-            <Text style={styles.typingDot}>●</Text>
+            <TypingIndicator />
           </View>
         ) : (
           <>
@@ -177,13 +180,35 @@ function ChatBubble({
 
 export default function CoachScreen() {
   const analytics = useAnalytics();
-  const scopeKey = useMemo(() => currentCoachWeekScopeKey(), []);
+  // Normally "this ISO week" — but a row tapped in CoachHistorySheet for a
+  // past, still-live week arrives here as a `scopeKey` route param, and this
+  // screen has to show THAT conversation instead. `defaultScopeKey` is kept
+  // separately so `isReadOnly` below (and the "back to current week" logic
+  // in the history sheet) can tell "the current week" apart from "whatever
+  // scopeKey happens to be showing".
+  const defaultScopeKey = useMemo(() => currentCoachWeekScopeKey(), []);
+  const { scopeKey: scopeKeyParam } = useLocalSearchParams<{ scopeKey?: string }>();
+  const scopeKey =
+    typeof scopeKeyParam === "string" && scopeKeyParam.length > 0 ? scopeKeyParam : defaultScopeKey;
+  // A past week's conversation is still a real, fetchable server
+  // conversation — posting into it is technically accepted by the backend.
+  // It's read-only anyway: `hoursByGoalThisWeek`/`weekReflections` in the
+  // Coach's per-request context bundle are computed for THIS week, so a
+  // message sent against an old scopeKey would silently reason about today's
+  // schedule using a stale week's numbers. Hiding the composer avoids that
+  // trap rather than exposing it with a caveat.
+  const isReadOnly = scopeKey !== defaultScopeKey;
   const { apply } = useApplyCoachProposals();
+  const historySheetRef = useRef<CoachHistorySheetRef>(null);
 
   const applyActions = useCallback(
     (actions: CoachProposalAction[]) => apply({ actions }),
     [apply],
   );
+
+  const openHistory = useCallback(() => {
+    historySheetRef.current?.present();
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -229,6 +254,52 @@ export default function CoachScreen() {
   }, [persistedMessages, optimisticUser, streaming, streamingReply]);
 
   /**
+   * "New chat": unavoidably destructive server-side (one conversation per
+   * user+scopeKey, no thread ids to spin a fresh one up under — see the
+   * module header). The confirm copy says so plainly. Snapshot -> server
+   * clear -> local reset, in that order: the snapshot is cheap and purely
+   * local, so taking it unconditionally before the clear (rather than after)
+   * means a failed clear never leaves the conversation half-archived.
+   */
+  const handleNewChat = useCallback(() => {
+    if (isReadOnly || persistedMessages.length === 0) return;
+    Alert.alert(
+      "Start a new chat?",
+      "This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Start new chat",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              const snapshot: ConversationTurnSnapshot[] = persistedMessages.map((m) => ({
+                role: m.role,
+                content: m.content,
+              }));
+              await archiveConversation(scopeKey, snapshot);
+              try {
+                await apiClient.coach.clearChatHistory(scopeKey);
+              } catch {
+                // The server still has the old conversation — leave the
+                // screen as-is rather than pretending the clear happened.
+                // The snapshot just taken is harmless: it'll sit in Previous
+                // chats as an extra copy if the user retries and succeeds.
+                Alert.alert("Couldn't start a new chat", "Please try again.");
+                return;
+              }
+              setOptimisticUser(null);
+              setError(null);
+              await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+              void markLiveConversationReset(scopeKey);
+            })();
+          },
+        },
+      ],
+    );
+  }, [isReadOnly, persistedMessages, scopeKey]);
+
+  /**
    * Core send/stream/persist flow, shared by the composer's Send button and
    * the "Analyze my day" quick action below — both post a piece of text as
    * the next USER turn through the same `apiClient.coach.streamChat`; only
@@ -240,6 +311,12 @@ export default function CoachScreen() {
    */
   const sendCoachMessage = useCallback(
     async (content: string, onFailure?: (content: string) => void): Promise<boolean> => {
+      // Defence in depth: the composer and "Analyze my day" are both hidden
+      // while `isReadOnly`, so this shouldn't be reachable, but a post
+      // against a past week's scopeKey is exactly the date-context mix-up
+      // this screen exists to avoid — worth refusing outright rather than
+      // trusting the UI alone to prevent it.
+      if (isReadOnly) return false;
       setError(null);
       const userMsgId = `local_user_${Date.now()}`;
       setOptimisticUser({ id: userMsgId, role: "USER", content });
@@ -269,6 +346,12 @@ export default function CoachScreen() {
           await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
           setOptimisticUser(null);
           success = true;
+          // The only signal that gets this scopeKey recorded as a
+          // "Previous chats" entry — see coach-history-store.ts's header for
+          // why there's no server endpoint to discover it from otherwise.
+          // Fire-and-forget: a lost write costs a stale preview line, not a
+          // functional failure.
+          void recordConversationActivity(scopeKey, acc || content);
         }
       } catch (err) {
         if (controller.signal.aborted) {
@@ -287,7 +370,7 @@ export default function CoachScreen() {
       }
       return success;
     },
-    [scopeKey],
+    [isReadOnly, scopeKey],
   );
 
   const handleSend = useCallback(async () => {
@@ -417,7 +500,41 @@ export default function CoachScreen() {
         <Text style={styles.headerTitle} accessibilityRole="header">
           Coach
         </Text>
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={openHistory}
+            accessibilityRole="button"
+            accessibilityLabel="Previous chats"
+            accessibilityHint="Browse and reopen earlier conversations with the Coach"
+            style={({ pressed }) => [styles.headerButton, pressed && styles.headerButtonPressed]}
+            hitSlop={8}
+          >
+            <Icon name="inbox" size={20} color={colors.foreground} />
+          </Pressable>
+          {/* Hidden while viewing a past week read-only — there's nothing on
+              this screen to clear, and "New chat" always targets the
+              CURRENT week's live conversation, not whatever's on screen. */}
+          {!isReadOnly ? (
+            <Pressable
+              onPress={handleNewChat}
+              accessibilityRole="button"
+              accessibilityLabel="Start a new chat"
+              accessibilityHint="Clears the assistant's memory of this conversation, after asking to confirm"
+              style={({ pressed }) => [styles.headerButton, pressed && styles.headerButtonPressed]}
+              hitSlop={8}
+            >
+              <Icon name="add" size={20} color={colors.foreground} />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
+
+      {isReadOnly ? (
+        <View style={styles.readOnlyBanner}>
+          <Icon name="alert" size={14} color={colors.mutedForeground} />
+          <Text style={styles.readOnlyBannerText}>Viewing an earlier week — read-only</Text>
+        </View>
+      ) : null}
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -444,59 +561,69 @@ export default function CoachScreen() {
           </View>
         ) : null}
 
-        <View style={styles.quickActions}>
-          <Pressable
-            style={[styles.analyzeDayButton, (streaming || analyzingDay) && styles.analyzeDayButtonDisabled]}
-            onPress={() => void handleAnalyzeDay()}
-            disabled={streaming || analyzingDay}
-            accessibilityRole="button"
-            accessibilityLabel="Analyze my day"
-            accessibilityHint="Sends today's schedule, tracked time, and journal entry to the Coach for a reflection"
-            accessibilityState={{ disabled: streaming || analyzingDay, busy: analyzingDay }}
-            hitSlop={8}
-          >
-            <Text style={styles.analyzeDayButtonText}>{analyzingDay ? "Gathering today's data…" : "Analyze my day"}</Text>
-          </Pressable>
-        </View>
+        {/* No composer, no quick actions, while viewing a past week
+            read-only — see `isReadOnly`'s own comment above for why posting
+            here isn't just hidden but actively refused in sendCoachMessage
+            too. */}
+        {!isReadOnly ? (
+          <>
+            <View style={styles.quickActions}>
+              <Pressable
+                style={[styles.analyzeDayButton, (streaming || analyzingDay) && styles.analyzeDayButtonDisabled]}
+                onPress={() => void handleAnalyzeDay()}
+                disabled={streaming || analyzingDay}
+                accessibilityRole="button"
+                accessibilityLabel="Analyze my day"
+                accessibilityHint="Sends today's schedule, tracked time, and journal entry to the Coach for a reflection"
+                accessibilityState={{ disabled: streaming || analyzingDay, busy: analyzingDay }}
+                hitSlop={8}
+              >
+                <Text style={styles.analyzeDayButtonText}>{analyzingDay ? "Gathering today's data…" : "Analyze my day"}</Text>
+              </Pressable>
+            </View>
 
-        <View style={styles.composer}>
-          <TextInput
-            style={styles.textInput}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Ask the Coach a question…"
-            placeholderTextColor={colors.mutedForeground}
-            multiline
-            maxLength={MAX_MESSAGE_LENGTH}
-            editable={!streaming}
-            accessibilityLabel="Message to the Coach"
-            accessibilityHint="Ask about your goals, schedule, or week. Maximum 2000 characters."
-          />
-          {streaming ? (
-            <Pressable
-              style={styles.stopButton}
-              onPress={handleStop}
-              accessibilityRole="button"
-              accessibilityLabel="Stop the Coach's reply"
-              hitSlop={8}
-            >
-              <Text style={styles.stopButtonText}>Stop</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
-              onPress={() => void handleSend()}
-              disabled={!canSend}
-              accessibilityRole="button"
-              accessibilityLabel="Send message"
-              accessibilityState={{ disabled: !canSend }}
-              hitSlop={8}
-            >
-              <Text style={styles.sendButtonText}>Send</Text>
-            </Pressable>
-          )}
-        </View>
+            <View style={styles.composer}>
+              <TextInput
+                style={styles.textInput}
+                value={input}
+                onChangeText={setInput}
+                placeholder="Ask the Coach a question…"
+                placeholderTextColor={colors.mutedForeground}
+                multiline
+                maxLength={MAX_MESSAGE_LENGTH}
+                editable={!streaming}
+                accessibilityLabel="Message to the Coach"
+                accessibilityHint="Ask about your goals, schedule, or week. Maximum 2000 characters."
+              />
+              {streaming ? (
+                <Pressable
+                  style={styles.stopButton}
+                  onPress={handleStop}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stop the Coach's reply"
+                  hitSlop={8}
+                >
+                  <Text style={styles.stopButtonText}>Stop</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+                  onPress={() => void handleSend()}
+                  disabled={!canSend}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send message"
+                  accessibilityState={{ disabled: !canSend }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.sendButtonText}>Send</Text>
+                </Pressable>
+              )}
+            </View>
+          </>
+        ) : null}
       </KeyboardAvoidingView>
+
+      <CoachHistorySheet ref={historySheetRef} />
     </SafeAreaView>
   );
 }
@@ -510,13 +637,51 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
+    // Clears the floating hamburger the app layout parks at top-right (see
+    // voice.tsx's identical comment on its own header) — now that this
+    // header has its own right-aligned buttons, they'd otherwise sit
+    // directly under it.
+    paddingRight: 64,
   },
   headerTitle: {
     ...typography.h1,
     color: colors.foreground,
+  },
+  headerActions: {
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  headerButton: {
+    minWidth: minTouchTarget,
+    minHeight: minTouchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.full,
+  },
+  headerButtonPressed: {
+    backgroundColor: colors.secondary,
+  },
+  readOnlyBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.secondary,
+  },
+  readOnlyBannerText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.mutedForeground,
   },
   bodyArea: {
     flex: 1,
@@ -592,14 +757,7 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
   },
   typingIndicator: {
-    flexDirection: "row",
-    gap: spacing.xxs,
     paddingVertical: spacing.xxs,
-  },
-  typingDot: {
-    color: colors.mutedForeground,
-    fontSize: 18,
-    lineHeight: 18,
   },
   proposalPending: {
     marginTop: spacing.xs,

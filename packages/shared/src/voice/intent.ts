@@ -29,12 +29,13 @@ export const VOICE_INTENT_TYPES = [
   'PAUSE',
   'RESUME',
   'LOG_TIME',
+  'APPEND_NOTE',
   'UNKNOWN',
 ] as const
 
 export type VoiceIntentType = (typeof VOICE_INTENT_TYPES)[number]
 
-export const TARGET_KINDS = ['goal', 'task', 'category'] as const
+export const TARGET_KINDS = ['goal', 'task', 'category', 'note'] as const
 
 /** What a spoken name refers to, in the host's broad buckets. */
 export type TargetKind = (typeof TARGET_KINDS)[number]
@@ -102,6 +103,26 @@ export interface LogTimeIntent extends IntentFields {
 }
 
 /**
+ * "Add this to my shopping notes" — writes a spoken sentence onto the end of
+ * an existing page rather than replacing anything on it. Deliberately NOT in
+ * `isReversibleVoiceIntent`'s set: like LOG_TIME, this appends unreviewed
+ * spoken text to a record that outlives the session, so it confirms first
+ * instead of running the instant it is heard. See
+ * apps/mobile/src/components/voice/note-commands.ts.
+ */
+export interface AppendNoteIntent extends IntentFields {
+  readonly type: 'APPEND_NOTE'
+  readonly target: IntentTarget
+  /**
+   * The words to write into the page, exactly as heard. Unlike every other
+   * field on every other intent here, this is NOT folded — it is written
+   * into the note close to verbatim, so the casing and punctuation the
+   * speaker actually used survive the trip.
+   */
+  readonly content: string
+}
+
+/**
  * The parser understood nothing it is willing to act on. Carries no target
  * field at all (rather than a `none` target) so a caller cannot read a
  * target off an intent that has no meaning without narrowing first.
@@ -116,6 +137,7 @@ export type ActionableVoiceIntent =
   | PauseIntent
   | ResumeIntent
   | LogTimeIntent
+  | AppendNoteIntent
 
 export type VoiceIntent = ActionableVoiceIntent | UnknownIntent
 
@@ -159,6 +181,7 @@ const INTENT_VERBS: Record<Exclude<VoiceIntentType, 'UNKNOWN'>, string> = {
   PAUSE: 'Pause',
   RESUME: 'Resume',
   LOG_TIME: 'Log',
+  APPEND_NOTE: 'Add to',
 }
 
 /** Whole minutes read as "1h 30m"; anything under a minute stays in seconds. */

@@ -54,6 +54,7 @@ import type { Note, NoteDetailResponse } from "@goalslot/shared";
 import { ErrorState, LoadingState } from "@/components";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
+import { normalizeContent } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -63,15 +64,6 @@ const CONTENT_DEBOUNCE_MS = 1000;
 /** How long to wait for the webview editor to report ready before falling
  *  back to the plain-text view. */
 const EDITOR_INIT_TIMEOUT_MS = 8000;
-
-/** The API defaults new rows to '[]' (legacy JSON-blocks format) — treat
- *  that, and whitespace-only strings, as an empty document rather than
- *  letting TipTap render the literal characters. */
-function normalizeContent(content: string): string {
-  const trimmed = content.trim();
-  if (trimmed === "" || trimmed === "[]") return "";
-  return content;
-}
 
 /** Crude HTML-to-text for the editor-failed fallback view only. */
 function stripHtml(html: string): string {

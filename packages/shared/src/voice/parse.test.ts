@@ -232,6 +232,62 @@ describe('parseVoiceCommand — LOG_TIME', () => {
   })
 })
 
+describe('parseVoiceCommand — APPEND_NOTE', () => {
+  it('reads the reported use case: "add X to my Y notes"', () => {
+    const intent = parseVoiceCommand('add milk to my shopping notes')
+    expect(intent.type).toBe('APPEND_NOTE')
+    if (intent.type !== 'APPEND_NOTE') throw new Error('unreachable')
+    expect(intent.content).toBe('milk')
+    expect(isNamedTarget(intent.target) && intent.target).toEqual({ kind: 'note', name: 'shopping' })
+  })
+
+  // The key disambiguator: without an explicit note-kind word ("notes" /
+  // "note" / "page" / "pages") at the end of the named target, this must
+  // not fire at all — the exact same sentence shape is also how someone
+  // asks the Coach to create a task or rename a goal.
+  it('requires an explicit note-kind word to fire, and never matches without one', () => {
+    expect(parseVoiceCommand('add milk to my shopping').type).toBe('UNKNOWN')
+    expect(parseVoiceCommand('add a task to call the bank').type).toBe('UNKNOWN')
+    expect(parseVoiceCommand('rename my fitness goal to health').type).toBe('UNKNOWN')
+  })
+
+  it.each(['note', 'notes', 'page', 'pages'])('recognises "%s" as the note-kind word', (kindWord) => {
+    const intent = parseVoiceCommand(`add milk to my shopping ${kindWord}`)
+    expect(intent.type).toBe('APPEND_NOTE')
+    if (intent.type !== 'APPEND_NOTE') throw new Error('unreachable')
+    expect(isNamedTarget(intent.target) && intent.target.kind).toBe('note')
+  })
+
+  it('keeps a "to" that sits inside the content itself, splitting on the LAST connective instead', () => {
+    const intent = parseVoiceCommand('add call mom back to my errands notes')
+    expect(intent.type).toBe('APPEND_NOTE')
+    if (intent.type !== 'APPEND_NOTE') throw new Error('unreachable')
+    expect(intent.content).toBe('call mom back')
+    expect(isNamedTarget(intent.target) && intent.target.name).toBe('errands')
+  })
+
+  it('rejects as UNKNOWN when there is a valid page but nothing to add', () => {
+    expect(parseVoiceCommand('add to my shopping notes').type).toBe('UNKNOWN')
+  })
+
+  it('keeps the content in its original casing and punctuation, not folded', () => {
+    const intent = parseVoiceCommand("Add Buy Qur'an, size Medium! to my Shopping notes")
+    expect(intent.type).toBe('APPEND_NOTE')
+    if (intent.type !== 'APPEND_NOTE') throw new Error('unreachable')
+    expect(intent.content).toBe("Buy Qur'an, size Medium!")
+  })
+
+  it('reads other verb phrasings the same way', () => {
+    expect(parseVoiceCommand('append buy eggs to my groceries notes').type).toBe('APPEND_NOTE')
+    expect(parseVoiceCommand('note buy eggs in my journal notes').type).toBe('APPEND_NOTE')
+    expect(parseVoiceCommand('put buy eggs in my groceries notes').type).toBe('APPEND_NOTE')
+  })
+
+  it('is not reversible — it writes into a page nobody has reviewed, same as LOG_TIME', () => {
+    expect(isReversibleVoiceIntent(parseVoiceCommand('add milk to my shopping notes'))).toBe(false)
+  })
+})
+
 describe('findSpokenDuration', () => {
   it('reports the token span it consumed so the caller can lift it out', () => {
     expect(findSpokenDuration(['30', 'minutes', 'to', 'deen'])).toEqual({

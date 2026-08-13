@@ -26,21 +26,43 @@
 // do not or cannot speak to their phone.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 
-import { currentCoachWeekScopeKey, extractCoachProposals, type CoachProposalAction } from "@goalslot/shared";
+import {
+  currentCoachWeekScopeKey,
+  extractCoachProposals,
+  parseVoiceCommand,
+  type AppendNoteIntent,
+  type CoachMessageDto,
+  type ConversationTurnSnapshot,
+  type CoachProposalAction,
+  type ResolvedTarget,
+} from "@goalslot/shared";
 
+import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { MicOrb } from "@/components/voice/MicOrb";
+import {
+  buildNoteCandidates,
+  planNoteCommand,
+  rejectIfNoteReadOnly,
+  type NotePlan,
+} from "@/components/voice/note-commands";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
+import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
-import { coachQueries } from "@/lib/queries";
+import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
+import { hapticWarning } from "@/lib/haptics";
+import { appendNoteParagraph } from "@/lib/note-content";
+import { queueOfflineEdit } from "@/lib/offline";
+import { coachQueries, noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
@@ -53,6 +75,7 @@ const EXAMPLES = [
   "Start tracking time for my deen goal",
   "Add a task to call the bank",
   "Move my study block to 7pm",
+  "Add milk to my shopping notes",
 ];
 
 interface Turn {
@@ -68,6 +91,67 @@ interface Turn {
 
 const EMPTY_DISMISSED: ReadonlySet<number> = new Set();
 
+/**
+ * A spoken "add this to my X notes" command waiting on the user — a page to
+ * pick, or the write itself to confirm. Held outside both `state` (which
+ * useVoiceCapture resets to idle the instant `handleCommand` hands off — see
+ * VoiceCommandOutcome's 'handoff') and `history` (the Coach thread, which an
+ * append command never joins: it is answered by this inline panel, not a
+ * reply bubble). Mirrors TrackerVoiceButton's `Pending` union — same reason,
+ * same shape.
+ */
+type NotePending =
+  | { kind: "choose"; heardName: string; candidates: readonly ResolvedTarget[]; intent: AppendNoteIntent }
+  | { kind: "confirm-append"; target: ResolvedTarget; content: string; message: string };
+
+/**
+ * Rebuilds `Turn[]` from the persisted `CoachMessageDto[]` the server holds
+ * for this scopeKey — the fix that lets Voice survive an app restart without
+ * changing what a live, in-session `history` update looks like (see the
+ * seeding effect below: this only ever runs once, before any turn has been
+ * appended locally).
+ *
+ * A USER message pairs with the very next ASSISTANT message; a USER message
+ * with nothing following it (the conversation ends mid-turn — the last thing
+ * said got no persisted reply) becomes a turn with an empty `reply`, same
+ * shape `removeTurn`'s failure path already produces. An ASSISTANT message
+ * with no preceding USER message (SYSTEM_NARRATIVE rows are filtered out
+ * before this runs, so this shouldn't happen in practice) is dropped rather
+ * than rendered with a blank "You said" bubble.
+ */
+function pairMessagesIntoTurns(messages: readonly CoachMessageDto[]): Turn[] {
+  const sorted = [...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const turns: Turn[] = [];
+  let pendingUser: CoachMessageDto | null = null;
+  let id = 0;
+
+  for (const message of sorted) {
+    if (message.role === "USER") {
+      if (pendingUser) {
+        turns.push({ id: id++, transcript: pendingUser.content, reply: "", streaming: false });
+      }
+      pendingUser = message;
+    } else if (message.role === "ASSISTANT" && pendingUser) {
+      turns.push({ id: id++, transcript: pendingUser.content, reply: message.content, streaming: false });
+      pendingUser = null;
+    }
+  }
+  if (pendingUser) {
+    turns.push({ id: id++, transcript: pendingUser.content, reply: "", streaming: false });
+  }
+  return turns;
+}
+
+/** Flattens the on-screen turns into the shared `{role, content}` shape `archiveConversation` stores. Empty pieces (a turn whose reply never arrived) are dropped rather than archived as blank bubbles. */
+function turnsToArchiveSnapshot(turns: readonly Turn[]): ConversationTurnSnapshot[] {
+  const snapshot: ConversationTurnSnapshot[] = [];
+  for (const turn of turns) {
+    if (turn.transcript.trim().length > 0) snapshot.push({ role: "USER", content: turn.transcript });
+    if (turn.reply.trim().length > 0) snapshot.push({ role: "ASSISTANT", content: turn.reply });
+  }
+  return snapshot;
+}
+
 export default function VoiceScreen() {
   const router = useRouter();
   const analytics = useAnalytics();
@@ -80,6 +164,22 @@ export default function VoiceScreen() {
   // it again into a different microphone, it forwards the words here. See
   // src/components/voice/TrackerVoiceButton.tsx's `escalate`.
   const { transcript: forwarded } = useLocalSearchParams<{ transcript?: string }>();
+
+  // Persisted history for this scopeKey — the same query Coach uses
+  // (coachQueries.chat(scopeKey)). Read ONLY to seed `history` below on
+  // first load, never to keep it in sync afterwards: `history` stays the
+  // locally-appended source of truth for the live session exactly as it was
+  // before, this just stops it from always starting at `[]` after an app
+  // restart.
+  const historyQuery = useQuery(coachQueries.chat(scopeKey));
+  const seededRef = useRef(false);
+
+  // The pages an "add this to my X notes" command can resolve a spoken name
+  // against — same query key notes.tsx and note/[id].tsx use, so this reads
+  // whatever they already have cached rather than opening a second copy of
+  // the list.
+  const notesQuery = useQuery(noteQueries.list());
+  const noteCandidates = useMemo(() => buildNoteCandidates(notesQuery.data ?? []), [notesQuery.data]);
 
   // The whole conversation, oldest first, never wiped by a new turn
   // starting — only ever appended to (or, for a turn that failed outright,
@@ -101,11 +201,40 @@ export default function VoiceScreen() {
   const [dismissedProposals, setDismissedProposals] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
     new Map(),
   );
+  // The append-to-note question currently on screen, if any — see
+  // `NotePending`'s doc comment above.
+  const [notePending, setNotePending] = useState<NotePending | null>(null);
+  const [noteBusy, setNoteBusy] = useState(false);
+  // The result of a confirmed append. Lands outside `state`/`history` for
+  // the same reason `notePending` does: by the time the user presses
+  // "Add it", the mic has long since gone back to idle and no Coach turn was
+  // ever started for this command.
+  const [noteNotice, setNoteNotice] = useState<string | null>(null);
   const nextTurnId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
+  const historySheetRef = useRef<CoachHistorySheetRef>(null);
   /** Guards the forwarded transcript so a re-focus can't replay the same command. */
   const forwardedRef = useRef<string | null>(null);
+
+  // Seeds `history` from the server exactly once, the first time
+  // `historyQuery` settles (success or error) — see the comment on
+  // `historyQuery` above for why this never runs again after that. Skipped
+  // entirely once a turn has already been appended locally (`history.length
+  // > 0` by the time this fires would mean the user started talking before
+  // the seed landed), so a fast first command can never be clobbered by a
+  // slow-arriving persisted history.
+  useEffect(() => {
+    if (seededRef.current || historyQuery.isPending) return;
+    seededRef.current = true;
+    if (history.length > 0) return;
+    const data = historyQuery.data;
+    if (!data || data.length === 0) return;
+    const seeded = pairMessagesIntoTurns(data);
+    if (seeded.length === 0) return;
+    nextTurnId.current = Math.max(nextTurnId.current, seeded.length);
+    setHistory(seeded);
+  }, [historyQuery.isPending, historyQuery.data, history.length]);
 
   const removeTurn = useCallback((turnId: number) => {
     setHistory((current) => current.filter((turn) => turn.id !== turnId));
@@ -117,7 +246,59 @@ export default function VoiceScreen() {
     });
   }, []);
 
-  const handleCommand = useCallback(
+  /**
+   * Fetches a page's current content (reusing the same cached
+   * `noteQueries.detail` query note/[id].tsx's editor reads/writes), appends
+   * the spoken sentence as its own escaped paragraph, and saves it.
+   *
+   * Never called before the write has been confirmed on screen — see
+   * planNoteCommand's header for why this, alone among voice.tsx's writes,
+   * always asks first.
+   */
+  const appendToNote = useCallback(async (target: ResolvedTarget, content: string): Promise<string> => {
+    const detail = await queryClient.fetchQuery(noteQueries.detail(target.id));
+    const readOnlyRejection = rejectIfNoteReadOnly(detail.readOnly);
+    if (readOnlyRejection !== null) {
+      throw new Error(readOnlyRejection.kind === "reject" ? readOnlyRejection.message : "Can't update that page.");
+    }
+
+    const newHtml = appendNoteParagraph(detail.note.content, content);
+    try {
+      await apiClient.notes.update(target.id, { content: newHtml });
+      // Matches note/[id].tsx's saveContent / notes.tsx's toggleFavorite:
+      // invalidate both the one page's detail (so reopening it shows the
+      // new paragraph) and the list (its preview, if it ever grows one).
+      void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.detail(target.id) });
+      void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.list() });
+      return `Added to ${target.name}`;
+    } catch (err) {
+      // Same offline path note/[id].tsx's saveContent already uses for this
+      // exact operation kind — nothing new invented here.
+      const queued = await queueOfflineEdit("note-update", { id: target.id, data: { content: newHtml } }, err);
+      if (queued) return `Saved offline — will add to ${target.name} once you're back online`;
+      throw new Error("Couldn't save that to the page. Please try again.");
+    }
+  }, []);
+
+  /** Parks a note plan as an on-screen question, or reports it failed outright. Never a bare 'run' — see NotePlan's header. */
+  const runNotePlan = useCallback((plan: NotePlan): VoiceCommandOutcome => {
+    switch (plan.kind) {
+      case "escalate":
+        // The only caller filters this out before reaching here; kept so
+        // the switch stays exhaustive against NotePlan's full union.
+        return { kind: "handoff" };
+      case "reject":
+        return { kind: "failed", message: plan.message };
+      case "choose":
+        setNotePending({ kind: "choose", heardName: plan.heardName, candidates: plan.candidates, intent: plan.intent });
+        return { kind: "handoff" };
+      case "confirm-append":
+        setNotePending({ kind: "confirm-append", target: plan.target, content: plan.content, message: plan.message });
+        return { kind: "handoff" };
+    }
+  }, []);
+
+  const runCoachTurn = useCallback(
     async (transcript: string): Promise<VoiceCommandOutcome> => {
       const turnId = nextTurnId.current++;
       // Appended, not assigned — whatever is already in `history` (an
@@ -158,6 +339,12 @@ export default function VoiceScreen() {
         // refetch or the same conversation reads differently depending on
         // which door you came in through.
         void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+        // Every successful send is the only signal this scopeKey ever gets
+        // recorded as a "Previous chats" entry — there's no server endpoint
+        // that would tell a later History-sheet open this conversation
+        // exists otherwise. Fire-and-forget: a lost write here costs the
+        // user a stale preview line, not a functional failure.
+        void recordConversationActivity(scopeKey, accumulated || transcript);
 
         // 'handoff', not 'done': the answer is now on screen — prose, and
         // possibly a change waiting to be confirmed. Flashing a success tick
@@ -183,6 +370,58 @@ export default function VoiceScreen() {
     },
     [removeTurn, scopeKey],
   );
+
+  const handleCommand = useCallback(
+    async (transcript: string): Promise<VoiceCommandOutcome> => {
+      // Tried first, not instead of the Coach: only an utterance that
+      // explicitly ends in "...notes"/"...page(s)" resolves to APPEND_NOTE
+      // at all (see splitContentAndTarget's note-kind-word gate in
+      // packages/shared/src/voice/parse.ts) — anything else, including
+      // "add a task to call the bank", parses UNKNOWN, plans 'escalate', and
+      // falls straight through to the exact same Coach call this screen
+      // always made. That fall-through is the whole compatibility guarantee
+      // this command has to keep.
+      const notePlan = planNoteCommand({ intent: parseVoiceCommand(transcript), candidates: noteCandidates });
+      if (notePlan.kind !== "escalate") return runNotePlan(notePlan);
+
+      return runCoachTurn(transcript);
+    },
+    [noteCandidates, runCoachTurn, runNotePlan],
+  );
+
+  const handlePickNoteCandidate = useCallback(
+    (target: ResolvedTarget) => {
+      if (notePending?.kind !== "choose") return;
+      const plan = planNoteCommand({ intent: notePending.intent, candidates: noteCandidates, forcedTarget: target });
+      runNotePlan(plan);
+    },
+    [noteCandidates, notePending, runNotePlan],
+  );
+
+  const handleConfirmAppend = useCallback(() => {
+    if (notePending?.kind !== "confirm-append") return;
+    const { target, content } = notePending;
+    setNotePending(null);
+    setNoteNotice(null);
+    setNoteBusy(true);
+    void appendToNote(target, content)
+      .then((message) => setNoteNotice(message))
+      .catch((err: unknown) => {
+        hapticWarning();
+        setNoteNotice(err instanceof Error ? err.message : "Couldn't save that to the page.");
+      })
+      .finally(() => setNoteBusy(false));
+  }, [appendToNote, notePending]);
+
+  /** The choose panel's escape hatch — runs the ORIGINAL words through the
+   *  Coach directly, bypassing planNoteCommand entirely so an ambiguous
+   *  page name can't just re-plan straight back into the same 'choose'. */
+  const askCoachInstead = useCallback(() => {
+    if (notePending?.kind !== "choose") return;
+    const { transcript } = notePending.intent;
+    setNotePending(null);
+    void runCoachTurn(transcript);
+  }, [notePending, runCoachTurn]);
 
   const { state, start, stop, cancel, reset, openSettings } = useVoiceCapture({
     voice,
@@ -228,6 +467,10 @@ export default function VoiceScreen() {
         // feature untrustworthy.
         void cancel();
         abortRef.current?.abort();
+        // A note question left pending from this visit must not still be
+        // sitting there — offering a stale "Add it?" for a page the user
+        // may have since deleted — the moment they come back to this tab.
+        setNotePending(null);
       };
       // `hasAnswer` is deliberately absent from the dependencies: it flips
       // the moment a reply starts arriving, and re-running this effect then
@@ -245,18 +488,74 @@ export default function VoiceScreen() {
       openSettings();
       return;
     }
-    if (state.status === "processing") return;
+    if (state.status === "processing" || noteBusy) return;
     // No history reset here. Starting a new recording is a follow-up turn
     // in the same thread, not a fresh conversation — see the note on
     // `history` above. `handleCommand` appends the new turn once there is
     // a transcript to append; nothing needs to happen to the old ones now.
+    setNotePending(null);
     void start();
-  }, [openSettings, start, state.status, stop]);
+  }, [noteBusy, openSettings, start, state.status, stop]);
 
   const applyActions = useCallback(
     (actions: CoachProposalAction[]) => apply({ actions }),
     [apply],
   );
+
+  const openHistory = useCallback(() => {
+    historySheetRef.current?.present();
+  }, []);
+
+  /**
+   * "New chat": unavoidably destructive server-side (see the module header —
+   * one conversation per user+scopeKey, no thread ids to spin a fresh one up
+   * under). The confirm copy says so plainly rather than implying anything
+   * is being "saved" in a way the assistant can still use. Snapshot ->
+   * server clear -> local reset, in that order, so a failed clear never
+   * leaves an archived-but-still-live duplicate hanging around — the
+   * snapshot itself is cheap and local, so taking it unconditionally first
+   * and only acting on it if the clear actually succeeds costs nothing.
+   */
+  const handleNewChat = useCallback(() => {
+    if (history.length === 0) {
+      // Nothing to lose — skip the confirm and the archive both.
+      return;
+    }
+    Alert.alert(
+      "Start a new chat?",
+      "This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Start new chat",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              const snapshot = turnsToArchiveSnapshot(history);
+              if (snapshot.length > 0) {
+                await archiveConversation(scopeKey, snapshot);
+              }
+              try {
+                await apiClient.coach.clearChatHistory(scopeKey);
+              } catch {
+                // The server still has the old conversation — leave the
+                // screen exactly as it was rather than pretending the clear
+                // happened. The snapshot just taken is harmless either way:
+                // it'll sit in Previous chats as an extra copy if the user
+                // retries and succeeds later.
+                Alert.alert("Couldn't start a new chat", "Please try again.");
+                return;
+              }
+              setHistory([]);
+              setDismissedProposals(new Map());
+              void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+              void markLiveConversationReset(scopeKey);
+            })();
+          },
+        },
+      ],
+    );
+  }, [history, scopeKey]);
 
   const dismissProposal = useCallback((turnId: number, index: number) => {
     setDismissedProposals((current) => {
@@ -312,11 +611,22 @@ export default function VoiceScreen() {
       case "unavailable":
         return state.message;
       default:
+        // A confirmed (or failed) append lands here — by the time it
+        // settles, `state` is already back to idle (see appendToNote's
+        // caller: it never runs through useVoiceCapture's own `onCommand`,
+        // so there is no 'success'/'error' state for it to occupy).
+        if (noteNotice !== null) return noteNotice;
         return !hasAnswer ? "Tap the mic and say what you need" : "Tap the mic to ask something else";
     }
   })();
 
   const blocked = state.status === "permission-denied" || state.status === "unavailable";
+  // "Thinking…" as a bare string reads as a screen that's stalled the
+  // instant a reply takes more than a second or two. The dock swaps in the
+  // same animated dot wave Coach's chat bubble uses instead; `statusLine`
+  // above still computes "Thinking…" so screen readers get the words even
+  // though sighted users see the dots.
+  const isThinking = state.status === "processing";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -389,13 +699,86 @@ export default function VoiceScreen() {
       </ScrollView>
 
       <View style={styles.dock}>
-        <Text
-          style={[styles.statusLine, blocked && styles.statusLineBlocked]}
-          accessibilityLiveRegion="polite"
-          numberOfLines={3}
-        >
-          {statusLine}
-        </Text>
+        {notePending?.kind === "choose" ? (
+          <View style={styles.notePanel} accessibilityLiveRegion="polite">
+            <Text style={styles.notePanelTitle}>
+              {notePending.candidates.length > 0
+                ? `Heard "${notePending.heardName}". Which page?`
+                : `Heard "${notePending.heardName}" — no page matches that.`}
+            </Text>
+            {/* Never a silent fallback to the first page in the list: the
+                whole reason this command asks by name is that guessing
+                wrong writes into the wrong page. */}
+            {notePending.candidates.map((candidate) => (
+              <Pressable
+                key={candidate.id}
+                onPress={() => handlePickNoteCandidate(candidate)}
+                accessibilityRole="button"
+                accessibilityLabel={candidate.name}
+                style={({ pressed }) => [styles.noteCandidateRow, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteCandidateName}>{candidate.name}</Text>
+              </Pressable>
+            ))}
+            <View style={styles.notePanelActions}>
+              <Pressable
+                onPress={() => setNotePending(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                style={({ pressed }) => [styles.noteSecondaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteSecondaryLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={askCoachInstead}
+                accessibilityRole="button"
+                accessibilityLabel="Ask GoalSlot AI instead"
+                style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.notePrimaryLabel}>Ask GoalSlot AI</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {notePending?.kind === "confirm-append" ? (
+          <View style={styles.notePanel} accessibilityLiveRegion="polite">
+            {/* Confirmed, unlike start/stop/pause/resume on the Tracker's own
+                mic: this permanently writes unreviewed spoken text into a
+                page, and a misheard word would sit there unnoticed. */}
+            <Text style={styles.notePanelTitle}>{notePending.message}</Text>
+            <View style={styles.notePanelActions}>
+              <Pressable
+                onPress={() => setNotePending(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel, don't add this"
+                style={({ pressed }) => [styles.noteSecondaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteSecondaryLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleConfirmAppend}
+                disabled={noteBusy}
+                accessibilityRole="button"
+                accessibilityLabel={`Add "${notePending.content}" to ${notePending.target.name}`}
+                accessibilityState={{ disabled: noteBusy, busy: noteBusy }}
+                style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.notePrimaryLabel}>{noteBusy ? "Adding…" : "Add it"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.statusLine} accessibilityLiveRegion="polite" accessibilityLabel={statusLine}>
+          {isThinking ? (
+            <TypingIndicator size={8} />
+          ) : (
+            <Text style={[styles.statusLineText, blocked && styles.statusLineBlocked]} numberOfLines={3}>
+              {statusLine}
+            </Text>
+          )}
+        </View>
 
         <CoachBudgetNotice
           error={state.status === "error" ? state.message : null}
@@ -453,8 +836,34 @@ export default function VoiceScreen() {
           >
             <Text style={[styles.textActionLabel, blocked && styles.textActionLabelStrong]}>Type instead</Text>
           </Pressable>
+
+          <Pressable
+            onPress={openHistory}
+            accessibilityRole="button"
+            accessibilityLabel="Previous chats"
+            accessibilityHint="Browse and reopen earlier conversations with the Coach"
+            style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+          >
+            <Text style={styles.textActionLabel}>Previous chats</Text>
+          </Pressable>
+
+          {/* Only offered once there's something on screen worth clearing —
+              see handleNewChat, which also no-ops on an empty thread. */}
+          {hasAnswer ? (
+            <Pressable
+              onPress={handleNewChat}
+              accessibilityRole="button"
+              accessibilityLabel="Start a new chat"
+              accessibilityHint="Clears the assistant's memory of this conversation, after asking to confirm"
+              style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+            >
+              <Text style={styles.textActionLabel}>New chat</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
+
+      <CoachHistorySheet ref={historySheetRef} />
     </SafeAreaView>
   );
 }
@@ -605,10 +1014,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   statusLine: {
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusLineText: {
     ...typography.body,
     color: colors.mutedForeground,
     textAlign: "center",
-    minHeight: 40,
   },
   statusLineBlocked: {
     color: colors.destructive,
@@ -636,5 +1049,72 @@ const styles = StyleSheet.create({
   },
   textActionLabelStrong: {
     color: colors.foreground,
+  },
+  // Mirrors TrackerVoiceButton's `.panel`/candidateRow/panelActions
+  // styles — same shape of question (heard a name, need a pick or a
+  // confirm), same visual treatment, so it reads as the same feature even
+  // though it lives on a different mic.
+  notePanel: {
+    width: "100%",
+    borderRadius: radii.card,
+    borderWidth: 1,
+    borderColor: colors.primaryDark,
+    backgroundColor: colors.card,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  notePanelTitle: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  noteCandidateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.control,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  noteCandidateName: {
+    ...typography.body,
+    color: colors.foreground,
+    flex: 1,
+  },
+  notePanelActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  noteRowPressed: {
+    opacity: 0.75,
+  },
+  noteSecondaryButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.control,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  noteSecondaryLabel: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  notePrimaryButton: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.control,
+    backgroundColor: colors.primary,
+  },
+  notePrimaryLabel: {
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.primaryForeground,
   },
 });

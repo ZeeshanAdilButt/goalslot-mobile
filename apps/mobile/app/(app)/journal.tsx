@@ -46,7 +46,7 @@ import { queryClient } from "@/lib/query-client";
 import { useJournalReminderSync } from "@/lib/useJournalReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
-import { colors, minTouchTarget, radii, spacing, typography } from "@/theme";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme";
 
 // How long the "Saved" confirmation stays up. Saving used to give no visible
 // feedback at all: this screen is a per-day editor, so the text intentionally
@@ -131,6 +131,10 @@ export default function JournalScreen() {
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  // Drives the editor's focus ring — the box otherwise looked identical
+  // whether or not it actually had the keyboard, which made it easy to lose
+  // track of where typing was going.
+  const [isEditorFocused, setIsEditorFocused] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clearing the timeout on unmount stops the "Saved" flag being set on an
@@ -491,14 +495,18 @@ export default function JournalScreen() {
   } else {
     editorContent = (
       <TextInput
-        style={styles.textInput}
+        style={[styles.textInput, isEditorFocused && styles.textInputFocused]}
         multiline
         value={draft}
         onChangeText={(text) => {
           setDraft(text);
           setIsDirty(true);
         }}
-        onFocus={handleEditorFocus}
+        onFocus={() => {
+          setIsEditorFocused(true);
+          handleEditorFocus();
+        }}
+        onBlur={() => setIsEditorFocused(false)}
         placeholder="Write about your day..."
         placeholderTextColor={colors.mutedForeground}
         textAlignVertical="top"
@@ -525,12 +533,14 @@ export default function JournalScreen() {
     recentContent = <EmptyState message="No journal entries yet — write today's to get started" />;
   } else {
     recentContent = (
-      <FlashList
-        data={recentEntries}
-        keyExtractor={(item) => item.id}
-        renderItem={renderRecentItem}
-        contentContainerStyle={styles.recentListContent}
-      />
+      <View style={styles.recentListCard}>
+        <FlashList
+          data={recentEntries}
+          keyExtractor={(item) => item.id}
+          renderItem={renderRecentItem}
+          contentContainerStyle={styles.recentListContent}
+        />
+      </View>
     );
   }
 
@@ -539,9 +549,11 @@ export default function JournalScreen() {
     // date navigation rendered underneath the system status bar on devices
     // with a tall status bar (reported on a Samsung S22).
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <Text style={styles.eyebrow}>Journal</Text>
+
       <View style={styles.dateNav}>
         <Pressable
-          style={styles.navArrow}
+          style={({ pressed }) => [styles.navArrow, pressed && styles.navArrowPressed]}
           onPress={goToPreviousDay}
           // Disabled defensively while dictating: the feature always targets
           // today and there's no in-UI trigger for voice capture on a
@@ -556,7 +568,7 @@ export default function JournalScreen() {
           {/* The icon set only ships a right-facing chevron; rotating it keeps
               this file from having to touch Icon.tsx (owned elsewhere). */}
           <View style={styles.flipHorizontal}>
-            <Icon name="chevron" size={22} color={isDictating ? colors.border : colors.foreground} />
+            <Icon name="chevron" size={18} color={isDictating ? colors.border : colors.foreground} />
           </View>
         </Pressable>
 
@@ -574,7 +586,7 @@ export default function JournalScreen() {
         </Pressable>
 
         <Pressable
-          style={styles.navArrow}
+          style={({ pressed }) => [styles.navArrow, pressed && styles.navArrowPressed]}
           onPress={goToNextDay}
           disabled={!canGoForward || isDictating}
           hitSlop={8}
@@ -584,7 +596,7 @@ export default function JournalScreen() {
         >
           <Icon
             name="chevron"
-            size={22}
+            size={18}
             color={canGoForward && !isDictating ? colors.foreground : colors.border}
           />
         </Pressable>
@@ -623,7 +635,8 @@ export default function JournalScreen() {
       ) : null}
 
       {voiceMode === "blocked" ? (
-        <View style={styles.voiceNotice} accessibilityLiveRegion="polite">
+        <View style={[styles.voiceNotice, styles.voiceNoticeBlocked]} accessibilityLiveRegion="polite">
+          <Icon name="alert" size={18} color={colors.destructive} />
           <Text style={styles.voiceNoticeText}>
             {voiceState.message.length > 0 ? voiceState.message : "Couldn't start voice capture."}
           </Text>
@@ -715,7 +728,7 @@ export default function JournalScreen() {
           <Icon
             name={isPendingSync ? "refresh" : "check"}
             size={16}
-            color={isPendingSync ? colors.warningForeground : colors.successForeground}
+            color={isPendingSync ? colors.warning : colors.success}
           />
         ) : null}
         <Text
@@ -739,19 +752,37 @@ export default function JournalScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  // Screen-identity label, matching the eyebrow+title pattern index.tsx and
+  // timer.tsx both open with — this screen just has no separate title
+  // beneath it because the date nav below already IS the title.
+  eyebrow: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: colors.mutedForeground,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
   },
   dateNav: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+    paddingTop: spacing.xs,
   },
   navArrow: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
+    borderRadius: radii.full,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: colors.secondary,
+  },
+  navArrowPressed: {
+    backgroundColor: colors.muted,
   },
   flipHorizontal: {
     transform: [{ scaleX: -1 }],
@@ -759,24 +790,21 @@ const styles = StyleSheet.create({
   voicePriming: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.secondary,
   },
   voicePrimingText: {
     fontSize: typography.size.xs,
+    fontWeight: typography.weight.medium,
     color: colors.mutedForeground,
   },
+  // Brand-tinted invite, echoing the "brand-accented container" convention
+  // documented in theme/foundation.ts (primaryMuted/primaryBorder/primaryText)
+  // rather than blending into the screen as a plain unstyled row — this is
+  // the entry point into the screen's one voice feature.
   voiceIdleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.sm,
-  },
-  voiceIdleLabel: {
-    flex: 1,
-    fontSize: typography.size.sm,
-    color: colors.mutedForeground,
-  },
-  voicePanel: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
@@ -785,8 +813,27 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     borderRadius: radii.md,
     borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.primaryBorder,
+    backgroundColor: colors.primaryMuted,
+  },
+  voiceIdleLabel: {
+    flex: 1,
+    fontSize: typography.size.sm,
+    fontWeight: typography.weight.medium,
+    color: colors.primaryText,
+  },
+  voicePanel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.card,
+    ...shadows.subtle,
   },
   voiceCaption: {
     flex: 1,
@@ -821,6 +868,14 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.card,
   },
+  // "Blocked" (permission denied / unavailable) is a harder stop than
+  // "soft-stopped" (just paused) — the destructive tint plus the alert icon
+  // next to it says so at a glance, matching the muted-bg/solid-foreground
+  // pairing IconBadge.tsx and Badge.tsx already use for this exact tone.
+  voiceNoticeBlocked: {
+    borderColor: colors.destructiveMuted,
+    backgroundColor: colors.destructiveMuted,
+  },
   voiceNoticeText: {
     flex: 1,
     fontSize: typography.size.xs,
@@ -850,8 +905,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   dateLabel: {
-    fontSize: typography.size.md,
+    // One step up from the old size.md — the date IS this screen's title
+    // (there's no separate headline above it), so it needs the same visual
+    // weight index.tsx's `greeting` and timer.tsx's `headerTitle` carry.
+    fontSize: typography.size.xl,
     fontWeight: typography.weight.bold,
+    letterSpacing: -0.4,
     color: colors.foreground,
   },
   dateSublabel: {
@@ -870,15 +929,27 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   textInput: {
-    minHeight: 160,
-    maxHeight: 260,
-    borderRadius: radii.md,
+    minHeight: 200,
+    maxHeight: 340,
+    borderRadius: radii.lg,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.card,
-    padding: spacing.md,
-    fontSize: typography.size.md,
+    padding: spacing.lg,
+    // A step above the old size.md (16 either way, but pinned explicitly
+    // here with its own lineHeight) — long-form writing reads better with
+    // generous leading than the UI-row default the shared scale assumes.
+    fontSize: 16,
+    lineHeight: 24,
     color: colors.foreground,
+    ...shadows.subtle,
+  },
+  // The box otherwise looked identical focused or not — this is the same
+  // "ring" affordance the web app's `--ring` token exists for, translated to
+  // a border-color swap since RN has no outline.
+  textInputFocused: {
+    borderColor: colors.ring,
+    borderWidth: 1.5,
   },
   saveButton: {
     flexDirection: "row",
@@ -890,30 +961,44 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.ink,
+    ...shadows.subtle,
   },
   saveButtonDisabled: {
     backgroundColor: colors.border,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveButtonSaved: {
     backgroundColor: colors.successMuted,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveButtonQueued: {
     backgroundColor: colors.warningMuted,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveButtonText: {
     color: colors.white,
     fontWeight: typography.weight.semibold,
     fontSize: typography.size.sm,
   },
+  // `success`/`warning` (the solid, saturated colours), not
+  // `successForeground`/`warningForeground` — those are text-on-SOLID-fill
+  // colours (white / near-black) meant to pair with `colors.success` as a
+  // background, not with the light `*Muted` tint these two buttons actually
+  // use. The previous pairing put white text on a near-white mint fill,
+  // which was flatly unreadable. Badge.tsx / IconBadge.tsx already use the
+  // muted-bg + solid-foreground pairing this switches to.
   saveButtonTextSaved: {
-    color: colors.successForeground,
+    color: colors.success,
   },
   saveButtonTextQueued: {
-    color: colors.warningForeground,
+    color: colors.warning,
   },
   recentSection: {
     flex: 1,
-    marginTop: 20,
+    marginTop: spacing.xxl,
   },
   recentHeading: {
     fontSize: typography.size.xs,
@@ -922,17 +1007,32 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
     paddingHorizontal: spacing.lg,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
   },
   recentListArea: {
     flex: 1,
+  },
+  // Same elevated-surface treatment as index.tsx's `card` (border + shadow)
+  // — the list previously sat directly on the screen background with
+  // nothing to separate it as its own surface. Margin (not the loading/
+  // error/empty branches' own padding) is what keeps this aligned with the
+  // screen's other spacing.lg gutters without double-padding those branches.
+  recentListCard: {
+    flex: 1,
+    marginHorizontal: spacing.lg,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    overflow: "hidden",
+    ...shadows.card,
   },
   recentListContent: {
     paddingVertical: 4,
   },
   recentRow: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
     gap: 2,

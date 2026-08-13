@@ -206,6 +206,45 @@ describe('rankTargets', () => {
   })
 })
 
+describe('resolveSpokenTarget — resolving an APPEND_NOTE target', () => {
+  // 'note' is just another TargetKind by the time it reaches here — this
+  // pins that rankTargets/resolveSpokenTarget needed no changes at all to
+  // support it, per the parser producing a real note-kind NamedTarget end
+  // to end.
+  const NOTES: readonly TargetCandidate[] = [
+    { id: 'note_shopping_a', name: 'Shopping', kind: 'note' },
+    { id: 'note_shopping_b', name: 'Shopping', kind: 'note' },
+    { id: 'note_journal', name: 'Journal', kind: 'note' },
+  ]
+
+  it('resolves the target parseVoiceCommand produced for "add milk to my shopping notes"', () => {
+    const intent = parseVoiceCommand('add milk to my journal notes')
+    expect(intent.type).toBe('APPEND_NOTE')
+    if (intent.type !== 'APPEND_NOTE') throw new Error('unreachable')
+    expect(isNamedTarget(intent.target)).toBe(true)
+    if (!isNamedTarget(intent.target)) throw new Error('unreachable')
+
+    const resolution = resolveSpokenTarget(intent.target, NOTES)
+    expect(resolution.status).toBe('confident')
+    expect(resolution.target?.id).toBe('note_journal')
+  })
+
+  it('asks rather than guessing between two identically-named pages', () => {
+    // Two pages titled the same thing is the everyday version of this, not
+    // a contrived one — nothing stops a user from creating "Shopping" twice.
+    const resolution = resolveSpokenTarget(namedTarget('note', 'shopping'), NOTES)
+    expect(resolution.status).toBe('needs-confirmation')
+    expect(resolution.reason).toBe('ambiguous')
+    expect(resolution.candidates.map((c) => c.id)).toEqual(['note_shopping_a', 'note_shopping_b'])
+  })
+
+  it('narrows to notes only, leaving a same-named goal or task alone', () => {
+    const mixed: readonly TargetCandidate[] = [...NOTES, { id: 'goal_journal', name: 'Journal', kind: 'goal' }]
+    const resolution = resolveSpokenTarget(namedTarget('note', 'journal'), mixed)
+    expect(resolution.target?.id).toBe('note_journal')
+  })
+})
+
 describe('nameSimilarity', () => {
   it('scores an exact fold as 1', () => {
     expect(nameSimilarity("Qur'an Study", 'quran study')).toBe(1)
