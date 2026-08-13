@@ -147,6 +147,97 @@ describe('createOfflineSync', () => {
     expect(await outbox.getOutboxCount()).toBe(0)
   })
 
+  it('calls the operation\'s onDropped hook with the payload and error on a definite (non-5xx) rejection', async () => {
+    const { outbox, registry, sync } = harness()
+    const rejection = { response: { status: 403 } }
+    const execute = vi.fn().mockRejectedValue(rejection)
+    const onDropped = vi.fn()
+    registry.registerOperation('goal.create', { execute, onDropped })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create', payload: { title: 'Test' } }))
+
+    await sync.drainOutbox()
+
+    expect(onDropped).toHaveBeenCalledTimes(1)
+    expect(onDropped).toHaveBeenCalledWith({ title: 'Test' }, rejection)
+  })
+
+  it('calls onDropped when a 5xx entry is dropped for exceeding the retry cap', async () => {
+    const { outbox, registry } = harness()
+    const rejection = { response: { status: 500 } }
+    const execute = vi.fn().mockRejectedValue(rejection)
+    const onDropped = vi.fn()
+    registry.registerOperation('goal.create', { execute, onDropped })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create', retries: 4 }))
+
+    const sync = createOfflineSync({
+      outbox,
+      registry,
+      isOnline: () => true,
+      subscribeOnline: () => () => {},
+      invalidateQueries: vi.fn(),
+      maxRetries: 5,
+    })
+
+    await sync.drainOutbox()
+
+    expect(onDropped).toHaveBeenCalledTimes(1)
+    expect(onDropped).toHaveBeenCalledWith(expect.anything(), rejection)
+  })
+
+  it('does not call onDropped on a network-style failure that leaves the entry queued for retry', async () => {
+    const { outbox, registry, sync } = harness()
+    const execute = vi.fn().mockRejectedValue(new Error('Network Error'))
+    const onDropped = vi.fn()
+    registry.registerOperation('goal.create', { execute, onDropped })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create' }))
+
+    await sync.drainOutbox()
+
+    expect(onDropped).not.toHaveBeenCalled()
+    expect(await outbox.getOutboxCount()).toBe(1)
+  })
+
+  it('does not call onDropped when a 5xx is bumped and retried under the cap (not yet dropped)', async () => {
+    const { outbox, registry, sync } = harness()
+    const execute = vi.fn().mockRejectedValue({ response: { status: 500 } })
+    const onDropped = vi.fn()
+    registry.registerOperation('goal.create', { execute, onDropped })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create' }))
+
+    await sync.drainOutbox()
+
+    expect(onDropped).not.toHaveBeenCalled()
+    expect(await outbox.getOutboxCount()).toBe(1)
+  })
+
+  it('does not require onDropped to be set — an operation that omits it drops silently, same as before', async () => {
+    const { outbox, registry, sync, notify } = harness()
+    const execute = vi.fn().mockRejectedValue({ response: { status: 400 } })
+    registry.registerOperation('goal.create', { execute })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create' }))
+
+    await expect(sync.drainOutbox()).resolves.not.toThrow()
+
+    expect(await outbox.getOutboxCount()).toBe(0)
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('could not be synced'), 'error')
+  })
+
+  it('an onDropped hook that throws does not interrupt the drain of later entries', async () => {
+    const { outbox, registry, sync } = harness()
+    const execute = vi.fn().mockRejectedValue({ response: { status: 400 } })
+    const throwingOnDropped = vi.fn(() => {
+      throw new Error('boom')
+    })
+    registry.registerOperation('goal.create', { execute, onDropped: throwingOnDropped })
+    await outbox.addToOutbox(makeEntry({ id: '1', kind: 'goal.create' }))
+    await outbox.addToOutbox(makeEntry({ id: '2', kind: 'goal.create' }))
+
+    await expect(sync.drainOutbox()).resolves.not.toThrow()
+
+    expect(throwingOnDropped).toHaveBeenCalledTimes(2)
+    expect(await outbox.getOutboxCount()).toBe(0)
+  })
+
   it('reports pending count via the injected callback', async () => {
     const { outbox, registry, onPendingCountChange } = harness()
     registry.registerOperation('goal.create', { execute: vi.fn().mockResolvedValue(undefined) })

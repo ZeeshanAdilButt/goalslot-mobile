@@ -14,7 +14,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["**/*.cjs", "**/*.config.js"],
+    files: ["**/*.cjs", "**/*.config.js", "**/plugins/**/*.js"],
     languageOptions: {
       globals: {
         module: "writable",
@@ -24,8 +24,10 @@ export default tseslint.config(
       },
     },
     rules: {
-      // Metro/babel config files are loaded directly by Node/Metro as plain
-      // CommonJS, not run through this project's TS/ESM pipeline — `require()`
+      // Metro/babel config files (and Expo config plugins under any
+      // `plugins/` dir, e.g. apps/mobile/plugins/withAppActions.js) are
+      // loaded directly by Node/Expo CLI as plain CommonJS at prebuild
+      // time, not run through this project's TS/ESM pipeline — `require()`
       // here isn't a stylistic choice, it's the only thing that works.
       "@typescript-eslint/no-require-imports": "off",
     },

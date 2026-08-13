@@ -158,7 +158,7 @@ describe("describeTimerReminder", () => {
 
   it("falls back to the app's own unresolved-session wording", () => {
     expect(describeTimerReminder(null).body).toBe(
-      "You are working on: Focus session. Still strictly focused?",
+      "You are working on: Untitled session. Still strictly focused?",
     );
   });
 
@@ -172,11 +172,11 @@ describe("describeTimerReminder", () => {
   it("still reads sensibly for a session deliberately tracked with no goal", () => {
     const { title, body } = describeTimerReminder(null);
     expect(title).toBe("Time Check");
-    expect(body).toBe("You are working on: Focus session. Still strictly focused?");
+    expect(body).toBe("You are working on: Untitled session. Still strictly focused?");
     expect(body).not.toMatch(/undefined|null/);
     // Matches the ongoing shade entry's wording for the same session, so one
     // session is never called two different things on the same device.
-    expect(body).toContain("Focus session");
+    expect(body).toContain("Untitled session");
   });
 });
 

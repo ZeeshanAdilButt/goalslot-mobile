@@ -44,8 +44,10 @@ import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCaptu
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticWarning } from "@/lib/haptics";
 import { outbox } from "@/lib/offline";
+import { isPlanLimitError } from "@/lib/plan-limit";
 import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useTimerStore } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
@@ -56,7 +58,8 @@ function hasResponse(err: unknown): boolean {
   return Boolean((err as { response?: unknown } | undefined)?.response);
 }
 
-const UNRESOLVED_TARGET_LABEL = "Focus session";
+/** Same shared constant timer.tsx's UNRESOLVED_TARGET_LABEL points at — see src/lib/session-label.ts. */
+const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;
 
 export interface TrackerVoiceButtonProps {
   /**
@@ -65,6 +68,17 @@ export interface TrackerVoiceButtonProps {
    * stop. Voice calls it rather than reimplementing it.
    */
   onStopSession: () => void;
+  /**
+   * True when a cross-device server session (dw-time-api PR #72/#73's
+   * ActiveTimerSession) is the one actually running — see timer.tsx's header
+   * comment. This component otherwise only ever reads the LOCAL zustand
+   * store (`status` below), so without this flag "start tracking X" spoken
+   * while a server session is already active would create a second,
+   * independent local session — the exact double-timer bug the screen's own
+   * Start button is guarded against, just reached through the microphone
+   * instead of a tap.
+   */
+  serverSessionActive: boolean;
 }
 
 /** A question waiting on the user, held while the mic is back at rest. */
@@ -72,7 +86,7 @@ type Pending =
   | { kind: "choose"; heardName: string; candidates: readonly ResolvedTarget[]; intent: ActionableVoiceIntent }
   | { kind: "confirm-log"; minutes: number; target: ResolvedTarget | null; message: string };
 
-export function TrackerVoiceButton({ onStopSession }: TrackerVoiceButtonProps) {
+export function TrackerVoiceButton({ onStopSession, serverSessionActive }: TrackerVoiceButtonProps) {
   const router = useRouter();
   const analytics = useAnalytics();
   const { voice } = useCapabilities();
@@ -149,6 +163,16 @@ export function TrackerVoiceButton({ onStopSession }: TrackerVoiceButtonProps) {
           });
           return `Saved offline — ${minutes} min will sync when you're back on`;
         }
+        // Same failure mode as the Time Tracker's own Stop button (see
+        // timer.tsx's handleStop): a free-plan user past today's entry cap
+        // gets a 403 here too. There's no running timer to protect in this
+        // path — this writes one already-spoken duration, not a live
+        // session — but "please try again" is actively misleading when a
+        // retry is guaranteed to 403 identically, so this still needs its
+        // own honest wording rather than the generic one.
+        if (isPlanLimitError(err)) {
+          throw new Error("You've reached today's plan limit for tracked sessions. Upgrade or wait for a new day.");
+        }
         throw new Error("Couldn't save that time entry. Please try again.");
       } finally {
         setLogging(false);
@@ -222,9 +246,22 @@ export function TrackerVoiceButton({ onStopSession }: TrackerVoiceButtonProps) {
   const handleCommand = useCallback(
     async (transcript: string): Promise<VoiceCommandOutcome> => {
       const intent = parseVoiceCommand(transcript);
+
+      // See this component's `serverSessionActive` doc comment: a server
+      // session is already running (started here, on another device, or by
+      // the Coach), so "start tracking X" must not spin up a second, local
+      // one. Intercepted before `planTrackingCommand` sees it at all, rather
+      // than passed through as `timerStatus: "running"`, so the reply is
+      // always this exact, honest message instead of whatever wording that
+      // function's own "already tracking" branches happen to produce for a
+      // LOCAL session.
+      if (serverSessionActive && intent.type === "START_TRACKING") {
+        return { kind: "failed", message: "A session is already running — open the Time Tracker to control it." };
+      }
+
       return runPlan(planTrackingCommand({ intent, timerStatus: status, candidates }), transcript);
     },
-    [candidates, runPlan, status],
+    [candidates, runPlan, serverSessionActive, status],
   );
 
   const { state, start: listen, stop: stopListening, cancel, reset, openSettings } = useVoiceCapture({

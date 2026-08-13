@@ -33,17 +33,15 @@ const path = require("path");
 //
 // Coordination note: this file and android-shortcuts.xml are shared
 // infrastructure for both the "start timer" and "talk about my day" voice
-// commands. Each command's build agent should add its OWN string entries
-// to NEW_STRINGS below and its OWN <shortcut>/<capability> block to the
-// XML file, without editing another agent's entries.
+// commands; both commands' string entries and XML blocks have landed here
+// as siblings, matching android-shortcuts.xml's own ownership note.
 const SHORTCUTS_XML_SOURCE = path.join(__dirname, "android-shortcuts.xml");
 
-// Added by the Android-timer agent. Android-journal agent: add your
-// shortcut_journal_short / shortcut_journal_long entries as additional
-// array items below — do not edit the two entries already here.
 const NEW_STRINGS = [
   ["shortcut_start_timer_short", "Start timer"],
   ["shortcut_start_timer_long", "Start timer for the current block"],
+  ["shortcut_journal_short", "Talk about my day"],
+  ["shortcut_journal_long", "Start today's journal entry"],
 ];
 
 function withAppActionsShortcutsXml(config) {

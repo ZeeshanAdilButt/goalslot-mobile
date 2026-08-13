@@ -25,6 +25,7 @@ import { createSharingApi } from './sharing'
 import { createScheduleApi } from './schedule'
 import { createTasksApi } from './tasks'
 import { createTimeEntriesApi } from './time-entries'
+import { createTimerSessionApi } from './timer-session'
 import { createUsersApi } from './users'
 
 interface RetryableRequestConfig extends InternalAxiosRequestConfig {
@@ -178,6 +179,9 @@ export function createApiClient(config: ApiClientConfig) {
     tasks: createTasksApi(api),
     schedule: createScheduleApi(api),
     timeEntries: createTimeEntriesApi(api),
+    // Cross-device active timer session (dw-time-api PR #72/#73's
+    // ActiveTimerSession) — see ./timer-session.ts.
+    timerSession: createTimerSessionApi(api),
     categories: createCategoriesApi(api),
     labels: createLabelsApi(api),
     journal: createJournalApi(api),

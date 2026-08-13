@@ -18,19 +18,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
 
 import { getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
+import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
+import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, spacing, typography } from "@/theme";
+import { useCapabilities } from "@/providers/capabilities-provider";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme";
 
 // How long the "Saved" confirmation stays up. Saving used to give no visible
 // feedback at all: this screen is a per-day editor, so the text intentionally
@@ -40,6 +43,45 @@ const SAVED_CONFIRMATION_MS = 2000;
 
 const RECENT_WINDOW_DAYS = 14;
 const RECENT_SKELETON_ROWS = 4;
+
+// --- "Talk about my day" voice capture -------------------------------------
+//
+// useVoiceCapture (src/hooks/useVoiceCapture.ts) is built for a single
+// utterance: mic opens, one phrase, `settle()` fires `onCommand` once, mic
+// returns to idle. Dictating a whole journal entry needs continuous
+// multi-sentence capture, so — exactly like voice.tsx and TrackerVoiceButton
+// layer their own semantics on top of the same shared hook — this screen
+// composes an auto-restart loop entirely at the call site. The hook itself
+// is untouched: every time a session settles (a phrase committed, or a
+// recoverable silent gap), `captureActiveRef` below decides whether to call
+// `start()` again, which is what makes the mic feel continuously open
+// despite the hook's one-shot, 15s-capped design.
+//
+// How many consecutive *silent* segments (an empty transcript — the
+// recognizer heard nothing) are tolerated before giving up and surfacing a
+// message, rather than looping the mic forever if, say, another app grabbed
+// it. A silent segment and a genuine VoiceError both land in the hook as
+// `{ status: 'error', transcript: '' }` (see handleError/settle in the
+// hook), so the same counter and cap cover both.
+const MAX_SILENT_RETRIES = 2;
+
+/** How long the "stopped listening" notice stays up before auto-clearing. */
+const SOFT_STOP_NOTICE_MS = 4000;
+
+/**
+ * Appends a just-dictated phrase into the existing draft, with a single
+ * separating space — never a parallel "voice text" concept, just more text
+ * in the same box the manual editor already writes to.
+ */
+function appendDictatedPhrase(existing: string, phrase: string): string {
+  const trimmedPhrase = phrase.trim();
+  if (trimmedPhrase.length === 0) return existing;
+  if (existing.length === 0) return trimmedPhrase;
+  return /\s$/.test(existing) ? `${existing}${trimmedPhrase}` : `${existing} ${trimmedPhrase}`;
+}
+
+/** Journal's own state, layered above the hook's `VoiceCaptureStatus` — see the header comment above. */
+type JournalVoiceMode = "inactive" | "priming" | "listening" | "blocked" | "soft-stopped";
 
 function addDays(dateKey: string, delta: number): string {
   const [year, month, day] = dateKey.split("-").map(Number);
@@ -56,6 +98,7 @@ function formatDisplayDate(dateKey: string): string {
 
 export default function JournalScreen() {
   const analytics = useAnalytics();
+  const { voice } = useCapabilities();
   const today = useMemo(() => todayKey(), []);
   const [selectedDate, setSelectedDate] = useState(today);
   const [draft, setDraft] = useState("");
@@ -79,7 +122,206 @@ export default function JournalScreen() {
     }, [analytics]),
   );
 
+  // --- "Talk about my day" voice capture ------------------------------
+  // Deep link contract: `/journal?voice=1` (goalslot://journal?voice=1),
+  // matching timer.tsx's own `?autostart=1&goalId=...` idiom. The builder
+  // side (`journalVoiceCaptureDeepLink`) lives in src/lib/deep-links.ts,
+  // owned by the platform build agents wiring App Intents / App Actions to
+  // it — this screen only needs to agree on the param name, `voice`.
+  const { voice: voiceParam } = useLocalSearchParams<{ voice?: string }>();
+  const [voiceMode, setVoiceMode] = useState<JournalVoiceMode>("inactive");
+  /** Guards against replaying the same `voice=1` param on a later natural re-focus — same pattern as voice.tsx's `forwardedRef`. */
+  const consumedVoiceParamRef = useRef(false);
+  /** True while the auto-restart chain should keep reopening the mic after each session settles. Flipped false before any stop/cancel so the chain doesn't race back open. */
+  const captureActiveRef = useRef(false);
+  /** Consecutive silent (empty-transcript) segments this dictation run — capped by MAX_SILENT_RETRIES. */
+  const silentRetryCountRef = useRef(0);
+  const softStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (softStopTimer.current) clearTimeout(softStopTimer.current);
+    },
+    [],
+  );
+
+  const handleVoiceCommand = useCallback(async (transcript: string): Promise<VoiceCommandOutcome> => {
+    // A committed phrase means the mic is hearing fine — reset the silent
+    // streak so an occasional pause later doesn't inherit progress toward
+    // the cap from earlier in the same dictation run.
+    silentRetryCountRef.current = 0;
+    // Same setters the manual editor uses below — dictated text is just
+    // text in the same box, saved the same way, never a parallel concept.
+    setDraft((prev) => appendDictatedPhrase(prev, transcript));
+    setIsDirty(true);
+    // 'handoff', not 'done': the words already landed in the draft above,
+    // so there is nothing left for the hook's own success tick to confirm —
+    // and flashing one after every sentence would be exhausting over a
+    // multi-minute dictation.
+    return { kind: "handoff" };
+  }, []);
+
+  const {
+    state: voiceState,
+    start: startVoice,
+    stop: stopVoice,
+    cancel: cancelVoice,
+    reset: resetVoice,
+    openSettings: openVoiceSettings,
+  } = useVoiceCapture({ voice, onCommand: handleVoiceCommand, label: "Journal dictation" });
+
+  // Trigger + cleanup, mirroring voice.tsx's single useFocusEffect shape:
+  // consume the deep-link param on focus, always close the mic on blur.
+  useFocusEffect(
+    useCallback(() => {
+      if (voiceParam === "1" && !consumedVoiceParamRef.current) {
+        consumedVoiceParamRef.current = true;
+        // The feature is defined as "today's entry" — force today regardless
+        // of whatever day was showing, mirroring `goToToday`.
+        setSelectedDate(today);
+        setVoiceMode("priming");
+      }
+      return () => {
+        // Leaving the screen must close the microphone. Always — matching
+        // the hook's own header comment. Cancel, not stop: nobody is left to
+        // confirm an odd trailing fragment landing unattended in the entry.
+        captureActiveRef.current = false;
+        silentRetryCountRef.current = 0;
+        if (softStopTimer.current) {
+          clearTimeout(softStopTimer.current);
+          softStopTimer.current = null;
+        }
+        void cancelVoice();
+        setVoiceMode("inactive");
+      };
+    }, [cancelVoice, today, voiceParam]),
+  );
+
+  // priming -> listening: only once today's entry has actually resolved —
+  // journal.tsx's own effects (below) reset `draft` on `selectedDate` change
+  // and again when `entryQuery.data` resolves. Starting capture before that
+  // second effect ran would let dictated text be silently wiped the instant
+  // the fetch completes. Also doubles as the "fast path": if the entry was
+  // already loaded/cached the moment the param was read, this condition is
+  // already true on the very next render, so priming is never visibly shown.
   const entryQuery = useQuery(journalQueries.byDate(selectedDate));
+  useEffect(() => {
+    if (voiceMode !== "priming") return;
+    if (selectedDate !== today) return;
+    if (entryQuery.data === undefined) return;
+    captureActiveRef.current = true;
+    setVoiceMode("listening");
+  }, [entryQuery.data, selectedDate, today, voiceMode]);
+
+  // Defensive: if today's entry fails to load while priming, there is
+  // nothing to safely start capture against (and no TextInput to tap into,
+  // since the error branch below replaces the editor with ErrorState) — fall
+  // back to plain "inactive" rather than leaving "Getting ready to listen…"
+  // on screen forever.
+  useEffect(() => {
+    if (voiceMode !== "priming" || !entryQuery.isError) return;
+    setVoiceMode("inactive");
+  }, [entryQuery.isError, voiceMode]);
+
+  // The auto-restart chain: whenever the hook drops back to idle while a
+  // capture run is still meant to be active, immediately reopen the mic.
+  // This single effect covers both the very first open (priming -> listening
+  // sets `voiceMode` to "listening" while the hook is still virgin-idle) and
+  // every subsequent restart after a phrase commits (`handoff` -> idle) or a
+  // silent segment is retried (see the effect below, which routes back
+  // through here via `resetVoice()` rather than calling `start()` itself —
+  // one restart mechanism, not two racing ones).
+  useEffect(() => {
+    if (voiceMode !== "listening") return;
+    if (!captureActiveRef.current) return;
+    if (voiceState.status !== "idle") return;
+    void startVoice();
+  }, [startVoice, voiceMode, voiceState.status]);
+
+  // A session ending with an empty transcript reaches the hook as
+  // `{ status: 'error', transcript: '' }` whether it was silence (settle()'s
+  // own short-circuit) or a genuine VoiceError with nothing heard yet
+  // (handleError always clears transcript) — both are handled the same way
+  // here: don't show the hook's generic "Didn't catch that" copy (it reads
+  // as a failure mid-dictation when it's often just a pause), retry silently
+  // up to the cap, then give up calmly rather than loop the mic forever.
+  useEffect(() => {
+    if (voiceMode !== "listening") return;
+    if (voiceState.status !== "error" || voiceState.transcript !== "") return;
+    if (silentRetryCountRef.current < MAX_SILENT_RETRIES) {
+      silentRetryCountRef.current += 1;
+      resetVoice();
+      return;
+    }
+    captureActiveRef.current = false;
+    resetVoice();
+    setVoiceMode("soft-stopped");
+    if (softStopTimer.current) clearTimeout(softStopTimer.current);
+    softStopTimer.current = setTimeout(() => {
+      setVoiceMode((current) => (current === "soft-stopped" ? "inactive" : current));
+    }, SOFT_STOP_NOTICE_MS);
+  }, [resetVoice, voiceMode, voiceState.status, voiceState.transcript]);
+
+  // permission-denied / unavailable mid-flow -> blocked. Terminal for this
+  // session: no auto-retry, matching the hook's own "no retry loop" comment.
+  useEffect(() => {
+    if (voiceMode !== "priming" && voiceMode !== "listening") return;
+    if (voiceState.status !== "permission-denied" && voiceState.status !== "unavailable") return;
+    captureActiveRef.current = false;
+    setVoiceMode("blocked");
+  }, [voiceMode, voiceState.status]);
+
+  /** Explicit "Stop listening" pill — always visible while capturing. Commits whatever is in flight (stop, not cancel) rather than discarding it. */
+  const stopDictation = useCallback(() => {
+    // Flipped false BEFORE stop()'s settle resolves, so the auto-chain
+    // effect above does not see idle-while-active and reopen the mic.
+    captureActiveRef.current = false;
+    setVoiceMode("inactive");
+    void stopVoice();
+  }, [stopVoice]);
+
+  /** Tapping the mic again from the "stopped listening" notice — a fresh attempt, not a retry of the same failed one. */
+  const resumeDictation = useCallback(() => {
+    if (softStopTimer.current) {
+      clearTimeout(softStopTimer.current);
+      softStopTimer.current = null;
+    }
+    silentRetryCountRef.current = 0;
+    resetVoice();
+    captureActiveRef.current = true;
+    setVoiceMode("listening");
+  }, [resetVoice]);
+
+  const dismissVoiceNotice = useCallback(() => {
+    if (softStopTimer.current) {
+      clearTimeout(softStopTimer.current);
+      softStopTimer.current = null;
+    }
+    resetVoice();
+    setVoiceMode("inactive");
+  }, [resetVoice]);
+
+  /**
+   * Tapping directly into the editor is the second way to stop dictation —
+   * it means the user wants to type. This also sidesteps concurrent
+   * programmatic appends and manual typing racing over cursor position in a
+   * controlled TextInput, by making capture and manual editing mutually
+   * exclusive: never both live at once.
+   */
+  const handleEditorFocus = useCallback(() => {
+    if (voiceMode === "listening" || voiceMode === "priming") {
+      captureActiveRef.current = false;
+      setVoiceMode("inactive");
+      void stopVoice();
+      return;
+    }
+    if (voiceMode === "blocked" || voiceMode === "soft-stopped") {
+      dismissVoiceNotice();
+    }
+  }, [dismissVoiceNotice, stopVoice, voiceMode]);
+
+  const isDictating = voiceMode === "priming" || voiceMode === "listening";
+
   const entryKey = useMemo(() => journalQueries.journalQueries.byDate(selectedDate), [selectedDate]);
 
   // Clear the draft immediately on date change so the previous day's text
@@ -190,6 +432,7 @@ export default function JournalScreen() {
           setDraft(text);
           setIsDirty(true);
         }}
+        onFocus={handleEditorFocus}
         placeholder="Write about your day..."
         placeholderTextColor={colors.mutedForeground}
         textAlignVertical="top"
@@ -234,21 +477,27 @@ export default function JournalScreen() {
         <Pressable
           style={styles.navArrow}
           onPress={goToPreviousDay}
+          // Disabled defensively while dictating: the feature always targets
+          // today and there's no in-UI trigger for voice capture on a
+          // non-today day, but disabling avoids the draft-reset-on-date-
+          // change effect ever colliding with an in-flight dictation.
+          disabled={isDictating}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Previous day"
+          accessibilityState={{ disabled: isDictating }}
         >
           {/* The icon set only ships a right-facing chevron; rotating it keeps
               this file from having to touch Icon.tsx (owned elsewhere). */}
           <View style={styles.flipHorizontal}>
-            <Icon name="chevron" size={22} color={colors.foreground} />
+            <Icon name="chevron" size={22} color={isDictating ? colors.border : colors.foreground} />
           </View>
         </Pressable>
 
         <Pressable
           style={styles.dateLabelWrap}
           onPress={goToToday}
-          disabled={isToday}
+          disabled={isToday || isDictating}
           accessibilityRole="header"
           accessibilityLabel={`Journal date: ${formatDisplayDate(selectedDate)}${isToday ? ", today" : ""}`}
         >
@@ -261,19 +510,103 @@ export default function JournalScreen() {
         <Pressable
           style={styles.navArrow}
           onPress={goToNextDay}
-          disabled={!canGoForward}
+          disabled={!canGoForward || isDictating}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Next day"
-          accessibilityState={{ disabled: !canGoForward }}
+          accessibilityState={{ disabled: !canGoForward || isDictating }}
         >
           <Icon
             name="chevron"
             size={22}
-            color={canGoForward ? colors.foreground : colors.border}
+            color={canGoForward && !isDictating ? colors.foreground : colors.border}
           />
         </Pressable>
       </View>
+
+      {voiceMode === "priming" ? (
+        <View style={styles.voicePriming} accessibilityLiveRegion="polite">
+          <Text style={styles.voicePrimingText}>Getting ready to listen…</Text>
+        </View>
+      ) : null}
+
+      {voiceMode === "listening" ? (
+        <View style={styles.voicePanel} accessibilityLiveRegion="polite">
+          <MicOrb
+            status={voiceState.status}
+            onPress={stopDictation}
+            size={48}
+            accessibilityLabel="Stop listening"
+            accessibilityHint="Currently capturing your journal entry by voice"
+          />
+          <Text style={styles.voiceCaption} numberOfLines={3}>
+            {voiceState.transcript.length > 0 ? voiceState.transcript : "Listening — talk about your day…"}
+          </Text>
+          {/* Persistent and always visible while capturing — the primary,
+              obvious way to stop, not something to discover. Tapping into
+              the editor below (its onFocus) does the same thing. */}
+          <Pressable
+            onPress={stopDictation}
+            accessibilityRole="button"
+            accessibilityLabel="Stop listening"
+            style={({ pressed }) => [styles.stopPill, pressed && styles.stopPillPressed]}
+          >
+            <Text style={styles.stopPillText}>Stop listening</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {voiceMode === "blocked" ? (
+        <View style={styles.voiceNotice} accessibilityLiveRegion="polite">
+          <Text style={styles.voiceNoticeText}>
+            {voiceState.message.length > 0 ? voiceState.message : "Couldn't start voice capture."}
+          </Text>
+          <View style={styles.voiceNoticeActions}>
+            {voiceState.status === "permission-denied" ? (
+              <Pressable
+                onPress={openVoiceSettings}
+                accessibilityRole="button"
+                accessibilityLabel="Open Settings to allow microphone access"
+                style={({ pressed }) => [styles.voiceNoticeAction, pressed && styles.voiceNoticeActionPressed]}
+              >
+                <Text style={styles.voiceNoticeActionText}>Open Settings</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={dismissVoiceNotice}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              style={({ pressed }) => [styles.voiceNoticeAction, pressed && styles.voiceNoticeActionPressed]}
+            >
+              <Text style={styles.voiceNoticeActionText}>Dismiss</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {voiceMode === "soft-stopped" ? (
+        <View style={styles.voiceNotice} accessibilityLiveRegion="polite">
+          <Text style={styles.voiceNoticeText}>
+            Stopped listening — tap the mic to keep going, or just type.
+          </Text>
+          <View style={styles.voiceNoticeActions}>
+            <MicOrb
+              status="idle"
+              onPress={resumeDictation}
+              size={40}
+              accessibilityLabel="Resume voice dictation"
+            />
+            <Pressable
+              onPress={dismissVoiceNotice}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              style={({ pressed }) => [styles.voiceNoticeAction, pressed && styles.voiceNoticeActionPressed]}
+            >
+              <Text style={styles.voiceNoticeActionText}>Dismiss</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.editorArea}>{editorContent}</View>
 
@@ -322,6 +655,83 @@ const styles = StyleSheet.create({
   },
   flipHorizontal: {
     transform: [{ scaleX: -1 }],
+  },
+  voicePriming: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+  },
+  voicePrimingText: {
+    fontSize: typography.size.xs,
+    color: colors.mutedForeground,
+  },
+  voicePanel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  voiceCaption: {
+    flex: 1,
+    fontSize: typography.size.sm,
+    color: colors.foreground,
+  },
+  stopPill: {
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.destructive,
+  },
+  stopPillPressed: {
+    opacity: 0.8,
+  },
+  stopPillText: {
+    color: colors.destructiveForeground,
+    fontWeight: typography.weight.semibold,
+    fontSize: typography.size.xs,
+  },
+  voiceNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  voiceNoticeText: {
+    flex: 1,
+    fontSize: typography.size.xs,
+    color: colors.mutedForeground,
+  },
+  voiceNoticeActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  voiceNoticeAction: {
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.xs,
+  },
+  voiceNoticeActionPressed: {
+    opacity: 0.7,
+  },
+  voiceNoticeActionText: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.semibold,
+    color: colors.foreground,
+    textDecorationLine: "underline",
   },
   dateLabelWrap: {
     flex: 1,

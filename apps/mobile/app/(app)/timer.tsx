@@ -16,16 +16,23 @@
 // The presentation is native rather than a port of the web layout: a
 // circular progress hero, round transport controls, and a day-grouped
 // session list.
+//
+// SECOND SOURCE OF TRUTH: dw-time-api's PR #72/#73 added a cross-device
+// `ActiveTimerSession` (`/timer/session`) that the Coach's voice/chat
+// START_TIMER/STOP_TIMER actions write to directly. This screen used to
+// know nothing about it — the local zustand store below was the only place
+// a running timer could exist, so a session started from the Coach screen
+// was completely invisible here, and pressing Start built a second,
+// independent local session against the same goal. `serverSessionQuery`
+// polls for one and, whenever it finds one, takes over as the source of
+// truth for status/elapsed/attribution (see `effectiveStatus` and friends,
+// just below the queries) and for what Start/Pause/Resume/Stop actually do.
+// The local store is untouched by any of this — a user who never touches
+// the Coach's timer actions still gets the exact local-only flow this
+// screen always had.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { Alert, AppState, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -64,16 +71,14 @@ import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { outbox } from "@/lib/offline";
-import {
-  goalQueries,
-  scheduleQueries,
-  taskQueries,
-  timeEntryQueries,
-} from "@/lib/queries";
+import { isPlanLimitError, hasReachedDailyEntryCap } from "@/lib/plan-limit";
+import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries, timerSessionQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useSettingsStore } from "@/lib/settings-store";
-import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
+import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useTimerReminders } from "@/lib/useTimerReminders";
+import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -100,7 +105,8 @@ const HAMBURGER_CLEARANCE = 64;
  * The name a session is logged under when there is no task or goal title to
  * use — either because the user deliberately tracked without attaching
  * anything (now the common case) or because a target was set but never
- * resolved. Matches the fallback wording useTimerNotification.ts uses.
+ * resolved. Matches the fallback wording useTimerNotification.ts uses — both
+ * import the same constant, see src/lib/session-label.ts.
  *
  * One string covers both because the entry itself keeps them apart: an
  * unattributed entry carries no goalId, an unresolved one does. Inventing a
@@ -112,7 +118,10 @@ const HAMBURGER_CLEARANCE = 64;
  * `taskTitle` (the denormalised snapshot of a real task's title) is left
  * unset, which is what keeps a placeholder out of the reporting field.
  */
-const UNRESOLVED_TARGET_LABEL = "Focus session";
+const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;
+
+/** How often to poll for a server-side session while this screen is mounted. See the header note above. */
+const SERVER_SESSION_POLL_MS = 20_000;
 
 /** Matches `hasResponse` in src/hooks/useQuickAdd.ts and packages/shared/src/offline/sync.ts. */
 function hasResponse(err: unknown): boolean {
@@ -164,6 +173,7 @@ const STATUS_META: Record<
 export default function TimerScreen() {
   const analytics = useAnalytics();
   const { width, height } = useWindowDimensions();
+  const { user } = useAuth();
 
   const status = useTimerStore((s) => s.status);
   const startedAt = useTimerStore((s) => s.startedAt);
@@ -201,14 +211,57 @@ export default function TimerScreen() {
   // UI here to keep updated live the way index.tsx's copy of this query does.
   const scheduleQuery = useQuery(scheduleQueries.weekly());
 
+  // The other possible source of truth — see this file's header. `null`
+  // (not an error) is what the endpoint returns when nothing is running, so
+  // `serverSession` below is exactly that: a session, or nothing.
+  const serverSessionQuery = useQuery({
+    ...timerSessionQueries.active(),
+    refetchInterval: SERVER_SESSION_POLL_MS,
+  });
+  const serverSession = serverSessionQuery.data ?? null;
+  const hasServerSession = serverSession !== null;
+
   useFocusEffect(
     useCallback(() => {
-      analytics.track({
-        name: "screenViewed",
-        payload: { screenName: "timer" },
-      });
+      analytics.track({ name: "screenViewed", payload: { screenName: "timer" } });
+      // Tabs stay mounted in this app (see TrackerVoiceButton.tsx's header),
+      // so the query's own on-mount fetch only ever catches the first time
+      // this tab is opened. Re-checking on every focus is what catches
+      // "started tracking from the Coach screen, then switched to this tab".
+      void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
     }, [analytics]),
   );
+
+  // Belt-and-braces for the case a focus event doesn't fire on its own — the
+  // app coming back from the background while already sitting on this tab.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
+  // The server session, normalised into the same {status, startedAt,
+  // pausedElapsedMs} shape the local store already uses, so every hook and
+  // every bit of render logic below this point can stay written in terms of
+  // ONE timer instead of branching everywhere. When a server session exists
+  // it is authoritative — same rule the local store used to have to itself.
+  const effectiveStatus: TimerStatus = hasServerSession
+    ? serverSession.status === "RUNNING"
+      ? "running"
+      : "paused"
+    : status;
+  const effectiveStartedAt =
+    hasServerSession && serverSession.status === "RUNNING" && serverSession.segmentStartedAt !== null
+      ? new Date(serverSession.segmentStartedAt).getTime()
+      : hasServerSession
+        ? null
+        : startedAt;
+  const effectivePausedElapsedMs = hasServerSession ? serverSession.accumulatedMs : pausedElapsedMs;
+  const effectiveTaskId = hasServerSession ? (serverSession.taskId ?? null) : timerTaskId;
+  const effectiveGoalId = hasServerSession ? (serverSession.goalId ?? null) : timerGoalId;
 
   // Lets the iOS home-screen widget's "Start" button (see
   // targets/widget/GoalSlotWidget.swift) jump straight into tracking instead
@@ -217,24 +270,22 @@ export default function TimerScreen() {
   // params: this screen can remount (tab switch) while the params are still
   // in the URL, and firing `start()` a second time against an already-
   // running timer would silently reset its elapsed time.
-  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{
-    autostart?: string;
-    goalId?: string;
-  }>();
+  //
+  // Gated on `effectiveStatus`, not the local store's own `status`: a
+  // server-side session (see this file's header) is just as much "already
+  // running" as a local one, and without this the widget's Start button
+  // would be a fifth way (alongside the on-screen Start button, the tracking
+  // voice command, and the picker's mid-session handlers) to spin up a
+  // redundant local session while one is already active elsewhere.
+  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{ autostart?: string; goalId?: string }>();
   const autoStartFired = useRef(false);
   useEffect(() => {
-    if (
-      autostart !== "1" ||
-      !autoStartGoalId ||
-      autoStartFired.current ||
-      status !== "idle"
-    )
-      return;
+    if (autostart !== "1" || !autoStartGoalId || autoStartFired.current || effectiveStatus !== "idle") return;
     autoStartFired.current = true;
     start(undefined, autoStartGoalId);
     hapticLight();
     analytics.track({ name: "timerStarted", payload: { taskId: undefined } });
-  }, [analytics, autoStartGoalId, autostart, start, status]);
+  }, [analytics, autoStartGoalId, autostart, effectiveStatus, start]);
 
   // True once the user has made a deliberate pick THIS visit to the screen
   // (via the tracking picker), which is what stops the auto-select effect
@@ -255,18 +306,21 @@ export default function TimerScreen() {
    *     explicit goal and is about to call `start()` (or already has,
    *     earlier in this same effect flush — see below). Deferring to it
    *     entirely, rather than only skipping once it's visibly fired, closes
-   *     a real race: both effects close over the SAME render's `status`
-   *     ("idle"), since the deep-link effect's `start()` mutates the zustand
-   *     store synchronously but doesn't force a re-render before this effect
-   *     also runs in the same flush. Without this guard, this effect could
-   *     still see "idle", resolve a *different* schedule block, and call
-   *     `retarget()` right after — which is no longer the no-op it looks
-   *     like, because by the time `retarget()` itself reads `get().status`
-   *     the deep-link's `start()` has already flipped it to "running",
-   *     silently overwriting the goal the widget was asked to start.
-   *   - `status !== "idle"` — never re-point a session that's already
-   *     running or paused. A live session's attribution is the user's to
-   *     change, not this effect's.
+   *     a real race: both effects close over the SAME render's
+   *     `effectiveStatus` ("idle"), since the deep-link effect's `start()`
+   *     mutates the zustand store synchronously but doesn't force a
+   *     re-render before this effect also runs in the same flush. Without
+   *     this guard, this effect could still see "idle", resolve a
+   *     *different* schedule block, and call `retarget()` right after —
+   *     which is no longer the no-op it looks like, because by the time
+   *     `retarget()` itself reads `get().status` the deep-link's `start()`
+   *     has already flipped it to "running", silently overwriting the goal
+   *     the widget was asked to start.
+   *   - `effectiveStatus !== "idle"` — never re-point a session that's
+   *     already running or paused, whether that session is local or a
+   *     server-side one (see this file's header on `effectiveStatus`) — a
+   *     live session's attribution is the user's to change, not this
+   *     effect's.
    *   - `userSelectedRef` — never override a pick the user already made this
    *     visit, including a deliberate "Just track time".
    *   - `selectedTask`/`selectedGoal` already set — covers a fast remount
@@ -287,7 +341,7 @@ export default function TimerScreen() {
   useEffect(() => {
     if (
       autostart === "1" ||
-      status !== "idle" ||
+      effectiveStatus !== "idle" ||
       userSelectedRef.current ||
       selectedTask !== null ||
       selectedGoal !== null
@@ -318,24 +372,26 @@ export default function TimerScreen() {
       ? tasksQuery.data.find((t) => t.id === blockTaskId)
       : undefined;
 
-    // Re-checks LIVE store state right before mutating anything — closes a
-    // real race, not a theoretical one: `status` above is the value this
-    // effect closed over at render time, which can be a beat stale if the
-    // persisted store (zustand `persist`, rehydrated from AsyncStorage
-    // asynchronously on cold start) finishes hydrating *between* that
-    // render and this effect actually running. If a session was already
-    // running before this screen ever mounted, this effect could still see
-    // a stale "idle" here, resolve some other block entirely, and call
-    // `retarget()` on what is — by the time `retarget()` itself reads
+    // Re-checks LIVE state right before mutating anything — closes a real
+    // race, not a theoretical one: `effectiveStatus` above is the value
+    // this effect closed over at render time, which can be a beat stale in
+    // two different ways — either source of truth can flip between that
+    // render and this effect actually running. The local store (zustand
+    // `persist`) rehydrates from AsyncStorage asynchronously on cold start;
+    // `hasServerSession` similarly starts `false` until `serverSessionQuery`
+    // resolves its first fetch. If a session was already active — local or
+    // server-side — before this screen ever mounted, this effect could
+    // still see a stale "idle" here, resolve some other block entirely, and
+    // call `retarget()` on what is — by the time `retarget()` itself reads
     // `get().status` — now a genuinely live session, silently re-pointing
-    // it out from under the user. (Confirmed live, not hypothetical: a
-    // 10:51am session survived several reinstalls correctly, then had its
-    // label swapped to an unrelated goal with no restart, elapsed time
-    // unbroken — this is what did that.) `retarget()`'s own idle check
-    // protects the *opposite* direction (a truly idle store), so it can't
-    // catch this — the whole failure mode IS a store that stopped being
-    // idle in between.
-    if (useTimerStore.getState().status !== "idle") return;
+    // it out from under the user. (Confirmed live, not hypothetical, for
+    // the local-store half of this: a 10:51am session survived several
+    // reinstalls correctly, then had its label swapped to an unrelated
+    // goal with no restart, elapsed time unbroken — this is what did
+    // that.) `retarget()`'s own idle check protects the *opposite*
+    // direction (a truly idle store), so it can't catch this — the whole
+    // failure mode IS a store that stopped being idle in between.
+    if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
 
     if (task) {
       setSelectedTask(task);
@@ -347,32 +403,35 @@ export default function TimerScreen() {
       retarget(undefined, goal.id);
     }
   }, [
+    effectiveStatus,
     goalsQuery.data,
+    hasServerSession,
     retarget,
     scheduleQuery.data,
     selectedGoal,
     selectedTask,
-    status,
     tasksQuery.data,
   ]);
 
-  // What's actually being tracked right now — resolved from the store's
-  // persisted ids against the loaded task/goal lists, so this is correct
+  // What's actually being tracked right now — resolved from whichever ids
+  // are authoritative against the loaded task/goal lists, so this is correct
   // even right after an app restart (before this screen ever set local
   // picker state). Falls back to the pre-start local selection while idle.
   const activeTask = useMemo(
     () =>
-      tasksQuery.data?.find((t) => t.id === timerTaskId) ??
-      (status === "idle" ? selectedTask : null),
-    [tasksQuery.data, timerTaskId, status, selectedTask],
+      tasksQuery.data?.find((t) => t.id === effectiveTaskId) ?? (effectiveStatus === "idle" ? selectedTask : null),
+    [tasksQuery.data, effectiveTaskId, effectiveStatus, selectedTask],
   );
   const activeGoal = useMemo(
     () =>
-      goalsQuery.data?.find((g) => g.id === timerGoalId) ??
-      (status === "idle" ? selectedGoal : null),
-    [goalsQuery.data, timerGoalId, status, selectedGoal],
+      goalsQuery.data?.find((g) => g.id === effectiveGoalId) ?? (effectiveStatus === "idle" ? selectedGoal : null),
+    [goalsQuery.data, effectiveGoalId, effectiveStatus, selectedGoal],
   );
-  const resolvedLabel = activeTask?.title ?? activeGoal?.title ?? null;
+  // A server session already carries its own denormalised `taskName` (set at
+  // start, or by a PATCH from this screen or the Coach) — falling back to it
+  // means an unattributed-but-named server session ("log this as 'gym'")
+  // shows that name here even before/without a matching local task or goal.
+  const resolvedLabel = activeTask?.title ?? activeGoal?.title ?? (hasServerSession ? serverSession.taskName : null);
 
   // The store persists only ids, so a running session's title has to be
   // looked up in the task/goal lists — and those lists can be momentarily
@@ -383,7 +442,7 @@ export default function TimerScreen() {
   // "Untitled session" just because a list request happens to be in flight.
   // The key guard is what makes it safe: a latch from a previous target can
   // never be shown against a new one.
-  const targetKey = `${timerTaskId ?? ""}|${timerGoalId ?? ""}`;
+  const targetKey = `${effectiveTaskId ?? ""}|${effectiveGoalId ?? ""}`;
   const labelLatch = useRef<{ key: string; label: string } | null>(null);
   if (resolvedLabel !== null)
     labelLatch.current = { key: targetKey, label: resolvedLabel };
@@ -400,16 +459,17 @@ export default function TimerScreen() {
   //
   // No placeholder is substituted here any more. It used to be, which meant
   // a running session with nothing attached rendered as though it were
-  // tracking a thing called "Focus session". The placeholder now lives only
-  // where it is genuinely needed: the API's required `taskName` (see
-  // handleStop) and the notification's own `label ?? "Focus session"`.
+  // tracking a thing called "Untitled session". The placeholder now lives
+  // only where it is genuinely needed: the API's required `taskName` (see
+  // handleStop) and the notification's own `label ?? "Untitled session"`.
   const knownLabel = resolvedLabel ?? latchedLabel;
   const activeLabel = knownLabel;
   const hasTarget =
-    status === "idle"
+    effectiveStatus === "idle"
       ? selectedTask !== null || selectedGoal !== null
-      : timerTaskId !== null || timerGoalId !== null;
-  const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
+      : effectiveTaskId !== null || effectiveGoalId !== null;
+  const activeColor =
+    activeGoal?.color ?? activeTask?.goal?.color ?? (hasServerSession ? (serverSession.goal?.color ?? null) : null);
   // A task shows its parent goal; a goal shows its category — either way the
   // second line answers "which bucket does this belong to?".
   const activeSublabel = activeTask
@@ -420,9 +480,9 @@ export default function TimerScreen() {
   // session, so a running timer is visible from outside the app. Degrades to
   // nothing at all if notification permission is refused.
   useTimerNotification({
-    status,
-    startedAt,
-    pausedElapsedMs,
+    status: effectiveStatus,
+    startedAt: effectiveStartedAt,
+    pausedElapsedMs: effectivePausedElapsedMs,
     label: activeLabel,
   });
 
@@ -434,11 +494,11 @@ export default function TimerScreen() {
   // `activeLabel` can now be null for a session the user deliberately started
   // without attaching anything, where before it was only ever null during the
   // brief cold-start gap before a target resolved. Both land on the same
-  // branch: describeTimerReminder() substitutes "Focus session", the same
+  // branch: describeTimerReminder() substitutes "Untitled session", the same
   // wording the shade entry uses, so a reminder for an unattributed session
-  // reads "You are working on: Focus session" rather than leaking an empty
+  // reads "You are working on: Untitled session" rather than leaking an empty
   // string or "undefined".
-  useTimerReminders({ status, startedAt, label: activeLabel });
+  useTimerReminders({ status: effectiveStatus, startedAt: effectiveStartedAt, label: activeLabel });
 
   /**
    * Files an already-logged entry under a goal/task after the fact. This is
@@ -494,13 +554,29 @@ export default function TimerScreen() {
         });
         return;
       }
+      if (hasServerSession) {
+        // Re-points the SERVER session — a local `retarget()` here would
+        // change nothing the server (or another device watching the same
+        // session) can see. Elapsed time is untouched either way; the PATCH
+        // only ever changes attribution (see dw-time-api's
+        // ActiveTimerService#updateAttribution).
+        void apiClient.timerSession
+          .update({ taskId: task.id, goalId: task.goalId ?? null, taskName: task.title })
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          })
+          .catch(() => {
+            Alert.alert("Couldn't attach that", "Please try again.");
+          });
+        return;
+      }
       setSelectedTask(task);
       setSelectedGoal(null);
       // A session already in flight gets re-pointed in the store; the local
       // selection above only governs the *next* start.
       retarget(task.id, task.goalId);
     },
-    [attachToEntry, pickerTarget, retarget],
+    [attachToEntry, hasServerSession, pickerTarget, retarget],
   );
 
   const handlePickGoal = useCallback(
@@ -509,6 +585,17 @@ export default function TimerScreen() {
       userSelectedRef.current = true;
       if (target?.kind === "entry") {
         void attachToEntry(target.entry, { goalId: goal.id });
+        return;
+      }
+      if (hasServerSession) {
+        void apiClient.timerSession
+          .update({ goalId: goal.id, taskId: null })
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          })
+          .catch(() => {
+            Alert.alert("Couldn't attach that", "Please try again.");
+          });
         return;
       }
       setSelectedGoal(goal);
@@ -522,7 +609,7 @@ export default function TimerScreen() {
       // `onClose` — immediately if the goal has no tasks to narrow to,
       // otherwise once the user picks one of them or backs out.
     },
-    [attachToEntry, pickerTarget, retarget],
+    [attachToEntry, hasServerSession, pickerTarget, retarget],
   );
 
   /** "Just track time" — clears the target, pre-start or mid-run. */
@@ -531,70 +618,201 @@ export default function TimerScreen() {
     userSelectedRef.current = true;
     setSelectedTask(null);
     setSelectedGoal(null);
+    if (hasServerSession) {
+      void apiClient.timerSession
+        .update({ taskId: null, goalId: null })
+        .then(() => {
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        })
+        .catch(() => {
+          Alert.alert("Couldn't clear that", "Please try again.");
+        });
+      return;
+    }
     retarget(undefined, undefined);
-  }, [retarget]);
+  }, [hasServerSession, retarget]);
 
   const handleStart = useCallback(() => {
-    // No guard. Pressing Start with nothing selected is the point: the timer
-    // begins immediately and the session can be attributed during the run or
-    // from its history row afterwards — or left unattributed for good.
-    start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
-    hapticLight();
-    analytics.track({
-      name: "timerStarted",
-      payload: { taskId: selectedTask?.id },
-    });
-  }, [analytics, selectedGoal, selectedTask, start]);
+    // A server session already showing as running/paused means TimerControls
+    // never renders a Start button in the first place (see effectiveStatus).
+    // This only guards the same-frame race right after the session query
+    // first resolves — belt-and-braces, not the primary defence.
+    if (hasServerSession) return;
+
+    const maxTasksPerDay = user?.limits?.maxTasksPerDay;
+    const todaysEntryCount = (recentQuery.data ?? []).filter(
+      (entry) => entry.date.slice(0, 10) === getLocalDateString(),
+    ).length;
+
+    const beginSession = () => {
+      // No target gate. Pressing Start with nothing selected is the point:
+      // the timer begins immediately and the session can be attributed
+      // during the run or from its history row afterwards — or left
+      // unattributed for good.
+      start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
+      hapticLight();
+      analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
+    };
+
+    // A soft warning, not a hard gate — one-tap tracking is the whole point
+    // of this screen, and a user who's about to upgrade or roll into a new
+    // day shouldn't be blocked from starting. This only tells them ahead of
+    // time that today's save will fail as things stand, rather than letting
+    // them find out after tracking and pressing Stop (see handleStop's
+    // isPlanLimitError branch for what happens when this warning is skipped,
+    // dismissed, or simply doesn't apply — e.g. another device or the Coach
+    // pushes them over the cap mid-session).
+    if (hasReachedDailyEntryCap(todaysEntryCount, maxTasksPerDay)) {
+      Alert.alert(
+        "You're at today's tracking limit",
+        `Your plan saves up to ${maxTasksPerDay} tracked sessions a day, and you've already logged ${todaysEntryCount}. You can still start this timer, but stopping it won't save until you upgrade or a new day begins.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Start Anyway", onPress: beginSession },
+        ],
+      );
+      return;
+    }
+
+    beginSession();
+  }, [analytics, hasServerSession, recentQuery.data, selectedGoal, selectedTask, start, user]);
 
   const handlePause = useCallback(() => {
+    if (hasServerSession) {
+      void apiClient.timerSession
+        .pause()
+        .then(() => {
+          hapticLight();
+          analytics.track({ name: "timerPaused", payload: { taskId: serverSession?.taskId ?? undefined } });
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        })
+        .catch(() => {
+          Alert.alert("Couldn't pause", "Please check your connection and try again.");
+        });
+      return;
+    }
     pause();
     hapticLight();
-    analytics.track({
-      name: "timerPaused",
-      payload: { taskId: timerTaskId ?? undefined },
-    });
-  }, [analytics, pause, timerTaskId]);
+    analytics.track({ name: "timerPaused", payload: { taskId: timerTaskId ?? undefined } });
+  }, [analytics, hasServerSession, pause, serverSession, timerTaskId]);
 
   const handleResume = useCallback(() => {
+    if (hasServerSession) {
+      void apiClient.timerSession
+        .resume()
+        .then(() => {
+          hapticLight();
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        })
+        .catch(() => {
+          Alert.alert("Couldn't resume", "Please check your connection and try again.");
+        });
+      return;
+    }
     resume();
     hapticLight();
-  }, [resume]);
+  }, [hasServerSession, resume]);
 
-  // `stop()` resets the store synchronously, so a second press can only land
-  // inside the same frame as the first — but two fingers do exactly that, and
-  // the second call would return `getElapsedMs(INITIAL_STATE)` === 0, which
-  // `Math.max(1, ...)` below dutifully turns into a spurious 1-minute entry.
-  // A ref (not state) because it has to be readable before the re-render.
+  // `stop()` used to reset the local store synchronously, so a second press
+  // could only land inside the same frame as the first — but two fingers do
+  // exactly that. This guard is what stops a double stop, both for the local
+  // store (which no longer resets up front — see handleStop below) and for
+  // the server path (whose delete-then-create is already transactionally
+  // double-stop-safe server-side, but there is no reason to fire the request
+  // twice). A ref (not state) because it has to be readable before the
+  // re-render.
   const stopping = useRef(false);
 
   const handleStop = useCallback(async () => {
-    if (stopping.current || status === "idle") return;
+    if (stopping.current || effectiveStatus === "idle") return;
     stopping.current = true;
 
-    // Capture what was actually running before `stop()` resets the store
-    // back to idle (which clears taskId/goalId/startedAt).
+    // ---- a server-side session is authoritative: stop IT, not the local store ----
+    if (hasServerSession && serverSession) {
+      const submitServerStop = async () => {
+        const res = await apiClient.timerSession.stop({});
+        hapticCompletion();
+        analytics.track({
+          name: "timerStopped",
+          payload: {
+            taskId: serverSession.taskId ?? undefined,
+            durationSeconds: Math.round(res.data.elapsedMs / 1000),
+          },
+        });
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+        if (res.data.timeEntry.goalId) {
+          void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+        }
+      };
+
+      try {
+        await submitServerStop();
+      } catch {
+        // ActiveTimerService#stop deletes the session row and writes the
+        // TimeEntry inside one transaction (dw-time-api's active-timer.service.ts)
+        // — a request that fails here, for any reason, has left the session
+        // exactly as it was. There is nothing local to protect and nothing
+        // destructive about a plain retry, unlike the local-store path below.
+        Alert.alert(
+          "Couldn't save that session",
+          "It's still safe — the session is still active on the server. Check your connection and try again.",
+          [
+            { text: "OK", style: "cancel" },
+            {
+              text: "Retry",
+              onPress: () => {
+                stopping.current = true;
+                void submitServerStop()
+                  .catch(() => {
+                    Alert.alert("Still couldn't save", "The session is still active on the server — try again shortly.");
+                  })
+                  .finally(() => {
+                    stopping.current = false;
+                  });
+              },
+            },
+          ],
+        );
+      } finally {
+        stopping.current = false;
+      }
+      return;
+    }
+
+    // ---- purely local session ----
+
+    // Capture what was actually running WITHOUT touching the store yet.
     const stoppedTaskId = timerTaskId ?? undefined;
     const stoppedGoalId = activeTask?.goalId ?? timerGoalId ?? undefined;
     const stoppedStartedAt = startedAt;
     // Only a title we actually resolved is fit to persist. Null is the normal
     // case for an unattributed session and also covers the cold-start gap
     // where a target exists but never resolved; either way, writing the
-    // "Focus session" placeholder into `taskTitle` would put a made-up value
-    // in the field reporting treats as a real task's denormalised title.
+    // "Untitled session" placeholder into `taskTitle` would put a made-up
+    // value in the field reporting treats as a real task's denormalised
+    // title.
     const stoppedTitle = knownLabel;
     const label = stoppedTitle ?? UNRESOLVED_TARGET_LABEL;
 
-    const elapsed = stop();
+    // A PURE snapshot — not a store mutation (see getElapsedMs's own doc
+    // comment). `stop()`, which actually resets the store, is only called
+    // once the save has either succeeded or been durably queued offline —
+    // see `finalizeLocalStop` below. This is the fix for the bug where
+    // stopping a timer after hitting the free-plan daily entry cap destroyed
+    // the tracked time with no way to get it back: the old code called
+    // `stop()` here, before knowing whether the POST below would even
+    // succeed, so a 403 arrived with the elapsed time already gone.
+    const elapsed = getElapsedMs({ status, startedAt, pausedElapsedMs });
     const elapsedSeconds = Math.round(elapsed / 1000);
     // The API requires at least 1 minute (see validation/time-entry.ts) —
     // round to the nearest minute but never log a zero-minute entry for a
     // timer that genuinely ran.
     const durationMinutes = Math.max(1, Math.round(elapsed / 60000));
 
-    // Parsed inside its own guard, not inline at the call site: the store has
-    // already been reset by `stop()` above, so an exception escaping here
-    // would take the elapsed time with it AND leave `stopping` latched true,
-    // which disables the Stop button for the rest of the app session.
+    // Parsed inside its own guard: an exception here must not leave
+    // `stopping` latched true, which would disable the Stop button for the
+    // rest of the app session.
     let payload: CreateTimeEntryInput;
     try {
       payload = createTimeEntrySchema.parse({
@@ -618,10 +836,7 @@ export default function TimerScreen() {
         // current running segment's start, which both platforms' `resume`
         // resets to now and both platforms' `pause` sets to null — so a
         // session stopped from Paused sends nothing, same as on web.
-        startedAt:
-          stoppedStartedAt !== null
-            ? new Date(stoppedStartedAt).toISOString()
-            : undefined,
+        startedAt: stoppedStartedAt !== null ? new Date(stoppedStartedAt).toISOString() : undefined,
       });
     } catch {
       stopping.current = false;
@@ -632,6 +847,17 @@ export default function TimerScreen() {
       return;
     }
 
+    // The ONLY place the local store actually resets. Called once the entry
+    // is confirmed saved, durably queued offline, or the user explicitly
+    // discards it — never merely because the server rejected a save, so a
+    // rejected save (the plan-limit cap being the common case) can never
+    // take the elapsed time down with it.
+    const finalizeLocalStop = () => {
+      stop();
+      setSelectedTask(null);
+      setSelectedGoal(null);
+    };
+
     const submit = async () => {
       await apiClient.timeEntries.create(payload);
       hapticCompletion();
@@ -639,16 +865,69 @@ export default function TimerScreen() {
         name: "timerStopped",
         payload: { taskId: stoppedTaskId, durationSeconds: elapsedSeconds },
       });
-      setSelectedTask(null);
-      setSelectedGoal(null);
-      void queryClient.invalidateQueries({
-        queryKey: timeEntryQueries.timeEntryQueries.all,
-      });
+      finalizeLocalStop();
+      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
       if (stoppedGoalId) {
         void queryClient.invalidateQueries({
           queryKey: goalQueries.goalQueries.all,
         });
       }
+    };
+
+    // Shared by the first attempt and every Retry: re-derives which alert to
+    // show from whatever error just came back, rather than assuming a retry
+    // fails the same way the first attempt did. Discard is now the only path
+    // that actually clears the store — before this rewrite the store had
+    // already been reset by the time any of these alerts appeared, so
+    // "Discard" was really just "dismiss".
+    const presentSaveFailureAlert = (err: unknown) => {
+      const runningWord = status === "paused" ? "paused" : "running";
+
+      if (isPlanLimitError(err)) {
+        const capWord = Number.isFinite(user?.limits?.maxTasksPerDay)
+          ? `today's free-plan limit of ${user?.limits?.maxTasksPerDay} tracked sessions`
+          : "today's plan limit for tracked sessions";
+        Alert.alert(
+          "Can't save this session yet",
+          `You've reached ${capWord}. ${formatDuration(durationMinutes)} against "${label}" is still safe — your timer is still ${runningWord}, nothing is lost. Upgrade to save it now, or it'll be available to save after midnight.`,
+          [
+            { text: "Keep Tracking", style: "cancel" },
+            { text: "Discard", style: "destructive", onPress: finalizeLocalStop },
+            {
+              text: "Retry",
+              onPress: () => {
+                stopping.current = true;
+                void submit()
+                  .catch(presentSaveFailureAlert)
+                  .finally(() => {
+                    stopping.current = false;
+                  });
+              },
+            },
+          ],
+        );
+        return;
+      }
+
+      Alert.alert(
+        "Couldn't save time entry",
+        `Your timer is still ${runningWord}. ${formatDuration(durationMinutes)} against "${label}" hasn't been saved yet.`,
+        [
+          { text: "Keep Tracking", style: "cancel" },
+          { text: "Discard", style: "destructive", onPress: finalizeLocalStop },
+          {
+            text: "Retry",
+            onPress: () => {
+              stopping.current = true;
+              void submit()
+                .catch(presentSaveFailureAlert)
+                .finally(() => {
+                  stopping.current = false;
+                });
+            },
+          },
+        ],
+      );
     };
 
     try {
@@ -658,9 +937,7 @@ export default function TimerScreen() {
       // outbox and let the sync engine replay it on reconnect, the same
       // treatment quick-add gives its creates. This matters more here than
       // anywhere else in the app: a goal the user typed can be typed again,
-      // but elapsed time that was measured and then dropped is unrecoverable,
-      // and the old Retry/Discard alert put a "Discard" button directly
-      // between the user and their own measured time.
+      // but elapsed time that was measured and then dropped is unrecoverable.
       if (!hasResponse(err)) {
         await outbox.addToOutbox({
           id: genId(),
@@ -670,8 +947,9 @@ export default function TimerScreen() {
           createdAt: Date.now(),
           retries: 0,
         });
-        setSelectedTask(null);
-        setSelectedGoal(null);
+        // Durably queued — safe to reset now, the sync engine owns delivery
+        // from here.
+        finalizeLocalStop();
         Alert.alert(
           "Saved offline",
           `${formatDuration(durationMinutes)} is queued and will sync the next time you're online.`,
@@ -680,58 +958,41 @@ export default function TimerScreen() {
       }
 
       // The server responded and refused. Replaying a payload it has already
-      // rejected won't help, so this keeps the manual retry — and names the
-      // duration either way, so the session can be re-entered by hand if the
-      // retry fails too.
-      Alert.alert(
-        "Couldn't save time entry",
-        `Your timer was stopped, but saving ${formatDuration(durationMinutes)} against "${label}" failed.`,
-        [
-          { text: "Discard", style: "destructive" },
-          {
-            text: "Retry",
-            onPress: () => {
-              void submit().catch(() => {
-                Alert.alert(
-                  "Still couldn't save",
-                  `Add ${formatDuration(durationMinutes)} for "${label}" manually when you're back online.`,
-                );
-              });
-            },
-          },
-        ],
-      );
+      // rejected won't always help, but the store stays intact either way so
+      // there's always something real to retry against.
+      presentSaveFailureAlert(err);
     } finally {
       stopping.current = false;
     }
   }, [
     activeTask,
     analytics,
+    effectiveStatus,
+    hasServerSession,
     knownLabel,
+    pausedElapsedMs,
+    serverSession,
     startedAt,
     status,
     stop,
     timerGoalId,
     timerTaskId,
+    user,
   ]);
 
   // The picker serves three jobs from one sheet — setting up the next run,
   // re-pointing a live one, and filing an entry that's already in history —
   // so what counts as "currently selected" depends on which one opened it.
   const pickerMode =
-    pickerTarget?.kind === "entry"
-      ? "logged"
-      : status === "idle"
-        ? "prestart"
-        : "running";
+    pickerTarget?.kind === "entry" ? "logged" : effectiveStatus === "idle" ? "prestart" : "running";
   const pickerSelectedId =
     pickerTarget?.kind === "entry"
       ? (pickerTarget.entry.taskId ?? pickerTarget.entry.goalId ?? null)
-      : status === "idle"
+      : effectiveStatus === "idle"
         ? (selectedTask?.id ?? selectedGoal?.id ?? null)
-        : (timerTaskId ?? timerGoalId);
+        : (effectiveTaskId ?? effectiveGoalId);
 
-  const statusMeta = STATUS_META[status];
+  const statusMeta = STATUS_META[effectiveStatus];
   const ringSize = Math.max(
     150,
     Math.min(
@@ -744,9 +1005,9 @@ export default function TimerScreen() {
   // Fixed wall-clock start beats a second copy of the elapsed count already
   // filling the middle of the ring.
   const ringCaption =
-    status === "running" && startedAt !== null
-      ? `Started ${new Date(startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
-      : status === "paused"
+    effectiveStatus === "running" && effectiveStartedAt !== null
+      ? `Started ${new Date(effectiveStartedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
+      : effectiveStatus === "paused"
         ? "Paused"
         : "Elapsed";
 
@@ -774,29 +1035,24 @@ export default function TimerScreen() {
           // stays on the neutral border and the plain `card` elevation —
           // this is a state cue, not decoration, so it only appears when
           // there's a state to cue.
-          status !== "idle" && activeColor
+          effectiveStatus !== "idle" && activeColor
             ? { borderColor: activeColor, ...shadows.raised }
-            : status !== "idle"
+            : effectiveStatus !== "idle"
               ? shadows.raised
               : null,
         ]}
       >
         <View style={styles.statusPill}>
           <PulsingDot color={statusMeta.dotColor} pulse={statusMeta.pulse} />
-          <Text
-            style={[
-              styles.statusPillText,
-              status !== "idle" && { color: statusMeta.textColor },
-            ]}
-          >
+          <Text style={[styles.statusPillText, effectiveStatus !== "idle" && { color: statusMeta.textColor }]}>
             {statusMeta.label}
           </Text>
         </View>
 
         <TimerRing
-          status={status}
-          startedAt={startedAt}
-          pausedElapsedMs={pausedElapsedMs}
+          status={effectiveStatus}
+          startedAt={effectiveStartedAt}
+          pausedElapsedMs={effectivePausedElapsedMs}
           size={ringSize}
           accentColor={activeColor}
           caption={ringCaption}
@@ -807,18 +1063,18 @@ export default function TimerScreen() {
           sublabel={activeSublabel}
           accentColor={activeColor}
           hasTarget={hasTarget}
-          running={status !== "idle"}
+          running={effectiveStatus !== "idle"}
           onPress={() => setPickerTarget({ kind: "session" })}
         />
 
         <ReminderIntervalPicker
           value={reminderIntervalMinutes}
-          disabled={status === "running"}
+          disabled={effectiveStatus === "running"}
           onChange={setReminderIntervalMinutes}
         />
 
         <TimerControls
-          status={status}
+          status={effectiveStatus}
           onStart={handleStart}
           onPause={handlePause}
           onResume={handleResume}
@@ -829,9 +1085,13 @@ export default function TimerScreen() {
       {/* Tracking-scoped voice control. Self-contained — it reads the timer
           store and the goal/task lists itself — except for stopping, which
           is handed back to this screen's own handler so there stays exactly
-          one path that writes a TimeEntry. See the component's header for
-          why this mic behaves differently from the one in the tab bar. */}
-      <TrackerVoiceButton onStopSession={() => void handleStop()} />
+          one path that writes a TimeEntry (or, now, stops a server session).
+          `serverSessionActive` closes the same double-session gap through
+          this entry point: without it, saying "start tracking X" while a
+          server session is already running would create a second, purely
+          local one via the voice path, the same bug this screen's own Start
+          button is guarded against above. */}
+      <TrackerVoiceButton onStopSession={() => void handleStop()} serverSessionActive={hasServerSession} />
     </>
   );
 
