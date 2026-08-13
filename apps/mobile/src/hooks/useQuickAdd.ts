@@ -16,14 +16,24 @@
 //   4. on success, invalidate that domain's whole-collection query key
 //      (packages/shared's `create*Queries().{goal,task,schedule}Queries.all`)
 //      so the optimistic entry gets reconciled against the server response;
-//   5. on failure, roll the optimistic patch back. If the failure looks like
-//      "no server response" (offline/timeout — see `hasResponse` below,
-//      mirroring the same check in packages/shared/src/offline/sync.ts)
-//      also enqueue the create into the offline outbox so it replays once
-//      connectivity returns (src/lib/offline.ts registers the matching
-//      "<domain>-create" operations). A validation rejection (the server
-//      responded, it just said no) is not queued — replaying an invalid
-//      payload later wouldn't succeed either.
+//   5. on failure that looks like "no server response" (offline/timeout —
+//      see `hasResponse` below, mirroring the same check in
+//      packages/shared/src/offline/sync.ts), enqueue the create into the
+//      offline outbox so it replays once connectivity returns
+//      (src/lib/offline.ts registers the matching "<domain>-create"
+//      operations), tag the still-showing optimistic entry `pendingSync:
+//      true` so GoalCard/TaskMetaChips/the schedule chip can render a
+//      "queued" treatment, and resolve rather than throw — a queued create
+//      IS a success from the user's point of view, just not a confirmed one
+//      yet. This used to unconditionally roll the optimistic entry back and
+//      rethrow regardless of whether the create had actually queued, which
+//      made an offline quick-add look like an outright failure (the item
+//      appeared then vanished) and, because the sheet stayed open on that
+//      thrown error, let a retry enqueue a second, duplicate outbox entry
+//      for the same input.
+//   6. on a genuine rejection (the server responded, it just said no), roll
+//      the optimistic patch back and rethrow — replaying an invalid payload
+//      later wouldn't succeed either, so this is not queued.
 //
 // A completion haptic + the domain's "created" analytics event fire only
 // once the live create actually succeeds — a queued-for-later offline add
@@ -37,6 +47,7 @@ import {
   createScheduleBlockSchema,
   createTaskSchema,
   genId,
+  hasResponse,
   type AnalyticsCapability,
   type CreateGoalInput,
   type CreateScheduleBlockInput,
@@ -47,9 +58,9 @@ import {
   type WeekSchedule,
 } from "@goalslot/shared";
 
-import { apiClient } from "../lib/api-client";
+import { apiClient, notify } from "../lib/api-client";
 import { hapticCompletion } from "../lib/haptics";
-import { outbox } from "../lib/offline";
+import { offlineSync, outbox } from "../lib/offline";
 import { categoryQueries, goalQueries, scheduleQueries, taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { useAnalytics } from "../providers/growth-provider";
@@ -84,10 +95,6 @@ const FALLBACK_CATEGORY = "general";
 const DEFAULT_GOAL_TARGET_HOURS = 1;
 const DEFAULT_SLOT_DURATION_MINUTES = 60;
 const PLACEHOLDER_COLOR = "#94A3B8";
-
-function hasResponse(err: unknown): boolean {
-  return Boolean((err as { response?: unknown } | undefined)?.response);
-}
 
 /** HH:mm for "the next half hour from now" — a sane default start time for a quick-added slot. */
 function defaultStartTime(now: Date = new Date()): string {
@@ -132,6 +139,8 @@ interface RunQuickAddArgs<TInput, TCreated> {
   create: (payload: TInput) => Promise<TCreated>;
   applyOptimistic: () => void;
   rollbackOptimistic: () => void;
+  /** Tags the still-showing optimistic entry `pendingSync: true` once its create has queued. */
+  markPendingSync: () => void;
   onSuccess: (created: TCreated) => void;
 }
 
@@ -142,6 +151,7 @@ async function runQuickAdd<TInput, TCreated>({
   create,
   applyOptimistic,
   rollbackOptimistic,
+  markPendingSync,
   onSuccess,
 }: RunQuickAddArgs<TInput, TCreated>): Promise<void> {
   applyOptimistic();
@@ -151,9 +161,12 @@ async function runQuickAdd<TInput, TCreated>({
     void queryClient.invalidateQueries({ queryKey: invalidateKey });
     onSuccess(created);
   } catch (err) {
-    rollbackOptimistic();
-
     if (!hasResponse(err)) {
+      // No server response at all — offline/timeout. The create WAS queued
+      // (about to be, below), so the optimistic entry stays exactly where it
+      // is instead of being yanked back out from under the user; it just
+      // gets tagged so the row can show a "queued" treatment instead of
+      // looking identical to a confirmed save.
       await outbox.addToOutbox({
         id: genId(),
         kind: outboxKind,
@@ -162,8 +175,16 @@ async function runQuickAdd<TInput, TCreated>({
         createdAt: Date.now(),
         retries: 0,
       });
+      void offlineSync.refreshPendingCount();
+      markPendingSync();
+      notify("Queued — will sync when online", "success");
+      return;
     }
 
+    // The server actually answered and rejected this — nothing was queued,
+    // so the optimistic entry has to come back out, and the caller's own
+    // inline error (QuickAddSheet's `error` state) takes over from here.
+    rollbackOptimistic();
     throw err;
   }
 }
@@ -181,6 +202,13 @@ function addToListCache<T extends { id: string }>(queryKey: QueryKey, item: T): 
 
 function removeFromListCache<T extends { id: string }>(queryKey: QueryKey, id: string): void {
   queryClient.setQueryData<T[]>(queryKey, (existing) => (existing ?? []).filter((entry) => entry.id !== id));
+}
+
+/** Tags the still-optimistic list entry `pendingSync: true` once its create has queued to the outbox. */
+function markPendingInListCache<T extends { id: string }>(queryKey: QueryKey, id: string): void {
+  queryClient.setQueryData<T[]>(queryKey, (existing) =>
+    (existing ?? []).map((entry) => (entry.id === id ? { ...entry, pendingSync: true } : entry)),
+  );
 }
 
 async function submitGoal(input: QuickAddGoalInput, analytics: AnalyticsCapability): Promise<void> {
@@ -210,6 +238,7 @@ async function submitGoal(input: QuickAddGoalInput, analytics: AnalyticsCapabili
     create: (p) => apiClient.goals.create(p).then((res) => res.data),
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Goal>(listKey, optimisticId),
+    markPendingSync: () => markPendingInListCache<Goal>(listKey, optimisticId),
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "goalCreated", payload: { goalId: created.id } });
@@ -235,6 +264,7 @@ async function submitTask(input: QuickAddTaskInput, analytics: AnalyticsCapabili
     create: (p) => apiClient.tasks.create(p).then((res) => res.data),
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Task>(listKey, optimisticId),
+    markPendingSync: () => markPendingInListCache<Task>(listKey, optimisticId),
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "taskCreated", payload: { taskId: created.id } });
@@ -285,6 +315,8 @@ async function submitSlot(input: QuickAddSlotInput, analytics: AnalyticsCapabili
     create: (p) => apiClient.schedule.create(p).then((res) => res.data),
     applyOptimistic: () => patchDay((blocks) => [optimistic, ...blocks]),
     rollbackOptimistic: () => patchDay((blocks) => blocks.filter((block) => block.id !== optimisticId)),
+    markPendingSync: () =>
+      patchDay((blocks) => blocks.map((block) => (block.id === optimisticId ? { ...block, pendingSync: true } : block))),
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "scheduleBlockCreated", payload: { scheduleBlockId: created.id } });

@@ -5,19 +5,30 @@ import {
   createOfflineSync,
   createOperationRegistry,
   createOutbox,
+  genId,
+  hasResponse,
   markPendingMessage,
   toMessagingError,
+  type CompleteTaskInput,
   type CreateGoalInput,
+  type CreateJournalEntryInput,
   type CreateScheduleBlockInput,
   type CreateTaskInput,
   type CreateTimeEntryInput,
   type Goal,
+  type JournalEntry,
   type MessagingError,
   type MessagingMessage,
   type MessagingThreadMessage,
+  type Note,
   type ScheduleBlock,
   type Task,
   type TimeEntry,
+  type UpdateGoalInput,
+  type UpdateJournalEntryInput,
+  type UpdateNoteDto,
+  type UpdateScheduleBlockInput,
+  type UpdateTaskInput,
 } from "@goalslot/shared";
 
 import { apiClient, notify } from "./api-client";
@@ -25,7 +36,16 @@ import { asyncStorageAdapter } from "./async-storage-adapter";
 import { deriveOnline } from "./derive-online";
 import { droppedTimeEntryMessage } from "./dropped-time-entry-message";
 import { messagingClient } from "./messaging-client";
-import { goalQueries, messagingQueries, scheduleQueries, taskQueries, timeEntryQueries } from "./queries";
+import { usePendingSyncCount } from "./pending-sync-store";
+import {
+  goalQueries,
+  journalQueries,
+  messagingQueries,
+  noteQueries,
+  scheduleQueries,
+  taskQueries,
+  timeEntryQueries,
+} from "./queries";
 import { queryClient } from "./query-client";
 
 // NetInfo has no synchronous "give me the current state" accessor, so we
@@ -77,6 +97,37 @@ export const outbox = createOutbox(asyncStorageAdapter);
 
 export const operationRegistry = createOperationRegistry();
 
+/**
+ * Shared by every edit/complete/delete call site that queues to the outbox
+ * (goals.tsx, EditGoalSheet.tsx, tasks.tsx, EditTaskSheet.tsx,
+ * ScheduleBlockSheet.tsx, journal.tsx, note/[id].tsx): mirrors
+ * useQuickAdd.ts's hasResponse-check -> outbox.addToOutbox shape so every
+ * mutation queues exactly the same way instead of N near-identical copies.
+ *
+ * Returns whether the failure actually got queued: `true` means no server
+ * response arrived (offline/timeout) and the entry is now in the outbox, so
+ * the caller should keep its optimistic patch (tagged `pendingSync: true`)
+ * rather than roll it back. `false` means the server actually answered and
+ * rejected the request — nothing was queued, and the caller should roll
+ * back to the pre-edit snapshot and show its own inline error, same as
+ * before this offline pass.
+ */
+export async function queueOfflineEdit(kind: string, payload: unknown, err: unknown): Promise<boolean> {
+  if (hasResponse(err)) return false;
+  await outbox.addToOutbox({
+    id: genId(),
+    kind,
+    payload,
+    idempotencyKey: genId(),
+    createdAt: Date.now(),
+    retries: 0,
+  });
+  // Keeps <ConnectivityPill/>'s live count current immediately, rather than
+  // waiting for the next init()/drain() cycle to notice this entry exists.
+  void offlineSync.refreshPendingCount();
+  return true;
+}
+
 // Quick-add (src/hooks/useQuickAdd.ts) is the first caller of these: it
 // enqueues a create here when the live `apiClient.<domain>.create()` call
 // fails without a server response (offline/timeout, per `hasResponse` in
@@ -98,6 +149,154 @@ operationRegistry.registerOperation<CreateTaskInput, Task>("task-create", {
 operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("schedule-block-create", {
   execute: async (payload) => (await apiClient.schedule.create(payload)).data,
   invalidateKeys: [scheduleQueries.scheduleQueries.root()],
+});
+
+// --- Edit/complete/delete operations on EXISTING records --------------------
+//
+// Unlike the creates above (client-generated id, nothing to roll back to on
+// failure — see useQuickAdd.ts), these all target a server id that already
+// exists. Their call sites (goals.tsx, EditGoalSheet.tsx, tasks.tsx,
+// EditTaskSheet.tsx, ScheduleBlockSheet.tsx) keep the optimistic patch
+// applied (tagged `pendingSync: true`, per Goal/Task/ScheduleBlock's own
+// header note on that field) rather than rolling it back while the entry
+// sits queued — the edit/completion/deletion IS going to happen once the
+// outbox drains, so showing it as reverted in the meantime would be wrong in
+// the other direction from the false-failure bug this queueing fixes.
+//
+// Payload shape is `{ id, data }` (or bare `{ id }` for delete/complete/
+// restore) because `OfflineOperation.execute` only ever receives the queued
+// payload + idempotencyKey — there's no second channel to pass the target
+// id, so it travels inside the payload like every other field.
+
+export interface GoalUpdatePayload {
+  id: string;
+  data: UpdateGoalInput;
+}
+
+export interface TaskUpdatePayload {
+  id: string;
+  data: UpdateTaskInput;
+}
+
+export interface TaskCompletePayload {
+  id: string;
+  data: CompleteTaskInput;
+}
+
+export interface ScheduleBlockUpdatePayload {
+  id: string;
+  data: UpdateScheduleBlockInput;
+}
+
+/** Shared by every queued operation that only ever needs the target's id (delete, restore, complete-with-no-extra-fields). */
+export interface EntityIdPayload {
+  id: string;
+}
+
+operationRegistry.registerOperation<GoalUpdatePayload, Goal>("goal-update", {
+  execute: async (payload) => (await apiClient.goals.update(payload.id, payload.data)).data,
+  invalidateKeys: [goalQueries.goalQueries.all],
+});
+
+// A goal's status flip to COMPLETED is just `goals.update` with one field —
+// kept as its own outbox `kind` (rather than reusing "goal-update") so a
+// queued completion reads unambiguously in the outbox and can't be confused
+// with an unrelated field edit made offline in the same session.
+operationRegistry.registerOperation<EntityIdPayload, Goal>("goal-complete", {
+  execute: async (payload) => (await apiClient.goals.update(payload.id, { status: "COMPLETED" })).data,
+  invalidateKeys: [goalQueries.goalQueries.all],
+});
+
+operationRegistry.registerOperation<EntityIdPayload, void>("goal-delete", {
+  execute: async (payload) => {
+    await apiClient.goals.delete(payload.id);
+  },
+  invalidateKeys: [goalQueries.goalQueries.all],
+});
+
+operationRegistry.registerOperation<TaskUpdatePayload, Task>("task-update", {
+  execute: async (payload) => (await apiClient.tasks.update(payload.id, payload.data)).data,
+  invalidateKeys: [taskQueries.taskQueries.all],
+});
+
+operationRegistry.registerOperation<TaskCompletePayload, Task>("task-complete", {
+  execute: async (payload) => (await apiClient.tasks.complete(payload.id, payload.data)).data,
+  invalidateKeys: [taskQueries.taskQueries.all],
+});
+
+operationRegistry.registerOperation<EntityIdPayload, void>("task-delete", {
+  execute: async (payload) => {
+    await apiClient.tasks.delete(payload.id);
+  },
+  invalidateKeys: [taskQueries.taskQueries.all],
+});
+
+// Restore (DONE -> TODO) deletes the completion time entry and recomputes
+// the goal's loggedHours server-side (see tasks.tsx's handleMoveToStatus
+// header note) — there is no client-side equivalent, so like every other
+// operation here this can only be replayed against the live endpoint, never
+// simulated locally.
+operationRegistry.registerOperation<EntityIdPayload, Task>("task-restore", {
+  execute: async (payload) => (await apiClient.tasks.restore(payload.id)).data,
+  invalidateKeys: [taskQueries.taskQueries.all],
+});
+
+operationRegistry.registerOperation<ScheduleBlockUpdatePayload, ScheduleBlock>("schedule-block-update", {
+  execute: async (payload) => (await apiClient.schedule.update(payload.id, payload.data)).data,
+  invalidateKeys: [scheduleQueries.scheduleQueries.root()],
+});
+
+// Registered even though no call site currently routes through it —
+// schedule.tsx's handleDeleteBlock (app/(app)/schedule.tsx:226-268) is the
+// one remaining unqueued delete path and is out of scope for this change
+// (that file is owned by concurrent work); see the handover notes for the
+// exact call-site change it needs once it's free to land. Registering the
+// operation now means that follow-up is a call-site change only, not also a
+// registry change.
+operationRegistry.registerOperation<EntityIdPayload, void>("schedule-block-delete", {
+  execute: async (payload) => {
+    await apiClient.schedule.delete(payload.id);
+  },
+  invalidateKeys: [scheduleQueries.scheduleQueries.root()],
+});
+
+// --- Journal + note edits ---------------------------------------------------
+//
+// Journal is "one entry per day, upsert-shaped": the first save for a date
+// is a create, every save after that is an update against the id the first
+// save returned. journal.tsx tracks which case it's in itself (the cached
+// entry's `pendingSync` flag tells it a create is still only local), so
+// there are two `kind`s rather than one — a queued update needs a real
+// server id to replay against, which a same-day queued create doesn't have
+// yet.
+operationRegistry.registerOperation<CreateJournalEntryInput, JournalEntry>("journal-create", {
+  execute: async (payload) => (await apiClient.journal.create(payload)).data,
+  invalidateKeys: [journalQueries.journalQueries.all],
+});
+
+export interface JournalUpdatePayload {
+  id: string;
+  data: UpdateJournalEntryInput;
+}
+
+operationRegistry.registerOperation<JournalUpdatePayload, JournalEntry>("journal-update", {
+  execute: async (payload) => (await apiClient.journal.update(payload.id, payload.data)).data,
+  invalidateKeys: [journalQueries.journalQueries.all],
+});
+
+// Notes: only the title/content autosave (note/[id].tsx) is queued here —
+// the highest-risk gap of the notes surface, since it's the one place typed
+// content can be lost outright if the user leaves the screen before
+// reconnecting. Create/delete/reorder/favorite (notes.tsx) stay live-only;
+// see the handover notes for the option to extend outbox coverage to them.
+export interface NoteUpdatePayload {
+  id: string;
+  data: UpdateNoteDto;
+}
+
+operationRegistry.registerOperation<NoteUpdatePayload, Note>("note-update", {
+  execute: async (payload) => (await apiClient.notes.update(payload.id, payload.data)).data,
+  invalidateKeys: [noteQueries.noteQueries.all],
 });
 
 // A stopped timer is the one create in this app whose payload exists nowhere
@@ -122,7 +321,7 @@ operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("sc
 operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry-create", {
   execute: async (payload) => (await apiClient.timeEntries.create(payload)).data,
   invalidateKeys: [timeEntryQueries.timeEntryQueries.all],
-  onDropped: (payload) => notify(droppedTimeEntryMessage(payload)),
+  onDropped: (payload) => notify(droppedTimeEntryMessage(payload), "error"),
 });
 
 // A message the user sent while offline.
@@ -197,5 +396,13 @@ export const offlineSync = createOfflineSync({
   invalidateQueries: (queryKey) => {
     void queryClient.invalidateQueries({ queryKey });
   },
-  notify: (message) => notify(message),
+  // Previously dropped the `kind` argument entirely (`notify: (message) =>
+  // notify(message)`), which meant every sync summary — success AND
+  // failure — rendered with whatever `notify`'s own default happened to be.
+  // Passed through now that `notify` (api-client.ts) actually does something
+  // with it (a success-tinted vs. error-tinted toast).
+  notify: (message, kind) => notify(message, kind),
+  // Keeps src/lib/pending-sync-store.ts (and so <ConnectivityPill/>) current
+  // with the outbox's real count across every refresh/drain.
+  onPendingCountChange: (count) => usePendingSyncCount.getState().setCount(count),
 });

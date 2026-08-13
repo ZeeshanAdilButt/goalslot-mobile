@@ -33,6 +33,7 @@ export interface AnalyticsEventMap {
   noteMoved: { noteId: string }
   screenViewed: { screenName: string }
   journalEntrySaved: { date: string }
+  coachDayAnalysisRequested: { date: string }
 }
 
 export type AnalyticsEventName = keyof AnalyticsEventMap

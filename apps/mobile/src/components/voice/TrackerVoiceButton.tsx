@@ -413,7 +413,12 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
         <MicOrb
           status={state.status}
           onPress={handleMicPress}
-          size={52}
+          // The smallest legitimate touch target on this screen, deliberately
+          // — TimerControls' Start/Pause/Resume sits at 88pt and Stop at
+          // 56pt (see TimerControls.tsx), so this orb has to read as the
+          // quieter of the two paths into the same actions, not a rival to
+          // either.
+          size={minTouchTarget}
           accessibilityLabel={
             state.status === "listening" ? "Stop listening" : "Voice control for tracking"
           }
@@ -458,20 +463,32 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
 }
 
 const styles = StyleSheet.create({
+  // No horizontal/top margin of its own any more: this now lives INSIDE
+  // timerCard, right under TimerRing, so the card's own padding and its
+  // `gap: spacing.lg` between children already place it correctly. Adding
+  // margin on top of that gap would just double the spacing.
   container: {
-    marginHorizontal: spacing.xl,
-    marginTop: spacing.md,
-    gap: spacing.sm,
+    width: "100%",
+    gap: spacing.xs,
   },
+  // Deliberately NOT `justifyContent: "space-between"` with a flex-1 status
+  // line stretched to the card's full width, which is what this looked like
+  // before the move — a full-width row reads as a peer of TimerControls'
+  // own row. Centering a compact mic+caption group under the ring instead
+  // is what keeps it looking like a small, secondary annotation on the
+  // elapsed time above it rather than a second transport row.
   micRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
+    justifyContent: "center",
+    gap: spacing.sm,
   },
   statusLine: {
     ...typography.bodySmall,
     color: colors.mutedForeground,
-    flex: 1,
+    textAlign: "center",
+    flexShrink: 1,
+    maxWidth: "78%",
   },
   statusLineBlocked: {
     color: colors.destructive,

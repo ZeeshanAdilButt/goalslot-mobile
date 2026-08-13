@@ -45,8 +45,9 @@ import {
   type ScheduleBlockSheetRef,
 } from "@/components/schedule";
 import { Icon } from "@/components/ui/Icon";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
+import { queueOfflineEdit } from "@/lib/offline";
 import { scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { cancelBlockReminders } from "@/lib/schedule-reminders";
@@ -249,19 +250,49 @@ export default function ScheduleScreen() {
       // deleted on the web — but the direct path shouldn't rely on it.)
       await cancelBlockReminders(targets, notifications);
 
-      try {
-        await Promise.all(targets.map((target) => apiClient.schedule.delete(target.id)));
-        for (const target of targets) {
+      // Sequential, not Promise.all: a series delete is N independent
+      // requests, and each one's outcome — real success, queued offline, or
+      // a genuine rejection — has to be known individually. Mirrors
+      // ScheduleBlockSheet.tsx's create/update loops, which route the same
+      // per-target distinction through the already-registered
+      // "schedule-block-delete" outbox operation rather than a second,
+      // parallel offline mechanism.
+      let rejected = false;
+      let queuedAny = false;
+      for (const target of targets) {
+        try {
+          await apiClient.schedule.delete(target.id);
           analytics.track({ name: "scheduleBlockDeleted", payload: { scheduleBlockId: target.id } });
+        } catch (err) {
+          const queued = await queueOfflineEdit("schedule-block-delete", { id: target.id }, err);
+          if (queued) {
+            queuedAny = true;
+          } else {
+            rejected = true;
+            break;
+          }
         }
-      } catch {
+      }
+
+      if (rejected) {
         queryClient.setQueryData(weeklyKey, previous);
         // A series delete is N independent requests and some may have
-        // succeeded before one failed, so the rollback above can put blocks
-        // back that no longer exist. Refetch to find out what actually
-        // survived rather than leaving a cache that's confidently wrong.
+        // succeeded before one was rejected, so the rollback above can put
+        // blocks back that no longer exist. Refetch to find out what
+        // actually survived rather than leaving a cache that's confidently
+        // wrong.
         void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
         Alert.alert("Couldn't delete", "That time slot is still there — please try again.");
+        return;
+      }
+
+      // Every target either deleted live or queued — the optimistic removal
+      // above already reflects that, so there's nothing left to roll back.
+      // Queued deletes need no `pendingSync` tag the way a queued create/edit
+      // does: the row is already gone from the list, and there is no
+      // "pending" version of gone to show.
+      if (queuedAny) {
+        notify("Queued — will sync when online", "success");
       }
     },
     [allBlocks, analytics, notifications],
@@ -426,7 +457,14 @@ export default function ScheduleScreen() {
       >
         {showSkeleton ? (
           <TimelineSkeleton />
-        ) : weeklyQuery.isError ? (
+        ) : weeklyQuery.isError && !weeklyQuery.data ? (
+          // `&& !weeklyQuery.data`, matching goals.tsx/tasks.tsx's own
+          // read-path guard: without it, a background refetch failing
+          // offline (e.g. switching days after the initial load already
+          // cached a full week) replaces an already-rendered day with a
+          // hard error screen instead of just continuing to show the stale
+          // cached week — the same regression the offline-support pass just
+          // fixed on journal.tsx and note/[id].tsx's equivalent guards.
           <ErrorState
             message="Couldn't load your schedule."
             onRetry={() => {

@@ -246,6 +246,13 @@ export default function AppLayout() {
             name="settings"
             options={{ title: "Settings", href: null }}
           />
+          {/* Pushed from Settings' Notifications row once permission is
+              granted (app/(app)/settings.tsx) — not reachable from the
+              drawer, same as note/[id] and message/[id]. */}
+          <Tabs.Screen
+            name="notification-settings"
+            options={{ title: "Notifications", href: null }}
+          />
         </Tabs>
       </View>
 

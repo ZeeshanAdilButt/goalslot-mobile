@@ -57,6 +57,10 @@ describe("resolveNotificationRoute", () => {
     expect(resolveNotificationRoute({ type: "schedule", dayOfWeek: 3 })).toBe("/schedule?day=3");
   });
 
+  it("routes a 'journal' payload to the Journal tab", () => {
+    expect(resolveNotificationRoute({ type: "journal" })).toBe("/journal");
+  });
+
   it("returns null for payloads missing required fields", () => {
     expect(resolveNotificationRoute({ type: "goal" })).toBeNull();
     expect(resolveNotificationRoute({ type: "schedule", dayOfWeek: 9 })).toBeNull();

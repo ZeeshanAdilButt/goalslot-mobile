@@ -35,6 +35,7 @@ import { currentCoachWeekScopeKey, extractCoachProposals, type CoachProposalActi
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
+import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
@@ -358,7 +359,7 @@ export default function VoiceScreen() {
 
                 {parsed.cleaned.length > 0 ? (
                   <View style={styles.replyBubble} accessibilityLiveRegion="polite">
-                    <Text style={styles.replyText}>{parsed.cleaned}</Text>
+                    <FormattedText text={parsed.cleaned} style={styles.replyText} />
                   </View>
                 ) : null}
 

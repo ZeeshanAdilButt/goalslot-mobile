@@ -71,6 +71,7 @@ import {
   createScheduleBlockSchema,
   DAYS_OF_WEEK_FULL,
   genId,
+  hasResponse,
   minutesToTime,
   timeToMinutes,
   updateScheduleBlockSchema,
@@ -81,11 +82,13 @@ import {
   type WeekSchedule,
 } from "@goalslot/shared";
 
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
+import { offlineSync, outbox } from "@/lib/offline";
 import { categoryQueries, goalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { findLinkedBlocks } from "@/lib/schedule-series";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { useAnalytics } from "@/providers/growth-provider";
 import { Icon } from "@/components/ui/Icon";
 import { TimePicker } from "@/components/ui/TimePicker";
@@ -133,6 +136,9 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   ref,
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to the sheet on its own.
+  const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
   const analytics = useAnalytics();
 
   // See BlockDetailSheet.tsx for the full reasoning. Short version: this sheet
@@ -395,26 +401,75 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
 
     try {
       // ONE create call per selected day — CreateScheduleBlockInput is a
-      // single dayOfWeek, there is no bulk-create endpoint.
-      const created = await Promise.all(
-        payloads.map((payload) => apiClient.schedule.create(payload).then((res) => res.data)),
-      );
+      // single dayOfWeek, there is no bulk-create endpoint. Sequential (not
+      // Promise.all) so each day's outcome — real success, queued-offline,
+      // or a genuine rejection — is known individually rather than only in
+      // aggregate: a multi-day series can partially succeed live and
+      // partially need to queue, and this needs to route each one through
+      // the already-registered "schedule-block-create" outbox operation,
+      // not a second parallel offline mechanism.
+      const created: ScheduleBlock[] = [];
+      const queuedOptimisticIds = new Set<string>();
+      let rejectionErr: unknown = null;
+
+      for (let i = 0; i < payloads.length; i++) {
+        try {
+          const result = await apiClient.schedule.create(payloads[i]);
+          created.push(result.data);
+        } catch (err) {
+          if (hasResponse(err)) {
+            rejectionErr = err;
+            break;
+          }
+          await outbox.addToOutbox({
+            id: genId(),
+            kind: "schedule-block-create",
+            payload: payloads[i],
+            idempotencyKey: genId(),
+            createdAt: Date.now(),
+            retries: 0,
+          });
+          queuedOptimisticIds.add(optimisticEntries[i].id);
+        }
+      }
+
+      if (rejectionErr) {
+        queryClient.setQueryData(weeklyKey, previous);
+        // Also invalidate on failure: if some of the per-day creates above
+        // actually succeeded before one of them was rejected, those blocks
+        // exist server-side even though the client-side rollback just
+        // erased their optimistic entries. A refetch reconciles the cache
+        // with whatever the server actually ended up with, rather than
+        // silently hiding a partially-created series.
+        void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
+        Alert.alert("Couldn't save", "Please try again.");
+        return;
+      }
+
+      if (queuedOptimisticIds.size > 0) {
+        void offlineSync.refreshPendingCount();
+        // Every entry that queued stays visible, tagged pending; the ones
+        // that made it live already carry their real server data via the
+        // invalidate below.
+        queryClient.setQueryData<WeekSchedule>(weeklyKey, (existing) => {
+          const week = { ...(existing ?? {}) };
+          for (const key of Object.keys(week)) {
+            const dayIndex = Number(key);
+            week[dayIndex] = (week[dayIndex] ?? []).map((b) =>
+              queuedOptimisticIds.has(b.id) ? { ...b, pendingSync: true } : b,
+            );
+          }
+          return week;
+        });
+        notify("Queued — will sync when online", "success");
+      }
+
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
       hapticCompletion();
       for (const block of created) {
         analytics.track({ name: "scheduleBlockCreated", payload: { scheduleBlockId: block.id } });
       }
       sheetRef.current?.dismiss();
-    } catch {
-      queryClient.setQueryData(weeklyKey, previous);
-      // Also invalidate on failure: if some of the per-day creates in the
-      // Promise.all above actually succeeded before one of them rejected,
-      // those blocks exist server-side even though the client-side rollback
-      // just erased their optimistic entries. A refetch reconciles the
-      // cache with whatever the server actually ended up with, rather than
-      // silently hiding a partially-created series.
-      void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
-      Alert.alert("Couldn't save", "Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -486,23 +541,79 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
 
     try {
       const targets = fanOutClientSide ? (linked?.members ?? [editingBlock]) : [editingBlock];
-      await Promise.all(targets.map((target) => apiClient.schedule.update(target.id, payload)));
+
+      // Sequential per-target, same reasoning as handleCreate: each target's
+      // outcome (real success, queued-offline, genuine rejection) needs to
+      // be known individually so a queued update can route through the
+      // already-registered "schedule-block-update" outbox operation instead
+      // of an all-or-nothing Promise.all.
+      const succeededIds: string[] = [];
+      const queuedIds: string[] = [];
+      let rejectionErr: unknown = null;
+
+      for (const target of targets) {
+        try {
+          await apiClient.schedule.update(target.id, payload);
+          succeededIds.push(target.id);
+        } catch (err) {
+          if (hasResponse(err)) {
+            rejectionErr = err;
+            break;
+          }
+          await outbox.addToOutbox({
+            id: genId(),
+            kind: "schedule-block-update",
+            payload: { id: target.id, data: payload },
+            idempotencyKey: genId(),
+            createdAt: Date.now(),
+            retries: 0,
+          });
+          queuedIds.push(target.id);
+        }
+      }
+
+      if (rejectionErr) {
+        queryClient.setQueryData(weeklyKey, previous);
+        // A client-side fan-out is N independent requests; some may have
+        // landed before one failed, so the rollback above can restore
+        // blocks to values the server no longer holds. Refetch rather than
+        // leave a cache that is confidently wrong. (Same reasoning as
+        // multi-day create.)
+        if (fanOutClientSide) {
+          void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
+        }
+        Alert.alert("Couldn't save", "Please try again.");
+        return;
+      }
+
+      if (queuedIds.length > 0) {
+        void offlineSync.refreshPendingCount();
+        // Only the `single`-scope branch above patched the cache
+        // optimistically — a `series` scope has nothing local to tag, so
+        // the queued edit simply waits invisibly until the outbox drains
+        // and the invalidate below (eventually) reconciles it.
+        if (scopeToApply === "single") {
+          const queuedIdSet = new Set(queuedIds);
+          queryClient.setQueryData<WeekSchedule>(weeklyKey, (existing) => {
+            const week = { ...(existing ?? {}) };
+            for (const key of Object.keys(week)) {
+              const dayIndex = Number(key);
+              week[dayIndex] = (week[dayIndex] ?? []).map((b) =>
+                queuedIdSet.has(b.id) ? { ...b, pendingSync: true } : b,
+              );
+            }
+            return week;
+          });
+        }
+        notify("Queued — will sync when online", "success");
+      }
+
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
       hapticCompletion();
-      for (const target of targets) {
-        analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: target.id } });
+      for (const id of succeededIds) {
+        analytics.track({ name: "scheduleBlockUpdated", payload: { scheduleBlockId: id } });
       }
       sheetRef.current?.dismiss();
-    } catch {
-      queryClient.setQueryData(weeklyKey, previous);
-      // A client-side fan-out is N independent requests; some may have landed
-      // before one failed, so the rollback above can restore blocks to values
-      // the server no longer holds. Refetch rather than leave a cache that is
-      // confidently wrong. (Same reasoning as multi-day create.)
-      if (fanOutClientSide) {
-        void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
-      }
-      Alert.alert("Couldn't save", "Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -531,6 +642,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       ref={sheetRef}
       enableDynamicSizing
       topInset={insets.top}
+      onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"

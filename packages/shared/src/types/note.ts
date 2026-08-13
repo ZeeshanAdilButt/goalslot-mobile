@@ -23,6 +23,13 @@ export interface Note {
   createdAt: string
   updatedAt: string
   userId: string
+  /**
+   * Client-only UI flag: this row reflects a title/content save that queued
+   * to the offline outbox rather than one the server has confirmed. Never
+   * sent to or read from the API — see the identical note on
+   * `Goal.pendingSync`.
+   */
+  pendingSync?: boolean
 }
 
 export interface NoteTreeItem extends Note {

@@ -117,8 +117,21 @@ export default function SettingsScreen() {
     }, [notifications]),
   );
 
+  // Two different jobs share this one row, gated on whether permission is
+  // settled yet. Not settled: this IS the permission control — request it,
+  // or (once already declined) send the user to the OS settings that are now
+  // the only way to flip it. Settled and granted: there's nothing left to
+  // request, so tapping opens the notification-settings screen where the
+  // rest of the notification preferences (schedule alarms, timer nudges)
+  // actually live. Previously onPress was simply `undefined` in the granted
+  // case — a chevron-less, handler-less row that looked like every other
+  // settings row but did nothing when tapped, which is the exact "many
+  // things in settings are unclickable" bug this fixes.
   const handleNotificationsPress = useCallback(async () => {
-    if (permission === "granted") return;
+    if (permission === "granted") {
+      router.push("/notification-settings");
+      return;
+    }
     if (permission === "denied") {
       // iOS only ever shows the system prompt once. After a decline the only
       // way back is the device's own settings, so send them there rather than
@@ -128,7 +141,7 @@ export default function SettingsScreen() {
     }
     const granted = await notifications.requestPermission();
     setPermission(granted ? "granted" : await notifications.getPermissionStatus());
-  }, [notifications, permission]);
+  }, [notifications, permission, router]);
 
   const confirmLogout = useCallback(() => {
     // Destructive from the user's point of view — they land back on the login
@@ -149,7 +162,7 @@ export default function SettingsScreen() {
     permission === "granted" ? "On" : permission === "denied" ? "Blocked" : permission ? "Off" : "—";
   const notificationsDescription =
     permission === "granted"
-      ? "Schedule blocks and timer nudges can reach you."
+      ? "Tap to manage schedule alarms and timer nudges."
       : permission === "denied"
         ? "Turned off in your device settings. Tap to open them."
         : "Tap to allow schedule reminders and timer nudges.";
@@ -197,14 +210,17 @@ export default function SettingsScreen() {
 
         <SettingsSection
           title="Notifications"
-          footnote="How often the running timer nudges you is set on the Timer screen."
+          footnote="Schedule alarms and how often the timer nudges you both live one tap in, once notifications are on."
         >
           <SettingsRow
             label="Notifications"
             icon={permission === "granted" ? "bell" : "bell-off"}
             value={notificationsValue}
             description={notificationsDescription}
-            onPress={permission === "granted" ? undefined : () => void handleNotificationsPress()}
+            onPress={() => void handleNotificationsPress()}
+            // Announces as a link once there's a real destination (granted),
+            // and as a button while it's still the permission control itself.
+            isLink={permission === "granted"}
             accessibilityHint={
               permission === "denied" ? "Opens your device settings for this app" : undefined
             }

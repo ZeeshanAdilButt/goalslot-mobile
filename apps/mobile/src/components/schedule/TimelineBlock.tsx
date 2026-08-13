@@ -121,6 +121,11 @@ export const TimelineBlock = memo(function TimelineBlock({
               {block.title}
             </Text>
             {isActive ? <NowBadge /> : null}
+            {/* Distinguishes a queued create/edit (still offline, waiting to
+                sync) from a genuinely-saved block — the two would otherwise
+                render identically. See ScheduleBlock.pendingSync's own
+                header note for where this gets set. */}
+            {block.pendingSync ? <PendingBadge /> : null}
           </View>
 
           {density !== "tiny" ? (
@@ -153,6 +158,15 @@ function NowBadge() {
   return (
     <View style={styles.nowBadge}>
       <Text style={styles.nowBadgeText}>Now</Text>
+    </View>
+  );
+}
+
+/** "Queued" marker for a block that's still sitting in the offline outbox. */
+function PendingBadge() {
+  return (
+    <View style={styles.pendingBadge}>
+      <Icon name="refresh" size={10} color={colors.mutedForeground} />
     </View>
   );
 }
@@ -270,5 +284,13 @@ const styles = StyleSheet.create({
     ...typography.label,
     // Dark ink on brand yellow, never white.
     color: colors.primaryForeground,
+  },
+  pendingBadge: {
+    width: 16,
+    height: 16,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.secondary,
   },
 });

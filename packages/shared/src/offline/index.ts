@@ -1,5 +1,6 @@
 export * from './types'
 export * from './id'
+export * from './http-error'
 export * from './outbox'
 export * from './registry'
 export * from './sync'

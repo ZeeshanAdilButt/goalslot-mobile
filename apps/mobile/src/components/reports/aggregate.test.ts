@@ -11,10 +11,12 @@ import {
   buildCategoryBreakdown,
   buildDayBuckets,
   buildDayGoalBreakdown,
+  buildTaskBreakdown,
   computeTrend,
   getPeriodRanges,
   sumMinutesInRange,
   UNCATEGORIZED_KEY,
+  UNTITLED_TASK_KEY,
 } from "./aggregate";
 
 import type { Category, TimeEntry } from "@goalslot/shared";
@@ -202,6 +204,124 @@ describe("buildDayGoalBreakdown", () => {
 
   it("returns nothing for a day with no tracked time", () => {
     expect(buildDayGoalBreakdown([withGoal("2026-08-11", 30, "g1", "Reading")], "2026-08-12", neutral)).toEqual([]);
+  });
+});
+
+describe("buildTaskBreakdown", () => {
+  const neutral = "#999999";
+  const range = { start: "2026-08-10", end: "2026-08-16" };
+
+  function withTask(
+    date: string,
+    duration: number,
+    goalId: string,
+    taskId: string,
+    taskTitle: string,
+  ): TimeEntry {
+    return {
+      id: `${goalId}-${taskId}-${date}-${duration}`,
+      date,
+      duration,
+      goalId,
+      taskId,
+      taskTitle,
+      taskName: taskTitle,
+      goal: { id: goalId, title: "Goal", color: "#ff0000" },
+    } as TimeEntry;
+  }
+
+  it("only counts entries against the requested goal", () => {
+    const slices = buildTaskBreakdown(
+      [
+        withTask("2026-08-11", 30, "g1", "t1", "Read chapter 1"),
+        withTask("2026-08-11", 45, "g2", "t2", "Unrelated task"),
+      ],
+      range,
+      "g1",
+      neutral,
+    );
+    expect(slices).toEqual([{ key: "t1", name: "Read chapter 1", minutes: 30, color: "#ff0000" }]);
+  });
+
+  it("sums repeat sessions against the same task into one slice", () => {
+    const slices = buildTaskBreakdown(
+      [
+        withTask("2026-08-11", 20, "g1", "t1", "Read chapter 1"),
+        withTask("2026-08-12", 10, "g1", "t1", "Read chapter 1"),
+      ],
+      range,
+      "g1",
+      neutral,
+    );
+    expect(slices).toHaveLength(1);
+    expect(slices[0].minutes).toBe(30);
+  });
+
+  it("keeps two tasks under the same goal as separate slices, largest first", () => {
+    const slices = buildTaskBreakdown(
+      [
+        withTask("2026-08-11", 20, "g1", "t1", "Read chapter 1"),
+        withTask("2026-08-11", 50, "g1", "t2", "Write notes"),
+      ],
+      range,
+      "g1",
+      neutral,
+    );
+    expect(slices.map((slice) => [slice.name, slice.minutes])).toEqual([
+      ["Write notes", 50],
+      ["Read chapter 1", 20],
+    ]);
+  });
+
+  it("prefers taskTitle over the free-text taskName", () => {
+    const entry = {
+      id: "e1",
+      date: "2026-08-11",
+      duration: 30,
+      goalId: "g1",
+      taskId: "t1",
+      taskTitle: "Canonical title",
+      taskName: "raw session label",
+      goal: { id: "g1", title: "Goal", color: "#ff0000" },
+    } as TimeEntry;
+    const slices = buildTaskBreakdown([entry], range, "g1", neutral);
+    expect(slices[0].name).toBe("Canonical title");
+  });
+
+  it("falls back to taskName when there is no taskTitle", () => {
+    const entry = {
+      id: "e1",
+      date: "2026-08-11",
+      duration: 30,
+      goalId: "g1",
+      taskName: "raw session label",
+      goal: { id: "g1", title: "Goal", color: "#ff0000" },
+    } as TimeEntry;
+    const slices = buildTaskBreakdown([entry], range, "g1", neutral);
+    expect(slices[0].key).toBe(UNTITLED_TASK_KEY);
+    expect(slices[0].name).toBe("raw session label");
+  });
+
+  it("groups entries with no goal under UNCATEGORIZED_KEY, same as buildGoalBreakdown", () => {
+    const entry = {
+      id: "e1",
+      date: "2026-08-11",
+      duration: 30,
+      taskId: "t1",
+      taskTitle: "Freeform session",
+    } as TimeEntry;
+    const slices = buildTaskBreakdown([entry], range, UNCATEGORIZED_KEY, neutral);
+    expect(slices).toEqual([{ key: "t1", name: "Freeform session", minutes: 30, color: neutral }]);
+  });
+
+  it("respects the range bounds", () => {
+    const slices = buildTaskBreakdown(
+      [withTask("2026-08-20", 30, "g1", "t1", "Read chapter 1")],
+      range,
+      "g1",
+      neutral,
+    );
+    expect(slices).toEqual([]);
   });
 });
 

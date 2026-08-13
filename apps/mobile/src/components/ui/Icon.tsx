@@ -58,6 +58,7 @@ import {
   Tag,
   Trash2,
   User,
+  WifiOff,
   X,
   type LucideIcon,
 } from "lucide-react-native";
@@ -127,6 +128,10 @@ const ICONS = {
   // visibly different from an idle mic rather than merely dimmer.
   mic: Mic,
   "mic-off": MicOff,
+  // Added for the app-wide connectivity pill (src/components/ConnectivityPill.tsx)
+  // — previously only messaging's own OfflineBanner said anything about
+  // connectivity, and it drew no icon at all.
+  "wifi-off": WifiOff,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

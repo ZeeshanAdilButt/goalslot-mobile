@@ -7,4 +7,5 @@
 export * from "./board-columns";
 export * from "./TaskBoard";
 export * from "./TaskBoardCard";
+export * from "./TaskGoalFilter";
 export * from "./TaskMetaChips";

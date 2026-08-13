@@ -12,6 +12,7 @@
 // about — zustand's default merge is a shallow spread, which copies unknown
 // keys straight onto live state — so it gets a test rather than a comment.
 
+import { DEFAULT_JOURNAL_REMINDER_HOUR } from "./journal-reminders";
 import { mergePersistedSettings } from "./settings-store";
 import { DEFAULT_REMINDER_INTERVAL_MINUTES } from "./timer-reminders";
 
@@ -30,6 +31,10 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
 const currentState = {
   timerReminderIntervalMinutes: DEFAULT_REMINDER_INTERVAL_MINUTES,
   setTimerReminderIntervalMinutes: () => undefined,
+  journalReminderEnabled: true,
+  journalReminderHour: DEFAULT_JOURNAL_REMINDER_HOUR,
+  setJournalReminderEnabled: () => undefined,
+  setJournalReminderHour: () => undefined,
 };
 
 describe("mergePersistedSettings", () => {
@@ -74,5 +79,33 @@ describe("mergePersistedSettings", () => {
     const merged = mergePersistedSettings({ timerReminderIntervalMinutes: 10 }, currentState);
 
     expect(typeof merged.setTimerReminderIntervalMinutes).toBe("function");
+  });
+
+  it("keeps a valid stored journal reminder toggle and hour", () => {
+    const merged = mergePersistedSettings(
+      { journalReminderEnabled: false, journalReminderHour: 21 },
+      currentState,
+    );
+
+    expect(merged.journalReminderEnabled).toBe(false);
+    expect(merged.journalReminderHour).toBe(21);
+  });
+
+  it("defaults journalReminderEnabled to true (not false) for an install that predates it", () => {
+    // The upgrade case this feature itself introduces: `undefined` must not
+    // read as "explicitly turned off" — that would silently opt an existing
+    // user out of a reminder they've never seen a toggle for.
+    const merged = mergePersistedSettings({}, currentState);
+
+    expect(merged.journalReminderEnabled).toBe(true);
+    expect(merged.journalReminderHour).toBe(DEFAULT_JOURNAL_REMINDER_HOUR);
+  });
+
+  it("falls back to the default hour for a malformed or out-of-range value", () => {
+    for (const persisted of [{ journalReminderHour: 3 }, { journalReminderHour: "20" }, { journalReminderHour: null }]) {
+      expect(mergePersistedSettings(persisted, currentState).journalReminderHour).toBe(
+        DEFAULT_JOURNAL_REMINDER_HOUR,
+      );
+    }
   });
 });

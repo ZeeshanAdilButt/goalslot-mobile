@@ -27,6 +27,12 @@ export interface ScheduleBlock {
   goalId?: string
   goal?: ScheduleBlockGoalSummary
   tasks?: ScheduleBlockTaskSummary[]
+  /**
+   * Client-only UI flag: this row reflects a create/edit that queued to the
+   * offline outbox rather than one the server has confirmed. Never sent to
+   * or read from the API — see the identical note on `Goal.pendingSync`.
+   */
+  pendingSync?: boolean
 }
 
 /**

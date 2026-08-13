@@ -15,10 +15,12 @@
 // the Paused tab on goals.tsx would be a read-only dead end.
 //
 // Submit follows the same optimistic-patch -> apiClient.goals.update() ->
-// invalidate-on-success / rollback-on-failure shape as goals.tsx's
-// handleComplete/deleteGoal, not src/hooks/useQuickAdd.ts's create-flow
-// pattern (no offline outbox enqueue on failure here, same as those two
-// existing mutations).
+// invalidate-on-success shape as goals.tsx's handleComplete/deleteGoal. On a
+// failure that looks like "no server response" (offline/timeout), the patch
+// stays applied (tagged `pendingSync: true`) and queues to the offline
+// outbox via the already-registered "goal-update" operation — see
+// src/lib/offline.ts's `queueOfflineEdit`. Only a genuine rejection (the
+// server answered and said no) rolls the patch back.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
@@ -32,10 +34,12 @@ import {
 
 import { GOAL_STATUS_OPTIONS, updateGoalSchema, type Goal, type GoalStatus, type UpdateGoalInput } from "@goalslot/shared";
 
-import { apiClient } from "../lib/api-client";
+import { apiClient, notify } from "../lib/api-client";
+import { queueOfflineEdit } from "../lib/offline";
 import { goalQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { formatDeadlineLong, GoalColorPicker, toDeadlineKey } from "@/components/goals";
 import { DEFAULT_SWATCH, SegmentedControl } from "@/components/lists";
 import { DatePicker } from "@/components/ui/DatePicker";
@@ -48,6 +52,9 @@ export interface EditGoalSheetRef {
 
 export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditGoalSheet(_props, ref) {
   const sheetRef = useRef<BottomSheetModal>(null);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to the sheet on its own.
+  const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
   const [goal, setGoal] = useState<Goal | null>(null);
 
   const [title, setTitle] = useState("");
@@ -203,9 +210,25 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
       await apiClient.goals.update(goal.id, payload);
       void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
       sheetRef.current?.dismiss();
-    } catch {
-      queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't save goal", "Please try again.");
+    } catch (err) {
+      const queued = await queueOfflineEdit("goal-update", { id: goal.id, data: payload }, err);
+      if (queued) {
+        // Rebuilt from `previous` (not the current cache) because the
+        // status-changed branch above may have already filtered this goal
+        // out of the list entirely — that tab-move is only real once the
+        // outbox drains, so reverting to `previous` and reapplying the
+        // patch on top keeps the goal visible in its current tab, tagged
+        // pending, instead of vanishing until sync lands.
+        queryClient.setQueryData<Goal[]>(
+          listKey,
+          (previous ?? []).map((g) => (g.id === goal.id ? { ...g, ...goalPatch, pendingSync: true } : g)),
+        );
+        notify("Queued — will sync when online", "success");
+        sheetRef.current?.dismiss();
+      } else {
+        queryClient.setQueryData(listKey, previous);
+        Alert.alert("Couldn't save goal", "Please try again.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -225,6 +248,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
       // content change, and everything sits inside a BottomSheetScrollView
       // regardless, so nothing is ever hard-clipped.
       enableDynamicSizing
+      onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"

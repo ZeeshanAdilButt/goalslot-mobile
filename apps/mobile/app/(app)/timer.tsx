@@ -1058,6 +1058,27 @@ export default function TimerScreen() {
           caption={ringCaption}
         />
 
+        {/* Tracking-scoped voice control. Seated right under the ring — next
+            to the elapsed time it reads, not floating below the whole card
+            the way it used to — because saying "start tracking X" is meant
+            to read as a second on-ramp into the SAME session TimerControls
+            starts below, not a separate feature bolted onto the bottom of
+            the screen. It stays visually subordinate to that transport row
+            on purpose: the orb renders at `minTouchTarget` (44pt — see
+            TrackerVoiceButton's own styles), smaller than both TimerControls'
+            88pt primary and its 56pt Stop, so Start/Pause/Stop still reads as
+            the card's one primary action even though the mic sits above it.
+            Self-contained — it reads the timer store and the goal/task lists
+            itself — except for stopping, which is handed back to this
+            screen's own handler so there stays exactly one path that writes
+            a TimeEntry (or, now, stops a server session). `serverSessionActive`
+            closes the same double-session gap through this entry point:
+            without it, saying "start tracking X" while a server session is
+            already running would create a second, purely local one via the
+            voice path, the same bug this screen's own Start button is
+            guarded against above. */}
+        <TrackerVoiceButton onStopSession={() => void handleStop()} serverSessionActive={hasServerSession} />
+
         <TrackingTarget
           label={activeLabel}
           sublabel={activeSublabel}
@@ -1081,17 +1102,6 @@ export default function TimerScreen() {
           onStop={() => void handleStop()}
         />
       </View>
-
-      {/* Tracking-scoped voice control. Self-contained — it reads the timer
-          store and the goal/task lists itself — except for stopping, which
-          is handed back to this screen's own handler so there stays exactly
-          one path that writes a TimeEntry (or, now, stops a server session).
-          `serverSessionActive` closes the same double-session gap through
-          this entry point: without it, saying "start tracking X" while a
-          server session is already running would create a second, purely
-          local one via the voice path, the same bug this screen's own Start
-          button is guarded against above. */}
-      <TrackerVoiceButton onStopSession={() => void handleStop()} serverSessionActive={hasServerSession} />
     </>
   );
 

@@ -248,25 +248,26 @@ export function buildCategoryBreakdown(
 }
 
 /**
- * Time-by-goal rollup for a single day, largest first — the drill-down shown
- * when a bar in the "Focus per day" chart is tapped.
+ * Time-by-goal rollup over a range, largest first.
  *
  * Returns the same `CategorySlice` shape `buildCategoryBreakdown` does on
- * purpose: the day view reuses `CategoryDonut` (colour swatch + name +
- * percent + duration rows) rather than inventing a second chart type for
- * "time by goal" when "time by category" already renders that pattern.
+ * purpose: every goal-level breakdown reuses `CategoryDonut` (colour swatch +
+ * name + percent + duration rows) rather than inventing a second chart type
+ * for "time by goal" when "time by category" already renders that pattern.
  *
- * Grouped by `goalId` rather than category — a day can hold several sessions
- * against the same goal but different categories (or none), and the ask this
- * answers is "what did I work on Wednesday", which is a goal question, not a
- * category one. Entries with no goal attached pool into the same
- * `UNCATEGORIZED_KEY` sentinel `buildCategoryBreakdown` uses, for the same
- * reason: unfiled time must stay visible, not disappear from the report.
+ * Grouped by `goalId` rather than category — a day (or a whole period) can
+ * hold several sessions against the same goal but different categories (or
+ * none), and the ask this answers is "what did I actually work on", which is
+ * a goal question, not a category one. Entries with no goal attached pool
+ * into the same `UNCATEGORIZED_KEY` sentinel `buildCategoryBreakdown` uses,
+ * for the same reason: unfiled time must stay visible, not disappear from
+ * the report.
  */
-export function buildDayGoalBreakdown(entries: TimeEntry[], dateKey: string, neutralColor: string): CategorySlice[] {
+export function buildGoalBreakdown(entries: TimeEntry[], range: PeriodRange, neutralColor: string): CategorySlice[] {
   const buckets = new Map<string, { minutes: number; name: string; color: string }>();
   for (const entry of entries) {
-    if (entry.date.slice(0, 10) !== dateKey) continue;
+    const key = entry.date.slice(0, 10);
+    if (key < range.start || key > range.end) continue;
 
     const bucketKey = entry.goalId ?? UNCATEGORIZED_KEY;
     const existing = buckets.get(bucketKey);
@@ -276,6 +277,77 @@ export function buildDayGoalBreakdown(entries: TimeEntry[], dateKey: string, neu
       buckets.set(bucketKey, {
         minutes: entry.duration,
         name: entry.goal?.title ?? "No goal",
+        color: entry.goal?.color ?? neutralColor,
+      });
+    }
+  }
+
+  return [...buckets.entries()]
+    .map(([key, bucket]) => ({ key, name: bucket.name, minutes: bucket.minutes, color: bucket.color }))
+    .filter((slice) => slice.minutes > 0)
+    .sort((a, b) => b.minutes - a.minutes);
+}
+
+/**
+ * Single-day convenience wrapper around `buildGoalBreakdown` — the drill-down
+ * shown when a bar in the "Focus per day" chart is tapped. Kept as its own
+ * named function (rather than making every call site build a one-day range)
+ * because "what did I work on Wednesday" is a distinct, common enough
+ * question to read clearly at the call site.
+ */
+export function buildDayGoalBreakdown(entries: TimeEntry[], dateKey: string, neutralColor: string): CategorySlice[] {
+  return buildGoalBreakdown(entries, { start: dateKey, end: dateKey }, neutralColor);
+}
+
+/**
+ * Bucket key for a task-breakdown row with no real task behind it — either a
+ * raw timer session with nothing selected, or (defensively) a `taskId` that
+ * no longer matches a real task. Mirrors `UNCATEGORIZED_KEY`'s role one level
+ * down: unfiled time must stay visible here too, not disappear because it
+ * has nothing to group under.
+ */
+export const UNTITLED_TASK_KEY = "__untitled_task__";
+
+/**
+ * Time-by-task rollup for a single goal (or the "No goal" bucket) within a
+ * range — the drill-down one level below `buildGoalBreakdown`, for "what did
+ * I actually spend that goal's time on". This is the presentation gap the
+ * Reports screen had: category and goal totals both existed, but nothing
+ * broke either of them down to the task that consumed the time.
+ *
+ * `goalKey` is either a real `goalId` or the `UNCATEGORIZED_KEY` sentinel
+ * `buildGoalBreakdown`/`buildCategoryBreakdown` use for entries with no goal
+ * attached, so it composes directly with a slice returned by either of those
+ * — the caller doesn't need a separate "was this the uncategorized bucket"
+ * branch to call this.
+ *
+ * Grouped by `taskId`, not by `taskName` — two different tasks can happen to
+ * share a title, and the entry's `taskId` is what actually identifies "the
+ * same task" the way the Tasks screen would. Name prefers `taskTitle` (the
+ * canonical title snapshotted onto the entry) over the free-text `taskName`
+ * a one-tap timer session with nothing selected carries instead — same
+ * fallback `SessionHistory.tsx`'s row title uses, for the same entries.
+ */
+export function buildTaskBreakdown(
+  entries: TimeEntry[],
+  range: PeriodRange,
+  goalKey: string,
+  neutralColor: string,
+): CategorySlice[] {
+  const buckets = new Map<string, { minutes: number; name: string; color: string }>();
+  for (const entry of entries) {
+    const key = entry.date.slice(0, 10);
+    if (key < range.start || key > range.end) continue;
+    if ((entry.goalId ?? UNCATEGORIZED_KEY) !== goalKey) continue;
+
+    const bucketKey = entry.taskId ?? UNTITLED_TASK_KEY;
+    const existing = buckets.get(bucketKey);
+    if (existing) {
+      existing.minutes += entry.duration;
+    } else {
+      buckets.set(bucketKey, {
+        minutes: entry.duration,
+        name: entry.taskTitle || entry.taskName || "Untitled session",
         color: entry.goal?.color ?? neutralColor,
       });
     }

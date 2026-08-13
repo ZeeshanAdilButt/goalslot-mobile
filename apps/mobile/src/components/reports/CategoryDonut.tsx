@@ -16,9 +16,16 @@
 // segments a donut at phone width stops being readable and the legend
 // starts scrolling, and neither helps anyone understand where their time
 // went.
+//
+// Legend rows are optionally tappable (`onSelectSlice`), which is what lets
+// a caller build a further drill-down one level below whatever this donut is
+// already showing — e.g. the Reports screen's "Time by goal" card uses it to
+// reveal the tasks under a tapped goal. The folded "Other" row never becomes
+// interactive: it represents more than one underlying thing pooled together,
+// so there is no single key a tap on it could sensibly drill into.
 
 import { useEffect } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, {
   Easing,
   useAnimatedProps,
@@ -33,6 +40,7 @@ import { formatDuration } from "@goalslot/shared";
 import type { CategorySlice } from "@/components/reports/aggregate";
 import { Reveal } from "@/components/reports/Reveal";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { Icon } from "@/components/ui/Icon";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
@@ -42,6 +50,8 @@ const SWEEP_DURATION = 700;
 const MAX_SLICES = 5;
 /** Arc length dropped between segments so neighbouring colours don't bleed together. */
 const SEGMENT_GAP = 3;
+/** Key `foldLongTail` gives the merged long-tail row — never made interactive. */
+const OTHER_KEY = "__other__";
 
 interface SegmentProps {
   sweep: SharedValue<number>;
@@ -86,9 +96,18 @@ export interface CategoryDonutProps {
   slices: CategorySlice[];
   /** Diameter in points. */
   size: number;
+  /**
+   * Fires with a slice's `key` when its legend row is tapped. Omit to render
+   * a static, unpressable legend (the original behaviour, still what "Time
+   * by category" and the per-day goal breakdown want). The folded "Other"
+   * row ignores this — see the header comment.
+   */
+  onSelectSlice?: (key: string) => void;
+  /** Key of the slice currently drilled into, if any — drawn with a highlight. */
+  selectedKey?: string | null;
 }
 
-export function CategoryDonut({ slices, size }: CategoryDonutProps) {
+export function CategoryDonut({ slices, size, onSelectSlice, selectedKey }: CategoryDonutProps) {
   const reduceMotion = useReduceMotion();
   const sweep = useSharedValue(0);
 
@@ -153,22 +172,47 @@ export function CategoryDonut({ slices, size }: CategoryDonutProps) {
       </View>
 
       <View style={styles.legend}>
-        {visibleSlices.map((slice, index) => (
-          <Reveal key={slice.key} delay={120 + index * 60}>
-            <View
-              style={styles.legendRow}
-              accessible
-              accessibilityLabel={`${slice.name}: ${formatDuration(slice.minutes)}, ${percentOf(slice.minutes, total)} percent`}
-            >
+        {visibleSlices.map((slice, index) => {
+          const isInteractive = Boolean(onSelectSlice) && slice.key !== OTHER_KEY;
+          const isSelected = isInteractive && slice.key === selectedKey;
+          const percent = percentOf(slice.minutes, total);
+
+          const row = (
+            <View style={[styles.legendRow, isInteractive && styles.legendRowInteractive, isSelected && styles.legendRowSelected]}>
               <View style={[styles.legendSwatch, { backgroundColor: slice.color }]} />
               <Text style={styles.legendName} numberOfLines={1}>
                 {slice.name}
               </Text>
-              <Text style={styles.legendPercent}>{percentOf(slice.minutes, total)}%</Text>
+              <Text style={styles.legendPercent}>{percent}%</Text>
               <Text style={styles.legendValue}>{formatDuration(slice.minutes)}</Text>
+              {isInteractive ? (
+                <Icon name={isSelected ? "chevron-down" : "chevron"} size={14} color={colors.mutedForeground} />
+              ) : null}
             </View>
-          </Reveal>
-        ))}
+          );
+
+          return (
+            <Reveal key={slice.key} delay={120 + index * 60}>
+              {isInteractive ? (
+                <Pressable
+                  onPress={() => onSelectSlice?.(slice.key)}
+                  hitSlop={spacing.xxs}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${slice.name}: ${formatDuration(slice.minutes)}, ${percent} percent${isSelected ? ", selected" : ""}`}
+                >
+                  {row}
+                </Pressable>
+              ) : (
+                <View
+                  accessible
+                  accessibilityLabel={`${slice.name}: ${formatDuration(slice.minutes)}, ${percent} percent`}
+                >
+                  {row}
+                </View>
+              )}
+            </Reveal>
+          );
+        })}
       </View>
     </View>
   );
@@ -186,7 +230,7 @@ function foldLongTail(slices: CategorySlice[]): CategorySlice[] {
   const tailMinutes = slices.slice(MAX_SLICES - 1).reduce((sum, slice) => sum + slice.minutes, 0);
   return [
     ...head,
-    { key: "__other__", name: `Other (${slices.length - head.length})`, minutes: tailMinutes, color: colors.mutedForeground },
+    { key: OTHER_KEY, name: `Other (${slices.length - head.length})`, minutes: tailMinutes, color: colors.mutedForeground },
   ];
 }
 
@@ -225,6 +269,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
     paddingVertical: spacing.xs,
+  },
+  // Horizontal padding only shows up once a row is tappable, so a static
+  // legend (e.g. "Time by category") keeps its original flush-left edge.
+  legendRowInteractive: {
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.md,
+  },
+  legendRowSelected: {
+    backgroundColor: colors.secondary,
   },
   legendSwatch: {
     width: 10,

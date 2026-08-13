@@ -32,6 +32,7 @@ import {
 } from "@goalslot/shared";
 
 import { ErrorState } from "@/components/ErrorState";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { apiClient } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
 import { messagingQueries } from "@/lib/queries";
@@ -57,6 +58,9 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
   function NewConversationSheet({ existingCounterpartIds, onConversationReady }, ref) {
     const sheetRef = useRef<BottomSheetModal>(null);
     useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
+    // See the hook's own header for why this is needed at all — the library
+    // doesn't wire Android's hardware back button to the sheet on its own.
+    const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
 
     const [creatingFor, setCreatingFor] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -109,6 +113,7 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
       <BottomSheetModal
         ref={sheetRef}
         snapPoints={["60%"]}
+        onChange={handleSheetPositionChange}
         backdropComponent={renderBackdrop}
         enablePanDownToClose
         handleIndicatorStyle={styles.handleIndicator}

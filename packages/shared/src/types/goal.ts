@@ -29,6 +29,14 @@ export interface Goal {
   status: GoalStatus
   color: string
   labels?: GoalLabel[]
+  /**
+   * Client-only UI flag: this row reflects an edit that queued to the offline
+   * outbox rather than one the server has confirmed. Never sent to or read
+   * from the API — set locally on an optimistic cache patch (mobile's
+   * goals.tsx / EditGoalSheet.tsx / useQuickAdd.ts) and cleared by the
+   * post-sync invalidate once the real record comes back.
+   */
+  pendingSync?: boolean
 }
 
 /**

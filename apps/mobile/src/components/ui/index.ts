@@ -1,6 +1,7 @@
 export * from "./Badge";
 export * from "./Button";
 export * from "./Card";
+export * from "./FormattedText";
 export * from "./Icon";
 export * from "./IconBadge";
 export * from "./ProgressRing";

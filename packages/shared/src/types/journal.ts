@@ -18,4 +18,10 @@ export interface JournalEntry {
   content: string
   createdAt?: string
   updatedAt?: string
+  /**
+   * Client-only UI flag: this entry reflects a save that queued to the
+   * offline outbox rather than one the server has confirmed. Never sent to
+   * or read from the API — see the identical note on `Goal.pendingSync`.
+   */
+  pendingSync?: boolean
 }

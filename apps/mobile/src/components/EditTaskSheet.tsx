@@ -5,10 +5,13 @@
 // row-tap flow needs to seed the form from a specific Task.
 //
 // Submit follows the same optimistic-patch -> apiClient.tasks.update() ->
-// invalidate-on-success / rollback-on-failure shape as tasks.tsx's
-// handleReschedule (patch the cache, call the live endpoint, invalidate on
-// success, restore the pre-patch snapshot on failure) rather than
-// src/hooks/useQuickAdd.ts's create-flow pattern.
+// invalidate-on-success shape as tasks.tsx's handleReschedule (patch the
+// cache, call the live endpoint, invalidate on success). On a failure that
+// looks like "no server response" (offline/timeout), the patch stays
+// applied (tagged `pendingSync: true`) and queues to the offline outbox via
+// the already-registered "task-update" operation — see
+// src/lib/offline.ts's `queueOfflineEdit`. Only a genuine rejection (the
+// server answered and said no) restores the pre-patch snapshot.
 //
 // Due date uses the same quick-pick buttons as tasks.tsx's reschedule sheet
 // (RESCHEDULE_OPTIONS: Today/Tomorrow/Next week), instead of a free-text
@@ -60,10 +63,12 @@ import {
 
 import { getLocalDateString, updateTaskSchema, type Task, type UpdateTaskInput } from "@goalslot/shared";
 
-import { apiClient } from "../lib/api-client";
+import { apiClient, notify } from "../lib/api-client";
+import { queueOfflineEdit } from "../lib/offline";
 import { taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 import { parseDateKey } from "@/components/ui/calendar-math";
@@ -107,6 +112,9 @@ function formatCustomDueDate(date: string): string {
 
 export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditTaskSheet(_props, ref) {
   const sheetRef = useRef<BottomSheetModal>(null);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to the sheet on its own.
+  const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
   const [task, setTask] = useState<Task | null>(null);
 
   const [title, setTitle] = useState("");
@@ -196,9 +204,20 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
       await apiClient.tasks.update(task.id, payload);
       void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
       sheetRef.current?.dismiss();
-    } catch {
-      queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't save task", "Please try again.");
+    } catch (err) {
+      const queued = await queueOfflineEdit("task-update", { id: task.id, data: payload }, err);
+      if (queued) {
+        // The patch above is already applied; just tag it pending instead
+        // of rolling it back to `previous`.
+        queryClient.setQueryData<Task[]>(listKey, (existing) =>
+          (existing ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
+        );
+        notify("Queued — will sync when online", "success");
+        sheetRef.current?.dismiss();
+      } else {
+        queryClient.setQueryData(listKey, previous);
+        Alert.alert("Couldn't save task", "Please try again.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -218,6 +237,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
       // content change, and everything sits inside a BottomSheetScrollView
       // regardless, so nothing is ever hard-clipped.
       enableDynamicSizing
+      onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"

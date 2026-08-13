@@ -57,6 +57,7 @@ import {
   buildReorderPayload,
   flattenVisibleTree,
   getProjection,
+  hasResponse,
   type FlatNote,
   type Note,
   type NoteReorderItem,
@@ -84,6 +85,25 @@ import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useNotesUiStore } from "@/lib/notes-ui-store";
 import { useAnalytics } from "@/providers/growth-provider";
+
+/**
+ * Create/delete/reorder/favorite aren't queued to the offline outbox (see
+ * the handover notes — note/[id].tsx's title/content autosave IS, since
+ * that's the one place typed content can be lost outright). What this DOES
+ * fix: a generic "please try again" read identically whether the request
+ * never reached the server (offline) or the server answered and rejected
+ * it, which told an offline user their own connection might be the fixable
+ * part when it wasn't going to retry-and-succeed at all. `hasResponse` (the
+ * same duck-type check the outbox-backed call sites use to decide whether
+ * to queue) tells the two apart.
+ */
+function offlineAwareAlert(err: unknown, title: string, rejectionMessage: string): void {
+  if (!hasResponse(err)) {
+    Alert.alert(title, "You're offline — reconnect and try again.");
+    return;
+  }
+  Alert.alert(title, rejectionMessage);
+}
 
 /** Fixed row height — every drag/drop position is index * ROW_H. */
 const ROW_H = 48;
@@ -400,9 +420,9 @@ export default function NotesScreen() {
         }
         if (options.announceMessage) announce(options.announceMessage);
         return true;
-      } catch {
+      } catch (err) {
         restoreSnapshot(previous);
-        Alert.alert("Couldn't move page", "Please try again.");
+        offlineAwareAlert(err, "Couldn't move page", "Please try again.");
         return false;
       }
     },
@@ -475,8 +495,8 @@ export default function NotesScreen() {
         if (parentId) expand(parentId);
         analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
         router.push(`/note/${created.id}`);
-      } catch {
-        Alert.alert("Couldn't create page", "Please try again.");
+      } catch (err) {
+        offlineAwareAlert(err, "Couldn't create page", "Please try again.");
       } finally {
         setIsCreating(false);
       }
@@ -523,9 +543,9 @@ export default function NotesScreen() {
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         analytics.track({ name: "noteDeleted", payload: { noteId: note.id } });
         announce(`Deleted "${note.title}"`);
-      } catch {
+      } catch (err) {
         restoreSnapshot(previous);
-        Alert.alert("Couldn't delete page", "Please try again.");
+        offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
       }
     },
     [analytics, announce, nodeMap, restoreSnapshot],
@@ -556,9 +576,9 @@ export default function NotesScreen() {
         await apiClient.notes.update(note.id, { isFavorite: nextValue });
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         hapticLight();
-      } catch {
+      } catch (err) {
         restoreSnapshot(previous);
-        Alert.alert("Couldn't update favorite", "Please try again.");
+        offlineAwareAlert(err, "Couldn't update favorite", "Please try again.");
       }
     },
     [restoreSnapshot],

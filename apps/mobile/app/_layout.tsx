@@ -6,7 +6,9 @@ import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { useIsRestoring } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 
+import { ConnectivityPill } from "@/components/ConnectivityPill";
 import { LoadingState } from "@/components/LoadingState";
+import { ToastHost } from "@/components/ToastHost";
 import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
@@ -81,7 +83,20 @@ function AppGate() {
 
   // Auth/route guarding happens one level down, in the (auth) and (app)
   // group layouts — they each redirect based on `status`.
-  return <Slot />;
+  //
+  // <ConnectivityPill/> and <ToastHost/> are mounted here — once, above
+  // every route — rather than per-screen, so every screen (not just
+  // messaging, which already had its own OfflineBanner) gets the same
+  // "you're offline" / "N changes waiting to sync" pill and the same landing
+  // spot for the sync engine's toasts, without every screen wiring it up
+  // itself.
+  return (
+    <>
+      <Slot />
+      <ConnectivityPill />
+      <ToastHost />
+    </>
+  );
 }
 
 export default function RootLayout() {

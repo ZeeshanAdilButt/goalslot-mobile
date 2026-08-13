@@ -14,6 +14,7 @@ import { fetch as expoFetch } from "expo/fetch";
 import { createApiClient } from "@goalslot/shared";
 
 import { secureTokenStorage } from "./secure-token-storage";
+import { showToast, type ToastKind } from "./toast-store";
 
 const DEFAULT_API_BASE_URL = "https://api.goalslot.io";
 
@@ -40,11 +41,19 @@ export function setSessionExpiredHandler(handler: SessionExpiredHandler): void {
   sessionExpiredHandler = handler;
 }
 
-// Placeholder for user-facing notices. No toast/snackbar library is
-// installed yet (Phase 4 concern) — this just makes session/offline events
-// visible during development.
-export function notify(message: string): void {
-  console.warn(`[GoalSlot] ${message}`);
+// User-facing notices: session expiry (this module's own `notify?.(...)`
+// call above), and — via src/lib/offline.ts's `createOfflineSync` config —
+// the shared sync engine's "Synced N offline changes" / "N offline changes
+// could not be synced" summaries and the dropped-time-entry message. Backed
+// by src/lib/toast-store.ts's queue and rendered by <ToastHost/>
+// (src/components/ToastHost.tsx, mounted once in app/_layout.tsx).
+//
+// `kind` defaults to "success" so this still satisfies the plain
+// `(message: string) => void` shape createApiClient's config expects
+// (packages/shared/src/api/types.ts) for the session-expired call above,
+// while offline.ts's richer callers pass it explicitly.
+export function notify(message: string, kind: ToastKind = "success"): void {
+  showToast(message, kind);
 }
 
 export const apiClient = createApiClient({

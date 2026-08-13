@@ -46,6 +46,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 
 import {
+  genId,
   getLocalDateString,
   type CompleteTaskInput,
   type Task,
@@ -56,6 +57,7 @@ import {
 import { EditTaskSheet, type EditTaskSheetRef } from "@/components/EditTaskSheet";
 import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { SkeletonListItem } from "@/components/Skeleton";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import {
@@ -70,9 +72,17 @@ import {
   TONES,
   type SegmentOption,
 } from "@/components/lists";
-import { BOARD_COLUMNS, TaskBoard, TaskBoardSkeleton, TaskMetaChips } from "@/components/tasks";
-import { apiClient } from "@/lib/api-client";
+import {
+  BOARD_COLUMNS,
+  TaskBoard,
+  TaskBoardSkeleton,
+  TaskGoalFilter,
+  TaskMetaChips,
+  type GoalFilterOption,
+} from "@/components/tasks";
+import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
+import { offlineSync, outbox, queueOfflineEdit } from "@/lib/offline";
 import { taskQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
@@ -116,6 +126,59 @@ function buildRows(tasks: Task[]): TaskListRow[] {
   return rows;
 }
 
+/**
+ * Goal filter — this screen's answer to "show me tasks under this goal"
+ * (every task already carries its goal as a chip via TaskMetaChips, but
+ * there was previously no way to go the other direction and start FROM a
+ * goal). See TaskGoalFilter's header comment for why this is a filter
+ * alongside the existing status grouping rather than a second nested
+ * grouping.
+ */
+const GOAL_FILTER_ALL = "all";
+/** The goal-less bucket — tasks without a goal stay visible under this key, never hidden. */
+const GOAL_FILTER_NO_GOAL = "none";
+
+/**
+ * One option per distinct goal actually present on the (unfiltered) task
+ * list, plus "All" and — only when at least one task has no goal — "No
+ * goal". Sourced from `task.goal` (not `task.goalId`) to match
+ * TaskMetaChips' own goal chip, so the filter's buckets and the per-task
+ * chips always agree on what counts as "has a goal".
+ */
+function buildGoalFilterOptions(tasks: Task[]): GoalFilterOption[] {
+  const goalBuckets = new Map<string, { label: string; color: string; count: number }>();
+  let noGoalCount = 0;
+
+  for (const task of tasks) {
+    if (task.goal) {
+      const bucket = goalBuckets.get(task.goal.id);
+      if (bucket) {
+        bucket.count += 1;
+      } else {
+        goalBuckets.set(task.goal.id, { label: task.goal.title, color: task.goal.color, count: 1 });
+      }
+    } else {
+      noGoalCount += 1;
+    }
+  }
+
+  const goalOptions = Array.from(goalBuckets.entries())
+    .map(([id, bucket]) => ({ key: id, label: bucket.label, count: bucket.count, color: bucket.color }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  // Fewer than two buckets means there's nothing to filter BY — a single
+  // goal (or none at all) already describes every task on screen, so a
+  // filter row would just repeat what's already visible.
+  const bucketCount = goalOptions.length + (noGoalCount > 0 ? 1 : 0);
+  if (bucketCount < 2) return [];
+
+  const options: GoalFilterOption[] = [{ key: GOAL_FILTER_ALL, label: "All", count: tasks.length }, ...goalOptions];
+  if (noGoalCount > 0) {
+    options.push({ key: GOAL_FILTER_NO_GOAL, label: "No goal", count: noGoalCount });
+  }
+  return options;
+}
+
 function addDays(date: Date, days: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
@@ -154,12 +217,37 @@ export default function TasksScreen() {
   const { data: tasks, isPending, isError, error, isFetching, refetch } = useQuery(taskQueries.list());
 
   const [view, setView] = useState<TaskView>("list");
-  const rows = useMemo(() => buildRows(tasks ?? []), [tasks]);
+
+  // Options are built off the FULL task list (never the already-filtered
+  // one) so picking "Olostep" doesn't make every other goal's chip vanish
+  // from the row along with its tasks.
+  const goalFilterOptions = useMemo(() => buildGoalFilterOptions(tasks ?? []), [tasks]);
+  const [goalFilter, setGoalFilter] = useState<string>(GOAL_FILTER_ALL);
+  // Falls back to "All" rather than trusting stale state verbatim: a goal
+  // filter can go stale mid-session (its last task got reassigned or
+  // deleted elsewhere), and rendering an empty row for a key that no longer
+  // exists would look like a bug rather than an empty result.
+  const activeGoalFilter = goalFilterOptions.some((option) => option.key === goalFilter) ? goalFilter : GOAL_FILTER_ALL;
+
+  const filteredTasks = useMemo(() => {
+    const all = tasks ?? [];
+    if (activeGoalFilter === GOAL_FILTER_ALL) return all;
+    if (activeGoalFilter === GOAL_FILTER_NO_GOAL) return all.filter((task) => !task.goal);
+    return all.filter((task) => task.goal?.id === activeGoalFilter);
+  }, [tasks, activeGoalFilter]);
+
+  const rows = useMemo(() => buildRows(filteredTasks), [filteredTasks]);
 
   const quickAddSheetRef = useRef<BottomSheetModal>(null);
   const rescheduleSheetRef = useRef<BottomSheetModal>(null);
   const moveSheetRef = useRef<BottomSheetModal>(null);
   const editTaskRef = useRef<EditTaskSheetRef>(null);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to a BottomSheetModal on its
+  // own; every sheet in the app has to opt in individually.
+  const { handleSheetPositionChange: handleReschedulePositionChange } =
+    useBottomSheetBackHandler(rescheduleSheetRef);
+  const { handleSheetPositionChange: handleMovePositionChange } = useBottomSheetBackHandler(moveSheetRef);
   const [rescheduleTarget, setRescheduleTarget] = useState<Task | null>(null);
   const [moveTarget, setMoveTarget] = useState<Task | null>(null);
 
@@ -218,9 +306,17 @@ export default function TasksScreen() {
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
         hapticCompletion();
         analytics.track({ name: "taskCompleted", payload: { taskId: task.id } });
-      } catch {
-        restoreSnapshot(previous);
-        Alert.alert("Couldn't complete task", "Please try again.");
+      } catch (err) {
+        const queued = await queueOfflineEdit("task-complete", { id: task.id, data: payload }, err);
+        if (queued) {
+          // The patch above already applied (status: DONE); just tag it so
+          // the row reads as "queued" rather than looking identically saved.
+          patchTask(task.id, { pendingSync: true });
+          notify("Queued — will sync when online", "success");
+        } else {
+          restoreSnapshot(previous);
+          Alert.alert("Couldn't complete task", "Please try again.");
+        }
       }
     },
     [analytics, patchTask, restoreSnapshot],
@@ -234,12 +330,24 @@ export default function TasksScreen() {
         await apiClient.tasks.delete(task.id);
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
         analytics.track({ name: "taskDeleted", payload: { taskId: task.id } });
-      } catch {
-        restoreSnapshot(previous);
-        Alert.alert("Couldn't delete task", "Please try again.");
+      } catch (err) {
+        const queued = await queueOfflineEdit("task-delete", { id: task.id }, err);
+        if (queued) {
+          // Reappears rather than staying gone — a delete that hasn't
+          // happened yet shouldn't look like it already did — tagged
+          // pending so it's clear the removal is only queued.
+          queryClient.setQueryData<Task[]>(
+            listQueryKey,
+            (previous ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
+          );
+          notify("Queued — will sync when online", "success");
+        } else {
+          restoreSnapshot(previous);
+          Alert.alert("Couldn't delete task", "Please try again.");
+        }
       }
     },
-    [analytics, removeTask, restoreSnapshot],
+    [analytics, listQueryKey, removeTask, restoreSnapshot],
   );
 
   const handleReschedule = useCallback(
@@ -250,9 +358,15 @@ export default function TasksScreen() {
       try {
         await apiClient.tasks.update(task.id, payload);
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
-      } catch {
-        restoreSnapshot(previous);
-        Alert.alert("Couldn't reschedule task", "Please try again.");
+      } catch (err) {
+        const queued = await queueOfflineEdit("task-update", { id: task.id, data: payload }, err);
+        if (queued) {
+          patchTask(task.id, { pendingSync: true });
+          notify("Queued — will sync when online", "success");
+        } else {
+          restoreSnapshot(previous);
+          Alert.alert("Couldn't reschedule task", "Please try again.");
+        }
       }
     },
     [patchTask, restoreSnapshot],
@@ -291,9 +405,16 @@ export default function TasksScreen() {
         ...(wasDone ? { completedAt: undefined, actualMinutes: undefined } : {}),
       });
 
+      // Tracks whether the live `restore` call actually landed before a
+      // later step failed, so the catch below only re-queues the step(s)
+      // that didn't happen — queuing `task-restore` again after a restore
+      // that already succeeded server-side would restore a second time.
+      let restoreSucceeded = false;
+
       try {
         if (wasDone) {
           await apiClient.tasks.restore(task.id);
+          restoreSucceeded = true;
           if (status !== "TODO") {
             await apiClient.tasks.update(task.id, { status });
           }
@@ -301,9 +422,43 @@ export default function TasksScreen() {
           await apiClient.tasks.update(task.id, { status });
         }
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
-      } catch {
-        restoreSnapshot(previous);
-        Alert.alert("Couldn't move task", "Please try again.");
+      } catch (err) {
+        if (wasDone && !restoreSucceeded) {
+          const queuedRestore = await queueOfflineEdit("task-restore", { id: task.id }, err);
+          if (queuedRestore) {
+            if (status !== "TODO") {
+              // Sequenced after the restore above in the same outbox — the
+              // drain replays entries in insertion order, so this only ever
+              // runs once the restore it depends on has actually landed.
+              await outbox.addToOutbox({
+                id: genId(),
+                kind: "task-update",
+                payload: { id: task.id, data: { status } },
+                idempotencyKey: genId(),
+                createdAt: Date.now(),
+                retries: 0,
+              });
+              void offlineSync.refreshPendingCount();
+            }
+            patchTask(task.id, { pendingSync: true });
+            notify("Queued — will sync when online", "success");
+          } else {
+            restoreSnapshot(previous);
+            Alert.alert("Couldn't move task", "Please try again.");
+          }
+        } else {
+          // Either the plain (!wasDone) path, or restore already succeeded
+          // live and only the follow-up status update failed — either way
+          // there's exactly one queued step left.
+          const queued = await queueOfflineEdit("task-update", { id: task.id, data: { status } }, err);
+          if (queued) {
+            patchTask(task.id, { pendingSync: true });
+            notify("Queued — will sync when online", "success");
+          } else {
+            restoreSnapshot(previous);
+            Alert.alert("Couldn't move task", "Please try again.");
+          }
+        }
       }
     },
     [handleComplete, patchTask, restoreSnapshot],
@@ -433,10 +588,31 @@ export default function TasksScreen() {
         }
       />
     );
+  } else if (filteredTasks.length === 0) {
+    // Distinct from the true-empty branch above: there ARE tasks, the goal
+    // filter just narrowed them to nothing. Offering "Add task" here would
+    // be wrong too — the gap isn't that nothing exists, it's that this one
+    // goal has nothing — so the recovery action clears the filter instead.
+    const filterLabel = goalFilterOptions.find((option) => option.key === activeGoalFilter)?.label ?? "this goal";
+    content = (
+      <ListEmptyState
+        variant="tasks"
+        title="No tasks here"
+        description={`Nothing under "${filterLabel}" right now. Try another goal, or clear the filter to see everything.`}
+        actionLabel="Show all tasks"
+        actionIcon="close"
+        onAction={() => setGoalFilter(GOAL_FILTER_ALL)}
+        hint={
+          view === "board"
+            ? "Board view sorts them into Backlog, To Do, Doing and Done."
+            : "Swipe a task right to complete it, left to reschedule or delete."
+        }
+      />
+    );
   } else if (view === "board") {
     content = (
       <TaskBoard
-        tasks={tasks ?? []}
+        tasks={filteredTasks}
         onComplete={handleComplete}
         onEdit={openEdit}
         onMove={openMove}
@@ -470,6 +646,18 @@ export default function TasksScreen() {
         subtitle={VIEW_SUBTITLE[view]}
         action={<SegmentedControl options={VIEW_OPTIONS} value={view} onChange={setView} />}
       />
+
+      {/* Hidden below two buckets (see buildGoalFilterOptions): with only one
+          goal in play — or none at all — every task on screen already IS
+          that bucket, so the row would just repeat the header above it. */}
+      {goalFilterOptions.length > 0 ? (
+        <TaskGoalFilter
+          options={goalFilterOptions}
+          value={activeGoalFilter}
+          onChange={setGoalFilter}
+          style={styles.goalFilter}
+        />
+      ) : null}
 
       {/* A failed refetch on top of cached tasks used to be silent: the
           `isError && !tasks` branch above only fires on a cold failure, so
@@ -515,6 +703,7 @@ export default function TasksScreen() {
         enableDynamicSizing
         enablePanDownToClose
         backdropComponent={renderBackdrop}
+        onChange={handleReschedulePositionChange}
         onDismiss={() => setRescheduleTarget(null)}
       >
         <BottomSheetView style={styles.sheetContent}>
@@ -546,6 +735,7 @@ export default function TasksScreen() {
         enableDynamicSizing
         enablePanDownToClose
         backdropComponent={renderBackdrop}
+        onChange={handleMovePositionChange}
         onDismiss={() => setMoveTarget(null)}
       >
         <BottomSheetView style={styles.sheetContent}>
@@ -697,6 +887,10 @@ const styles = StyleSheet.create({
   },
   listArea: {
     flex: 1,
+  },
+  goalFilter: {
+    flexGrow: 0,
+    marginBottom: spacing.sm,
   },
   listContent: {
     paddingHorizontal: spacing.xl,

@@ -40,8 +40,9 @@ import { EditGoalSheet, ErrorState, QuickAddSheet, Skeleton, SkeletonCard, type 
 import { Icon } from "@/components/ui/Icon";
 import { GoalCard, GoalsSummary, summariseGoals, SUMMARY_HEIGHT } from "@/components/goals";
 import { ListEmptyState, ScreenHeader, SegmentedControl, type SegmentOption } from "@/components/lists";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
+import { queueOfflineEdit } from "@/lib/offline";
 import { goalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
@@ -148,9 +149,22 @@ export default function GoalsScreen() {
         void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
         hapticCompletion();
         analytics.track({ name: "goalCompleted", payload: { goalId: goal.id } });
-      } catch {
-        queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't complete goal", "Please try again.");
+      } catch (err) {
+        const queued = await queueOfflineEdit("goal-complete", { id: goal.id }, err);
+        if (queued) {
+          // Stays in the current (Active) tab rather than jumping to
+          // Completed — the move is only real once the outbox drains and
+          // the post-drain invalidate lands — but tagged so the card reads
+          // as "on its way" instead of looking like the tap did nothing.
+          queryClient.setQueryData<Goal[]>(
+            listKey,
+            (previous ?? []).map((g) => (g.id === goal.id ? { ...g, pendingSync: true } : g)),
+          );
+          notify("Queued — will sync when online", "success");
+        } else {
+          queryClient.setQueryData(listKey, previous);
+          Alert.alert("Couldn't complete goal", "Please try again.");
+        }
       }
     },
     [analytics, listKey, removeFromCurrentList],
@@ -163,9 +177,21 @@ export default function GoalsScreen() {
         await apiClient.goals.delete(goal.id);
         void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
         analytics.track({ name: "goalDeleted", payload: { goalId: goal.id } });
-      } catch {
-        queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't delete goal", "Please try again.");
+      } catch (err) {
+        const queued = await queueOfflineEdit("goal-delete", { id: goal.id }, err);
+        if (queued) {
+          // Same reasoning as handleComplete: the goal reappears (a delete
+          // that hasn't happened yet shouldn't look like it already did),
+          // tagged pending so it's clear the removal is only queued.
+          queryClient.setQueryData<Goal[]>(
+            listKey,
+            (previous ?? []).map((g) => (g.id === goal.id ? { ...g, pendingSync: true } : g)),
+          );
+          notify("Queued — will sync when online", "success");
+        } else {
+          queryClient.setQueryData(listKey, previous);
+          Alert.alert("Couldn't delete goal", "Please try again.");
+        }
       }
     },
     [analytics, listKey, removeFromCurrentList],

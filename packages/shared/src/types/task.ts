@@ -39,6 +39,13 @@ export interface Task {
   scheduleBlock?: TaskScheduleBlockSummary
   order?: number
   notes?: string
+  /**
+   * Client-only UI flag: this row reflects an edit/complete/delete that
+   * queued to the offline outbox rather than one the server has confirmed.
+   * Never sent to or read from the API — see the identical note on
+   * `Goal.pendingSync`.
+   */
+  pendingSync?: boolean
 }
 
 export interface CreateTaskForm {

@@ -8,6 +8,7 @@
 
 import type { QueryKey } from '@tanstack/react-query'
 
+import { hasResponse } from './http-error'
 import type { Outbox } from './outbox'
 import type { OperationRegistry } from './registry'
 
@@ -29,10 +30,6 @@ export interface OfflineSync {
   refreshPendingCount(): Promise<void>
   /** Kicks off an initial drain + subscribes to reconnect events. Returns an unsubscribe function. */
   init(): () => void
-}
-
-function hasResponse(err: unknown): err is { response: { status: number } } {
-  return Boolean((err as { response?: unknown })?.response)
 }
 
 export function createOfflineSync(config: OfflineSyncConfig): OfflineSync {

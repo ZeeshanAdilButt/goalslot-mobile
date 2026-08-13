@@ -36,6 +36,8 @@ import {
   buildCategoryBreakdown,
   buildDayBuckets,
   buildDayGoalBreakdown,
+  buildGoalBreakdown,
+  buildTaskBreakdown,
   computeTrend,
   getPeriodRanges,
   sumMinutesInRange,
@@ -96,6 +98,13 @@ export default function ReportsScreen() {
   // showing; `selectedBucket` below is what actually gates the UI, so a
   // dateKey that doesn't exist in the new period's buckets silently hides it.
   const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
+
+  // Key of the goal drilled into on the "Time by goal" card, or null. Same
+  // "not cleared on period switch" contract as `selectedDayKey` above —
+  // `selectedGoalSlice` below is what actually gates the UI, so a goalId
+  // that no longer has time in the new period's `goalSlices` silently hides
+  // the task drill-down rather than needing an explicit reset here.
+  const [selectedGoalKey, setSelectedGoalKey] = useState<string | null>(null);
 
   // The wall-clock instant every period boundary is measured from. Held in
   // state rather than read inline because `getPeriodRanges` and
@@ -191,6 +200,35 @@ export default function ReportsScreen() {
     // selectable chip.
     setSelectedDayKey((previous) => (previous === dateKey ? null : dateKey));
   }, []);
+
+  // "Time by goal" card: the period-wide sibling of the per-day breakdown
+  // above, one level more granular than "Time by category" (grouped by the
+  // actual goal rather than its category) and itself drillable one level
+  // further — tapping a goal here reveals the tasks that made up its time.
+  // This is the concrete gap closed by this change: category and goal
+  // totals both already existed, but nothing on the screen broke either of
+  // them down to the individual task.
+  const goalSlices = useMemo(
+    () => buildGoalBreakdown(timeEntries, ranges.current, colors.mutedForeground),
+    [timeEntries, ranges],
+  );
+  // Only a real slice in the *current* goalSlices counts as selected — same
+  // reasoning as `selectedBucket` above.
+  const selectedGoalSlice = useMemo(
+    () => goalSlices.find((slice) => slice.key === selectedGoalKey) ?? null,
+    [goalSlices, selectedGoalKey],
+  );
+  const taskSlices = useMemo(
+    () =>
+      selectedGoalSlice
+        ? buildTaskBreakdown(timeEntries, ranges.current, selectedGoalSlice.key, colors.mutedForeground)
+        : [],
+    [timeEntries, ranges, selectedGoalSlice],
+  );
+  const handleSelectGoal = useCallback((key: string) => {
+    setSelectedGoalKey((previous) => (previous === key ? null : key));
+  }, []);
+  const onlyUnattributedGoals = goalSlices.length === 1 && goalSlices[0].key === UNCATEGORIZED_KEY;
 
   // Time tracked without a goal attached. Sessions can now be started with
   // nothing selected, so this is ordinary rather than exceptional — and it
@@ -438,6 +476,67 @@ export default function ReportsScreen() {
                         {formatDuration(unattributedMinutes)} isn’t attached to a goal yet — it’s the
                         “Uncategorized” slice.
                       </Text>
+                    ) : null}
+                  </>
+                )}
+              </View>
+            </Reveal>
+
+            <Reveal delay={280} style={[styles.section, isProvisional && styles.provisional]}>
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.cardTitle}>Time by goal</Text>
+                  <Text style={styles.cardTotal}>{goalSlices.length > 0 ? `${goalSlices.length} in play` : ""}</Text>
+                </View>
+                {goalSlices.length === 0 ? (
+                  <Text style={styles.emptyChartText}>
+                    Goals show up here once your logged time is attached to one.
+                  </Text>
+                ) : onlyUnattributedGoals ? (
+                  // Same reasoning as "Time by category"'s onlyUnattributed
+                  // branch above — a single featureless ring is worse than
+                  // just saying what happened to the time.
+                  <Text style={styles.emptyChartText}>
+                    All {formatDuration(goalSlices[0].minutes)} logged{" "}
+                    {period === "week" ? "this week" : "this month"} is counted, but none of it is attached
+                    to a goal yet. Tap “Add goal” on a session in the Time Tracker to file it here.
+                  </Text>
+                ) : (
+                  <>
+                    <CategoryDonut
+                      slices={goalSlices}
+                      size={donutSize}
+                      onSelectSlice={handleSelectGoal}
+                      selectedKey={selectedGoalKey}
+                    />
+                    <Text style={styles.chartFootnote}>Tap a goal to see which tasks made up its time.</Text>
+
+                    {selectedGoalSlice ? (
+                      // Reuses the per-day breakdown's block styling below —
+                      // same "child panel reacting to a tap" visual language,
+                      // just one level further down the goal → task chain.
+                      <View style={styles.dayBreakdown}>
+                        <View style={styles.dayBreakdownHeader}>
+                          <View style={styles.dayBreakdownHeading}>
+                            <Text style={styles.dayBreakdownTitle}>{selectedGoalSlice.name}</Text>
+                            <Text style={styles.cardTotal}>{formatDuration(selectedGoalSlice.minutes)}</Text>
+                          </View>
+                          <Pressable
+                            onPress={() => setSelectedGoalKey(null)}
+                            hitSlop={spacing.sm}
+                            style={styles.dayBreakdownClose}
+                            accessibilityRole="button"
+                            accessibilityLabel="Close task breakdown"
+                          >
+                            <Text style={styles.dayBreakdownCloseText}>Close</Text>
+                          </Pressable>
+                        </View>
+                        {taskSlices.length === 0 ? (
+                          <Text style={styles.emptyChartText}>Nothing individually tracked under this goal.</Text>
+                        ) : (
+                          <CategoryDonut slices={taskSlices} size={donutSize} />
+                        )}
+                      </View>
                     ) : null}
                   </>
                 )}

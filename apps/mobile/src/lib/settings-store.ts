@@ -27,19 +27,28 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { DEFAULT_JOURNAL_REMINDER_HOUR, normalizeJournalReminderHour } from "./journal-reminders";
 import { DEFAULT_REMINDER_INTERVAL_MINUTES, normalizeReminderIntervalMinutes } from "./timer-reminders";
 
 interface SettingsPersistedState {
   /** How often the running timer nudges "still strictly focused?", in minutes. */
   timerReminderIntervalMinutes: number;
+  /** Whether the once-daily "you haven't journaled today" nudge is armed. On by default, mirroring schedule alarms. */
+  journalReminderEnabled: boolean;
+  /** Local hour (0-23, whole hours only) the journal reminder fires at, when armed. */
+  journalReminderHour: number;
 }
 
 interface SettingsState extends SettingsPersistedState {
   setTimerReminderIntervalMinutes: (minutes: number) => void;
+  setJournalReminderEnabled: (enabled: boolean) => void;
+  setJournalReminderHour: (hour: number) => void;
 }
 
 const INITIAL_STATE: SettingsPersistedState = {
   timerReminderIntervalMinutes: DEFAULT_REMINDER_INTERVAL_MINUTES,
+  journalReminderEnabled: true,
+  journalReminderHour: DEFAULT_JOURNAL_REMINDER_HOUR,
 };
 
 /**
@@ -68,6 +77,14 @@ export function mergePersistedSettings(persisted: unknown, current: SettingsStat
     // which would otherwise reach the picker as "no option selected" and the
     // scheduler as a normalise-to-default every pass.
     timerReminderIntervalMinutes: normalizeReminderIntervalMinutes(stored.timerReminderIntervalMinutes),
+    // Same "undefined on upgrade" concern as above: an install that predates
+    // this feature has no `journalReminderEnabled` key at all, and `Boolean`
+    // coercion would read `undefined` as false — silently opting an existing
+    // user out of a feature they've never seen a toggle for. Default to the
+    // feature's own default (on) instead, and only trust an explicit boolean.
+    journalReminderEnabled:
+      typeof stored.journalReminderEnabled === "boolean" ? stored.journalReminderEnabled : true,
+    journalReminderHour: normalizeJournalReminderHour(stored.journalReminderHour),
   };
 }
 
@@ -82,12 +99,22 @@ export const useSettingsStore = create<SettingsState>()(
         // place.
         set({ timerReminderIntervalMinutes: normalizeReminderIntervalMinutes(minutes) });
       },
+
+      setJournalReminderEnabled(enabled) {
+        set({ journalReminderEnabled: enabled });
+      },
+
+      setJournalReminderHour(hour) {
+        set({ journalReminderHour: normalizeJournalReminderHour(hour) });
+      },
     }),
     {
       name: "goalslot-settings-store",
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => ({
         timerReminderIntervalMinutes: state.timerReminderIntervalMinutes,
+        journalReminderEnabled: state.journalReminderEnabled,
+        journalReminderHour: state.journalReminderHour,
       }),
       merge: mergePersistedSettings,
     },

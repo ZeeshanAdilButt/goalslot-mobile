@@ -188,7 +188,11 @@ export type DeepLinkNotificationData =
   | { type: "today" }
   | { type: "goal"; id: string }
   | { type: "task"; id: string }
-  | { type: "schedule"; dayOfWeek: ScheduleDayOfWeek };
+  | { type: "schedule"; dayOfWeek: ScheduleDayOfWeek }
+  // The journal reminder's tap target (src/lib/journal-reminders.ts) — opens
+  // today's entry directly rather than cold-opening to Today, since the
+  // whole point of the notification is "go write in your journal now".
+  | { type: "journal" };
 
 /**
  * Resolves a notification's `content.data` payload to the in-app route it
@@ -212,6 +216,8 @@ export function resolveNotificationRoute(data: unknown): string | null {
       return ROUTES.tasks(data.id);
     case "schedule":
       return ROUTES.scheduleDay(data.dayOfWeek);
+    case "journal":
+      return ROUTES.journal();
   }
 }
 
@@ -228,6 +234,8 @@ function isDeepLinkNotificationData(data: unknown): data is DeepLinkNotification
       return "id" in data && typeof (data as { id: unknown }).id === "string";
     case "schedule":
       return "dayOfWeek" in data && isScheduleDayOfWeek((data as { dayOfWeek: unknown }).dayOfWeek);
+    case "journal":
+      return true;
     default:
       return false;
   }

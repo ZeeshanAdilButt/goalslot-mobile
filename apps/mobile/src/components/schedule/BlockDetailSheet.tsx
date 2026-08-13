@@ -36,6 +36,7 @@ import {
 
 import { Icon } from "@/components/ui/Icon";
 import { SheetHandle } from "@/components/ui/SheetHandle";
+import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 // Primitive half of the same token set (both resolve to theme/foundation.ts).
 import { typography as typeScale } from "@/theme";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -81,6 +82,9 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
   const isSeries = seriesSize > 1;
   const sheetRef = useRef<BottomSheetModal>(null);
   useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to the sheet on its own.
+  const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
 
   // A BottomSheetModal is portalled to BottomSheetModalProvider at the app
   // root (app/_layout.tsx), so it renders OUTSIDE the screen's
@@ -159,6 +163,7 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
     <BottomSheetModal
       ref={sheetRef}
       onDismiss={onDismiss}
+      onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       // Both together, deliberately: the library merges the measured content
       // height into the provided list (useAnimatedDetents), so this sheet ends

@@ -12,10 +12,16 @@
 //
 // Autosave error handling deliberately differs from the tasks.tsx
 // alert-on-failure shape: a failed debounced autosave surfaces as a passive
-// "couldn't save" banner and retries on the next edit/flush, because
-// Alert-per-keystroke-batch while offline would be hostile. Caches are
-// patched on success only — the editor itself is the source of truth while
-// this screen is open.
+// banner and retries on the next edit/flush, because Alert-per-keystroke-batch
+// while offline would be hostile. Three banner states, not two: a genuine
+// failure (the server responded, it just said no — "couldn't save, will
+// retry on your next edit"), a queue (no server response at all — routed to
+// the offline outbox's already-registered "note-update" operation, tagged
+// `pendingSync: true` so the title/content the user typed isn't just sitting
+// in component state with nothing durable behind it if they leave the
+// screen), and neither (the last save landed). The cache is patched in both
+// the success AND the queued case — not success-only — specifically so a
+// queued edit isn't lost even if the user backs out before the outbox drains.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -48,6 +54,7 @@ import type { Note, NoteDetailResponse } from "@goalslot/shared";
 import { ErrorState, LoadingState } from "@/components";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
+import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 
@@ -95,13 +102,31 @@ export default function NoteScreen() {
     );
   }
 
-  if (detailQuery.isError || !detailQuery.data) {
+  // `isError && !data`, not the old `isError || !data` — that guard
+  // replaced an already-rendered, perfectly good cached page with a hard
+  // error on every failed background refetch (offline pull-to-refresh,
+  // focus-refetch), even though the cached content needed to render it was
+  // sitting right there. Matches the pattern goals.tsx/tasks.tsx/notes.tsx
+  // already use correctly.
+  if (detailQuery.isError && !detailQuery.data) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
         <View style={styles.headerRow}>
           <BackButton />
         </View>
         <ErrorState message="Couldn't load this page." onRetry={() => void detailQuery.refetch()} />
+      </SafeAreaView>
+    );
+  }
+
+  if (!detailQuery.data) {
+    // Every other state above is exhausted (not pending, not a fatal
+    // error) with still no data to show — not expected to actually happen
+    // in practice, but this keeps the `.note.id` access below a type-safe
+    // narrowing rather than an unchecked assumption.
+    return (
+      <SafeAreaView style={styles.container} edges={["top"]}>
+        <LoadingState message="Opening page..." fullScreen />
       </SafeAreaView>
     );
   }
@@ -131,7 +156,10 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   const initialContent = normalizeContent(note.content);
 
   const [title, setTitle] = useState(note.title);
-  const [saveFailed, setSaveFailed] = useState(false);
+  // "failed": a genuine rejection, retries on the next edit/flush.
+  // "queued": no server response at all — routed to the offline outbox
+  // instead, so what's typed IS durable, just not confirmed yet.
+  const [saveState, setSaveState] = useState<"idle" | "failed" | "queued">("idle");
   const [initTimedOut, setInitTimedOut] = useState(false);
   // Android-only: `avoidIosKeyboard` (10tap-editor) is iOS-first by design —
   // it does resize the WebView's own document padding on Android too (see
@@ -234,15 +262,17 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     debounceInterval: CONTENT_DEBOUNCE_MS,
   });
 
-  /** Patch both caches with the saved fields — success path only (see
-   *  header comment). */
+  /** Patch both caches with the saved fields. `pendingSync` defaults to
+   *  false so a genuine success (or a later real sync) always clears any
+   *  earlier "queued" tag left on the row. */
   const patchCaches = useCallback(
-    (patch: Partial<Note>) => {
+    (patch: Partial<Note>, pendingSync = false) => {
+      const fullPatch = { ...patch, pendingSync };
       queryClient.setQueryData<NoteDetailResponse>(noteQueries.noteQueries.detail(note.id), (existing) =>
-        existing ? { ...existing, note: { ...existing.note, ...patch } } : existing,
+        existing ? { ...existing, note: { ...existing.note, ...fullPatch } } : existing,
       );
       queryClient.setQueryData<Note[]>(noteQueries.noteQueries.list(), (existing) =>
-        (existing ?? []).map((n) => (n.id === note.id ? { ...n, ...patch } : n)),
+        (existing ?? []).map((n) => (n.id === note.id ? { ...n, ...fullPatch } : n)),
       );
     },
     [note.id],
@@ -255,9 +285,20 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         await apiClient.notes.update(note.id, { title: nextTitle });
         lastSavedTitleRef.current = nextTitle;
         patchCaches({ title: nextTitle });
-        setSaveFailed(false);
-      } catch {
-        setSaveFailed(true);
+        setSaveState("idle");
+      } catch (err) {
+        const queued = await queueOfflineEdit("note-update", { id: note.id, data: { title: nextTitle } }, err);
+        if (queued) {
+          // No toast here (unlike explicit-action call sites elsewhere) —
+          // autosave fires on every debounced keystroke batch, and a toast
+          // per batch while typing offline would be noise. The persistent
+          // "Queued" banner below is the ambient signal instead.
+          lastSavedTitleRef.current = nextTitle;
+          patchCaches({ title: nextTitle }, true);
+          setSaveState("queued");
+        } else {
+          setSaveState("failed");
+        }
       }
     },
     [note.id, patchCaches, readOnly],
@@ -270,9 +311,17 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         await apiClient.notes.update(note.id, { content: html });
         lastSavedContentRef.current = html;
         patchCaches({ content: html });
-        setSaveFailed(false);
-      } catch {
-        setSaveFailed(true);
+        setSaveState("idle");
+      } catch (err) {
+        const queued = await queueOfflineEdit("note-update", { id: note.id, data: { content: html } }, err);
+        if (queued) {
+          // Same reasoning as saveTitle — no toast per debounced batch.
+          lastSavedContentRef.current = html;
+          patchCaches({ content: html }, true);
+          setSaveState("queued");
+        } else {
+          setSaveState("failed");
+        }
       }
     },
     [note.id, patchCaches, readOnly],
@@ -428,9 +477,15 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         accessibilityLabel="Page title"
       />
 
-      {saveFailed ? (
+      {saveState === "failed" ? (
         <View style={styles.saveFailedBanner}>
           <Text style={styles.saveFailedText}>Couldn't save — changes will retry on your next edit.</Text>
+        </View>
+      ) : null}
+
+      {saveState === "queued" ? (
+        <View style={styles.saveQueuedBanner}>
+          <Text style={styles.saveQueuedText}>Saved offline — will sync when you're back online.</Text>
         </View>
       ) : null}
 
@@ -557,6 +612,23 @@ const styles = StyleSheet.create({
     fontWeight: typography.weight.medium,
     lineHeight: 16,
     color: colors.destructive,
+  },
+  saveQueuedBanner: {
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.chip,
+    backgroundColor: colors.warningMuted,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.warning,
+  },
+  saveQueuedText: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.medium,
+    lineHeight: 16,
+    color: colors.warningForeground,
   },
   // iOS: floats over the WebView, positioned by `avoidIosKeyboard` +
   // KeyboardAvoidingView's "padding" behavior.

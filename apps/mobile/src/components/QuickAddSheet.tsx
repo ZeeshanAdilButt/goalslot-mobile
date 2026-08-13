@@ -23,6 +23,7 @@ import {
 } from "@gorhom/bottom-sheet";
 
 import { useQuickAdd, type QuickAddInput } from "../hooks/useQuickAdd";
+import { useBottomSheetBackHandler } from "../hooks/useBottomSheetBackHandler";
 import { hapticLight } from "../lib/haptics";
 import { useAnalytics } from "../providers/growth-provider";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -53,6 +54,9 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
 ) {
   const sheetRef = useRef<BottomSheetModal>(null);
   useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
+  // See the hook's own header for why this is needed at all — the library
+  // doesn't wire Android's hardware back button to the sheet on its own.
+  const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
 
   const analytics = useAnalytics();
   const { submit, isSubmitting, error } = useQuickAdd();
@@ -66,6 +70,10 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
 
   const handleSheetChange = useCallback(
     (index: number) => {
+      // Keeps the Android back-button listener registered exactly while this
+      // sheet is open — see useBottomSheetBackHandler's header.
+      handleSheetPositionChange(index);
+
       if (index >= 0) {
         hapticLight();
         analytics.track({ name: "quickAddOpened", payload: { kind } });
@@ -75,7 +83,7 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
         titleRef.current?.focus();
       }
     },
-    [analytics, kind],
+    [analytics, handleSheetPositionChange, kind],
   );
 
   const handleSubmit = useCallback(async () => {

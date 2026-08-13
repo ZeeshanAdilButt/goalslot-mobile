@@ -38,6 +38,13 @@ export interface TaskMetaChipsProps {
  * single compact line instead of reserving empty space.
  */
 export function TaskMetaChips({ task, compact = false, style }: TaskMetaChipsProps) {
+  // Distinguishes a queued edit/complete/delete (still offline, waiting to
+  // sync) from a genuinely-saved task — the two would otherwise render
+  // identically. See Task.pendingSync's own header note for where this gets
+  // set. Shown in both compact (board card) and full (list row) modes: it's
+  // important enough at-a-glance information to survive the board's
+  // "hide everything but goal/due" rule.
+  const pendingChip = task.pendingSync ? <MetaChip icon="refresh" label="Queued" /> : null;
   const goalChip = task.goal ? (
     <MetaChip icon="goals" label={task.goal.title} accentColor={task.goal.color} />
   ) : null;
@@ -46,20 +53,23 @@ export function TaskMetaChips({ task, compact = false, style }: TaskMetaChipsPro
   ) : null;
 
   if (compact) {
-    if (!goalChip && !dueChip) return null;
+    if (!pendingChip && !goalChip && !dueChip) return null;
     return (
       <View style={[styles.chipRow, style]}>
+        {pendingChip}
         {goalChip}
         {dueChip}
       </View>
     );
   }
 
-  const hasMeta = !!task.category || !!task.goal || !!task.scheduleBlock || !!task.dueDate || !!task.estimatedMinutes;
+  const hasMeta =
+    !!task.category || !!task.goal || !!task.scheduleBlock || !!task.dueDate || !!task.estimatedMinutes || !!task.pendingSync;
   if (!hasMeta) return null;
 
   return (
     <View style={[styles.chipRow, style]}>
+      {pendingChip}
       {task.category ? <MetaChip label={task.category.replace("_", " ")} /> : null}
       {goalChip}
       {task.scheduleBlock ? (

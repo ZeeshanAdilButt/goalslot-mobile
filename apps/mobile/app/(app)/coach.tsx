@@ -13,6 +13,23 @@
 // (not the RN built-in `fetch`) specifically because Hermes' fetch can't
 // expose a readable response body — see src/lib/api-client.ts's comment.
 //
+// "Analyze my day": the Coach's system prompt and per-request context bundle
+// (recentJournal, recentTimeEntries, scheduleBlocks, activeGoals) are both
+// assembled server-side, in the sibling goal-slot-api repo's
+// coach-ai.service.ts — not reachable from this repo. That bundle already
+// hands the model 14 days of journal + time-entry data, but it has no notion
+// of per-day schedule-block completion (scheduleBlocks carries the recurring
+// block definitions, never "did this happen today") and does zero pattern
+// detection of its own (e.g. "this block is rarely completed", "this goal
+// got much more time than usual") — it's raw rows, and spotting a pattern in
+// them is left entirely to the model. Rather than guess at a backend change
+// this checkout can't make or verify, `buildDayAnalysisBundle` /
+// `formatDayAnalysisPrompt` (packages/shared/src/coach/day-analysis.ts)
+// compute both client-side from data this app already fetches (schedule,
+// time entries, journal) and fold the result into the TEXT of a normal chat
+// message sent through the existing POST /coach/chat/:scopeKey path — no API
+// contract change required. See handleAnalyzeDay below.
+//
 // Proposals used to render read-only here, with a footnote telling the user
 // to open the web app to apply them. That changed with voice control: the
 // voice assistant (app/(app)/voice.tsx) needs the same card and needs it to
@@ -35,24 +52,55 @@ import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  buildDayAnalysisBundle,
   currentCoachWeekScopeKey,
   extractCoachProposals,
+  formatDayAnalysisPrompt,
+  todayKey,
   type CoachMessageDto,
   type CoachProposalAction,
+  type DayAnalysisTimeEntryInput,
+  type TimeEntry,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton } from "@/components";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
+import { FormattedText } from "@/components/ui/FormattedText";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { apiClient } from "@/lib/api-client";
-import { coachQueries } from "@/lib/queries";
+import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 const MAX_MESSAGE_LENGTH = 2000;
 const RATE_LIMIT_MESSAGE = "You've used today's 30 Coach messages. It resets in 24 hours — try again later.";
+/** How many days of prior time entries "Analyze my day" pulls to compute block-completion history and per-goal daily averages. */
+const DAY_ANALYSIS_TRAILING_WINDOW_DAYS = 28;
+
+/** Local YYYY-MM-DD arithmetic, same shape as journal.tsx's own `addDays` — kept local rather than shared since it's a two-line date helper, not a domain concept. */
+function shiftDateKey(dateKey: string, deltaDays: number): string {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + deltaDays);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function toDayAnalysisEntry(entry: TimeEntry): DayAnalysisTimeEntryInput {
+  return {
+    id: entry.id,
+    taskName: entry.taskName,
+    duration: entry.duration,
+    date: entry.date,
+    scheduleBlockId: entry.scheduleBlockId,
+    goalId: entry.goalId,
+    goalTitle: entry.goal?.title,
+  };
+}
 
 interface ChatMessageView {
   id: string;
@@ -108,7 +156,7 @@ function ChatBubble({
           </View>
         ) : (
           <>
-            {cleaned ? <Text style={styles.bubbleTextAssistant}>{cleaned}</Text> : null}
+            {cleaned ? <FormattedText text={cleaned} style={styles.bubbleTextAssistant} /> : null}
             {message.pending && !proposalPending ? <Text style={styles.streamingCursor}>▍</Text> : null}
           </>
         )}
@@ -180,54 +228,131 @@ export default function CoachScreen() {
     return list;
   }, [persistedMessages, optimisticUser, streaming, streamingReply]);
 
+  /**
+   * Core send/stream/persist flow, shared by the composer's Send button and
+   * the "Analyze my day" quick action below — both post a piece of text as
+   * the next USER turn through the same `apiClient.coach.streamChat`; only
+   * where that text comes from differs. `onFailure` lets each caller decide
+   * what "give the user their text back to retry" means for it (the
+   * composer restores it into the input box; day-analysis does the same so
+   * the existing CoachBudgetNotice retry button keeps working unmodified).
+   * Returns whether the message was sent and a reply persisted successfully.
+   */
+  const sendCoachMessage = useCallback(
+    async (content: string, onFailure?: (content: string) => void): Promise<boolean> => {
+      setError(null);
+      const userMsgId = `local_user_${Date.now()}`;
+      setOptimisticUser({ id: userMsgId, role: "USER", content });
+      setStreamingReply("");
+      setStreaming(true);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let success = false;
+      try {
+        const iter = await apiClient.coach.streamChat(scopeKey, content, { signal: controller.signal });
+        let acc = "";
+        let streamErr: string | undefined;
+        for await (const chunk of iter) {
+          if (chunk.delta) {
+            acc += chunk.delta;
+            setStreamingReply(acc);
+          }
+          if (chunk.error) streamErr = chunk.error;
+          if (chunk.done) break;
+        }
+        if (streamErr) {
+          setError(streamErr);
+          onFailure?.(content);
+          setOptimisticUser(null);
+        } else {
+          await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+          setOptimisticUser(null);
+          success = true;
+        }
+      } catch (err) {
+        if (controller.signal.aborted) {
+          // Explicit Stop — not a failure, leave the thread as-is.
+          return false;
+        }
+        const status = (err as { status?: number } | undefined)?.status;
+        const message = status === 429 ? RATE_LIMIT_MESSAGE : err instanceof Error ? err.message : "Couldn't reach the Coach.";
+        setError(message);
+        onFailure?.(content);
+        setOptimisticUser(null);
+      } finally {
+        setStreaming(false);
+        setStreamingReply("");
+        abortRef.current = null;
+      }
+      return success;
+    },
+    [scopeKey],
+  );
+
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed || streaming) return;
-    setError(null);
     setInput("");
-    const userMsgId = `local_user_${Date.now()}`;
-    setOptimisticUser({ id: userMsgId, role: "USER", content: trimmed });
-    setStreamingReply("");
-    setStreaming(true);
+    await sendCoachMessage(trimmed, (content) => setInput((cur) => cur || content));
+  }, [input, streaming, sendCoachMessage]);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+  const [analyzingDay, setAnalyzingDay] = useState(false);
+
+  /**
+   * "Analyze my day": gathers today's schedule, tracked time, and journal
+   * entry client-side (see the header comment on why this can't be a
+   * backend prompt change from this repo), turns it into one well-formed
+   * prompt, and sends it exactly like a typed message. See
+   * packages/shared/src/coach/day-analysis.ts for the assembly + pattern
+   * detection (block completion history, goal-time-vs-usual).
+   */
+  const handleAnalyzeDay = useCallback(async () => {
+    if (streaming || analyzingDay) return;
+    setAnalyzingDay(true);
+    setError(null);
     try {
-      const iter = await apiClient.coach.streamChat(scopeKey, trimmed, { signal: controller.signal });
-      let acc = "";
-      let streamErr: string | undefined;
-      for await (const chunk of iter) {
-        if (chunk.delta) {
-          acc += chunk.delta;
-          setStreamingReply(acc);
-        }
-        if (chunk.error) streamErr = chunk.error;
-        if (chunk.done) break;
-      }
-      if (streamErr) {
-        setError(streamErr);
-        setInput((cur) => cur || trimmed);
-        setOptimisticUser(null);
-      } else {
-        await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
-        setOptimisticUser(null);
-      }
-    } catch (err) {
-      if (controller.signal.aborted) {
-        // Explicit Stop — not a failure, leave the thread as-is.
-        return;
-      }
-      const status = (err as { status?: number } | undefined)?.status;
-      const message = status === 429 ? RATE_LIMIT_MESSAGE : err instanceof Error ? err.message : "Couldn't reach the Coach.";
-      setError(message);
-      setInput((cur) => cur || trimmed);
-      setOptimisticUser(null);
+      const dateKey = todayKey();
+      const dayOfWeek = new Date().getDay();
+      const trailingEnd = shiftDateKey(dateKey, -1);
+      const trailingStart = shiftDateKey(dateKey, -DAY_ANALYSIS_TRAILING_WINDOW_DAYS);
+
+      const [weekSchedule, todayEntriesRes, trailingEntriesRes, journalEntry] = await Promise.all([
+        queryClient.fetchQuery(scheduleQueries.weekly()),
+        apiClient.timeEntries.getByDateRange(dateKey, dateKey),
+        apiClient.timeEntries.getByDateRange(trailingStart, trailingEnd),
+        journalQueries.fetchEntryByDate(dateKey),
+      ]);
+
+      const scheduleBlocksForDay = (weekSchedule[dayOfWeek] ?? []).map((block) => ({
+        id: block.id,
+        title: block.title,
+        category: block.category,
+        dayOfWeek: block.dayOfWeek,
+        startTime: block.startTime,
+        endTime: block.endTime,
+        goalId: block.goalId,
+        goalTitle: block.goal?.title,
+      }));
+
+      const bundle = buildDayAnalysisBundle({
+        dateKey,
+        scheduleBlocksForDay,
+        timeEntriesForDay: todayEntriesRes.data.map(toDayAnalysisEntry),
+        trailingTimeEntries: trailingEntriesRes.data.map(toDayAnalysisEntry),
+        trailingWindowDays: DAY_ANALYSIS_TRAILING_WINDOW_DAYS,
+        journalContent: journalEntry?.content ?? null,
+      });
+      const prompt = formatDayAnalysisPrompt(bundle);
+
+      analytics.track({ name: "coachDayAnalysisRequested", payload: { date: dateKey } });
+      await sendCoachMessage(prompt, (content) => setInput((cur) => cur || content));
+    } catch {
+      setError("Couldn't gather today's data to analyze. Please try again.");
     } finally {
-      setStreaming(false);
-      setStreamingReply("");
-      abortRef.current = null;
+      setAnalyzingDay(false);
     }
-  }, [input, scopeKey, streaming]);
+  }, [analytics, analyzingDay, sendCoachMessage, streaming]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -318,6 +443,21 @@ export default function CoachScreen() {
             />
           </View>
         ) : null}
+
+        <View style={styles.quickActions}>
+          <Pressable
+            style={[styles.analyzeDayButton, (streaming || analyzingDay) && styles.analyzeDayButtonDisabled]}
+            onPress={() => void handleAnalyzeDay()}
+            disabled={streaming || analyzingDay}
+            accessibilityRole="button"
+            accessibilityLabel="Analyze my day"
+            accessibilityHint="Sends today's schedule, tracked time, and journal entry to the Coach for a reflection"
+            accessibilityState={{ disabled: streaming || analyzingDay, busy: analyzingDay }}
+            hitSlop={8}
+          >
+            <Text style={styles.analyzeDayButtonText}>{analyzingDay ? "Gathering today's data…" : "Analyze my day"}</Text>
+          </Pressable>
+        </View>
 
         <View style={styles.composer}>
           <TextInput
@@ -494,6 +634,31 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
     marginBottom: spacing.xs,
+  },
+  quickActions: {
+    flexDirection: "row",
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
+    backgroundColor: colors.background,
+  },
+  analyzeDayButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: minTouchTarget,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  analyzeDayButtonDisabled: {
+    opacity: 0.5,
+  },
+  analyzeDayButtonText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.foreground,
   },
   composer: {
     flexDirection: "row",

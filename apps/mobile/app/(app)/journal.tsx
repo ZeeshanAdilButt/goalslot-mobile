@@ -11,8 +11,19 @@
 //
 // Optimistic-update-then-rollback follows goals.tsx's exact shape: snapshot
 // the query about to be touched, patch it locally, call the live endpoint,
-// then either invalidate (success) or restore the snapshot (failure) — no
-// offline-outbox involved, same as every other v1 screen.
+// then either invalidate (success) or restore the snapshot (failure). On a
+// failure that looks like "no server response" (offline/timeout), the patch
+// stays applied (tagged `pendingSync: true`) and queues to the offline
+// outbox instead — see the "journal-create"/"journal-update" operations
+// registered in src/lib/offline.ts. Only a genuine rejection (the server
+// answered and said no) restores the pre-save snapshot.
+//
+// Journal is "one entry per day, upsert-shaped": the first save for a date
+// is a create (no id yet), every save after is an update against the id the
+// first save returned. `entryQuery`'s cached entry doubles as that
+// bookkeeping — its `pendingSync` flag is how a second offline save on the
+// same still-unsynced day knows to queue another "journal-create" rather
+// than a "journal-update" against an id the server has never actually seen.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
@@ -22,15 +33,17 @@ import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
 
-import { getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
+import { genId, getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
+import { queueOfflineEdit } from "@/lib/offline";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useJournalReminderSync } from "@/lib/useJournalReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme";
@@ -63,6 +76,11 @@ const RECENT_SKELETON_ROWS = 4;
 // it. A silent segment and a genuine VoiceError both land in the hook as
 // `{ status: 'error', transcript: '' }` (see handleError/settle in the
 // hook), so the same counter and cap cover both.
+//
+// Two ways in, one path: the `?voice=1` deep link (Siri / the App Shortcut)
+// and the in-editor mic button both call the same `beginDictation` defined
+// inside the component below, so a session started either way behaves
+// identically from that point on.
 const MAX_SILENT_RETRIES = 2;
 
 /** How long the "stopped listening" notice stays up before auto-clearing. */
@@ -99,6 +117,14 @@ function formatDisplayDate(dateKey: string): string {
 export default function JournalScreen() {
   const analytics = useAnalytics();
   const { voice } = useCapabilities();
+
+  // Reconciles the "you haven't journaled today" nudge every time this
+  // screen is focused — the other mount point is the Journal reminder
+  // section on app/(app)/notification-settings.tsx. See
+  // useJournalReminderSync's header comment for why there are two mount
+  // points rather than one app-wide sync component.
+  useJournalReminderSync();
+
   const today = useMemo(() => todayKey(), []);
   const [selectedDate, setSelectedDate] = useState(today);
   const [draft, setDraft] = useState("");
@@ -170,16 +196,25 @@ export default function JournalScreen() {
     openSettings: openVoiceSettings,
   } = useVoiceCapture({ voice, onCommand: handleVoiceCommand, label: "Journal dictation" });
 
+  // Shared entry point into dictation — the deep-link effect below fires
+  // this automatically, and the in-editor mic button (rendered further down,
+  // for a user who never went through Siri/the App Shortcut) fires the exact
+  // same thing on tap. One path in, so the two triggers can never disagree
+  // about what "start voice journaling" means.
+  const beginDictation = useCallback(() => {
+    // The feature is defined as "today's entry" — force today regardless of
+    // whatever day was showing, mirroring `goToToday`.
+    setSelectedDate(today);
+    setVoiceMode("priming");
+  }, [today]);
+
   // Trigger + cleanup, mirroring voice.tsx's single useFocusEffect shape:
   // consume the deep-link param on focus, always close the mic on blur.
   useFocusEffect(
     useCallback(() => {
       if (voiceParam === "1" && !consumedVoiceParamRef.current) {
         consumedVoiceParamRef.current = true;
-        // The feature is defined as "today's entry" — force today regardless
-        // of whatever day was showing, mirroring `goToToday`.
-        setSelectedDate(today);
-        setVoiceMode("priming");
+        beginDictation();
       }
       return () => {
         // Leaving the screen must close the microphone. Always — matching
@@ -194,7 +229,7 @@ export default function JournalScreen() {
         void cancelVoice();
         setVoiceMode("inactive");
       };
-    }, [cancelVoice, today, voiceParam]),
+    }, [beginDictation, cancelVoice, voiceParam]),
   );
 
   // priming -> listening: only once today's entry has actually resolved —
@@ -353,9 +388,14 @@ export default function JournalScreen() {
   const handleSave = useCallback(async () => {
     const trimmedContent = draft;
     const previous = queryClient.getQueryData<JournalEntry | null>(entryKey);
+    // A `pendingSync` previous entry means an earlier save this same day
+    // already queued a create that hasn't synced yet — its id is only
+    // local, so this save is still a create, not an update against it.
+    const isCreate = !previous?.id || previous.pendingSync === true;
+    const optimisticId = isCreate ? (previous?.pendingSync ? previous.id : genId()) : previous!.id;
 
     const optimisticEntry: JournalEntry = {
-      id: previous?.id ?? `optimistic-${selectedDate}`,
+      id: optimisticId,
       date: selectedDate,
       content: trimmedContent,
     };
@@ -363,9 +403,9 @@ export default function JournalScreen() {
     setIsSaving(true);
 
     try {
-      const response = previous?.id
-        ? await apiClient.journal.update(previous.id, { content: trimmedContent })
-        : await apiClient.journal.create({ date: selectedDate, content: trimmedContent });
+      const response = isCreate
+        ? await apiClient.journal.create({ date: selectedDate, content: trimmedContent })
+        : await apiClient.journal.update(previous!.id, { content: trimmedContent });
 
       queryClient.setQueryData(entryKey, response.data);
       void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
@@ -379,9 +419,23 @@ export default function JournalScreen() {
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_CONFIRMATION_MS);
       analytics.track({ name: "journalEntrySaved", payload: { date: selectedDate } });
-    } catch {
-      queryClient.setQueryData(entryKey, previous);
-      Alert.alert("Couldn't save entry", "Please try again.");
+    } catch (err) {
+      const kind = isCreate ? "journal-create" : "journal-update";
+      const payload = isCreate
+        ? { date: selectedDate, content: trimmedContent }
+        : { id: previous!.id, data: { content: trimmedContent } };
+      const queued = await queueOfflineEdit(kind, payload, err);
+      if (queued) {
+        queryClient.setQueryData<JournalEntry>(entryKey, { ...optimisticEntry, pendingSync: true });
+        setIsDirty(false);
+        setJustSaved(true);
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_CONFIRMATION_MS);
+        notify("Queued — will sync when online", "success");
+      } else {
+        queryClient.setQueryData(entryKey, previous);
+        Alert.alert("Couldn't save entry", "Please try again.");
+      }
     } finally {
       setIsSaving(false);
     }
@@ -410,6 +464,11 @@ export default function JournalScreen() {
     [selectedDate],
   );
 
+  // Whether the currently-shown entry reflects a save that's still only
+  // queued to the offline outbox — drives the Save button's "Queued" vs
+  // "Saved" treatment below.
+  const isPendingSync = entryQuery.data?.pendingSync === true;
+
   let editorContent: React.ReactNode;
   if (entryQuery.isPending) {
     editorContent = (
@@ -418,7 +477,14 @@ export default function JournalScreen() {
         <Skeleton height={140} style={styles.editorSkeletonBody} />
       </View>
     );
-  } else if (entryQuery.isError) {
+  } else if (entryQuery.isError && entryQuery.data === undefined) {
+    // `data === undefined` (never resolved even once), not `!data` — a day
+    // with no entry legitimately resolves to `null`, which must still
+    // render the empty editor below, not this error state. Gating on
+    // `isError` alone used to replace an already-rendered, perfectly good
+    // cached entry with a hard error on every failed background refetch
+    // (offline pull-to-refresh, focus-refetch), even though the cached
+    // content needed to render it was sitting right there.
     editorContent = (
       <ErrorState message="Couldn't load this entry." onRetry={() => void entryQuery.refetch()} />
     );
@@ -451,7 +517,7 @@ export default function JournalScreen() {
         ))}
       </View>
     );
-  } else if (recentQuery.isError) {
+  } else if (recentQuery.isError && !recentQuery.data) {
     recentContent = (
       <ErrorState message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
     );
@@ -608,12 +674,32 @@ export default function JournalScreen() {
         </View>
       ) : null}
 
+      {/* The manual entry point into dictation — everything above this only
+          ever appears once capture is already under way (or blocked/paused);
+          without this row the mic is reachable exclusively through the
+          `?voice=1` deep link (Siri / the App Shortcut), and there is no way
+          to start talking from inside the app itself. Tapping calls the
+          exact same `beginDictation` the deep link calls, so both paths land
+          in identical state. */}
+      {voiceMode === "inactive" ? (
+        <View style={styles.voiceIdleRow}>
+          <MicOrb
+            status="idle"
+            onPress={beginDictation}
+            size={40}
+            accessibilityLabel="Talk about your day"
+            accessibilityHint="Starts voice dictation for today's journal entry"
+          />
+          <Text style={styles.voiceIdleLabel}>Talk about your day — dictate today's entry</Text>
+        </View>
+      ) : null}
+
       <View style={styles.editorArea}>{editorContent}</View>
 
       <Pressable
         style={[
           styles.saveButton,
-          justSaved && styles.saveButtonSaved,
+          justSaved && (isPendingSync ? styles.saveButtonQueued : styles.saveButtonSaved),
           (!isDirty || isSaving) && !justSaved && styles.saveButtonDisabled,
         ]}
         onPress={() => void handleSave()}
@@ -622,9 +708,23 @@ export default function JournalScreen() {
         accessibilityLabel="Save journal entry"
         accessibilityState={{ disabled: !isDirty || isSaving }}
       >
-        {justSaved ? <Icon name="check" size={16} color={colors.successForeground} /> : null}
-        <Text style={[styles.saveButtonText, justSaved && styles.saveButtonTextSaved]}>
-          {isSaving ? "Saving…" : justSaved ? "Saved" : "Save"}
+        {/* "Queued" (offline, waiting to sync) is deliberately distinct from
+            "Saved" (confirmed) — the two used to look identical, which made
+            an offline save indistinguishable from a genuinely-lost one. */}
+        {justSaved ? (
+          <Icon
+            name={isPendingSync ? "refresh" : "check"}
+            size={16}
+            color={isPendingSync ? colors.warningForeground : colors.successForeground}
+          />
+        ) : null}
+        <Text
+          style={[
+            styles.saveButtonText,
+            justSaved && (isPendingSync ? styles.saveButtonTextQueued : styles.saveButtonTextSaved),
+          ]}
+        >
+          {isSaving ? "Saving…" : justSaved ? (isPendingSync ? "Queued" : "Saved") : "Save"}
         </Text>
       </Pressable>
 
@@ -662,6 +762,18 @@ const styles = StyleSheet.create({
   },
   voicePrimingText: {
     fontSize: typography.size.xs,
+    color: colors.mutedForeground,
+  },
+  voiceIdleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+  },
+  voiceIdleLabel: {
+    flex: 1,
+    fontSize: typography.size.sm,
     color: colors.mutedForeground,
   },
   voicePanel: {
@@ -785,6 +897,9 @@ const styles = StyleSheet.create({
   saveButtonSaved: {
     backgroundColor: colors.successMuted,
   },
+  saveButtonQueued: {
+    backgroundColor: colors.warningMuted,
+  },
   saveButtonText: {
     color: colors.white,
     fontWeight: typography.weight.semibold,
@@ -792,6 +907,9 @@ const styles = StyleSheet.create({
   },
   saveButtonTextSaved: {
     color: colors.successForeground,
+  },
+  saveButtonTextQueued: {
+    color: colors.warningForeground,
   },
   recentSection: {
     flex: 1,

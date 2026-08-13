@@ -88,7 +88,7 @@ export function GoalCard({ goal, index, todayKey, onComplete, onDelete, onEdit }
 
   const deadlineKey = toDeadlineKey(goal.deadline);
   const labels = (goal.labels ?? []).slice(0, MAX_LABELS);
-  const hasChips = deadlineKey !== null || labels.length > 0;
+  const hasChips = deadlineKey !== null || labels.length > 0 || goal.pendingSync === true;
 
   // One sentence per fact, in the order a sighted user reads the card.
   const spokenLabel = [
@@ -153,6 +153,11 @@ export function GoalCard({ goal, index, todayKey, onComplete, onDelete, onEdit }
 
       {hasChips ? (
         <View style={styles.chipRow}>
+          {/* Distinguishes a queued edit/complete/delete (still offline,
+              waiting to sync) from a genuinely-saved goal — the two would
+              otherwise render identically. See Goal.pendingSync's own
+              header note for where this gets set. */}
+          {goal.pendingSync ? <MetaChip icon="refresh" label="Queued" /> : null}
           {deadlineKey ? (
             <MetaChip
               icon="schedule"
