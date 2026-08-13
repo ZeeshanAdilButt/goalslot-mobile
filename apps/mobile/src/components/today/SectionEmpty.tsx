@@ -140,9 +140,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headline: {
-    fontSize: 17,
-    fontWeight: "700",
-    letterSpacing: -0.3,
+    // Was a hand-rolled 17px with no lineHeight — every other role in the
+    // type scale pins one deliberately (see foundation.ts's note on why RN
+    // needs it explicit), and `title` (16px/bold) is close enough to the old
+    // number that swapping in the real token costs nothing visually while
+    // gaining a stable line box.
+    ...typography.title,
     color: colors.foreground,
     textAlign: "center",
   },

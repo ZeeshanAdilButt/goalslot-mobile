@@ -17,6 +17,16 @@
 // in `@/theme` (`typography` role presets) also carry RN-only fields like
 // `textTransform`, which `TextWidgetStyle` has no equivalent for, so they
 // can't be spread wholesale the way a real screen would.
+//
+// LAYOUT INTENT — the widget is freely resizable (app.json's `resizeMode`
+// spans 140-600dp wide, 80-450dp tall), so every section here has to survive
+// both extremes. The rule that keeps it honest at a large size: nothing is
+// vertically centred in the card, and the one element allowed to absorb
+// slack is the accent bar, which stretches. Earlier revisions centred the
+// content, which left a dead gap above it on a tall resize; anchoring it to
+// the top instead just moved the same gap below. A stretching colour bar is
+// what makes the leftover space read as deliberate rather than as a
+// half-empty card.
 
 import { FlexWidget, TextWidget, type FlexWidgetStyle, type TextWidgetStyle } from "react-native-android-widget";
 
@@ -32,29 +42,44 @@ function toHexColor(color: string, fallback: `#${string}`): `#${string}` {
   return HEX_COLOR_RE.test(color) ? (color as `#${string}`) : fallback;
 }
 
+/**
+ * `#RRGGBB` → `#RRGGBBAA`. RemoteViews itself wants ARGB, but this library's
+ * `convertColor` (widgets/utils/style.utils.ts) takes CSS-order 8-digit hex
+ * — alpha *trailing* — and reorders it to Android's native AARRGGBB
+ * internally. Passing alpha-leading here double-reorders it: an 8-digit hex
+ * with the alpha already in front gets its *last* two characters read back
+ * out as the alpha byte instead, which doesn't error, it just silently
+ * renders a wildly wrong colour (this shipped once — an intended 11% tint
+ * rendered as a near-opaque near-black panel).
+ */
+function withAlpha(color: `#${string}`, alpha: string): `#${string}` {
+  return `${color}${alpha}` as `#${string}`;
+}
+
+/** Tint strength for the panel behind block content — enough to read as a surface in the block's own colour without competing with the foreground text. Same idea as the iOS widget's `accent.opacity(0.11)` panel fill. */
+const PANEL_TINT_ALPHA = "1C";
+/** The accent bar and track button fade toward their trailing edge rather than sitting flat — `0xB8/0xFF ≈ 0.72`, the same fade the iOS widget's `accent.opacity(0.72)` gradient stop uses. */
+const FADE_ALPHA = "B8";
+
 /** `Date#getDay()` is typed as plain `number`; it is always 0-6 at runtime, which is exactly what `ScheduleDayOfWeek` narrows to. */
 function todayDeepLink(): string {
   return scheduleDayDeepLink(new Date().getDay() as ScheduleDayOfWeek);
 }
 
 /**
- * Below this, a resized widget has room for at most the compact content —
- * anything more would either clip or force scaling react-native-android-
- * widget doesn't support. Above it, there's meaningfully more height than
- * the compact layout needs, which is exactly the "big blank card" bug this
- * threshold exists to avoid: rather than leave that space empty, `Body`
- * shows today's overall progress as bonus content underneath the block.
- * Chosen empirically against the compact layout's natural height (header +
- * block + a little breathing room ≈ 150dp) with margin for the tracking
- * band, which adds its own ~70dp when present.
+ * Under this height the widget is roughly two home-screen rows and the
+ * time-range line is the first thing that has to go — the title and status
+ * chip alone still answer "what's on right now", which a one-glance widget
+ * needs; the exact clock times are what you open the app for. Measured
+ * against `app.json`'s `minHeight` (80dp) plus a row of headroom.
  */
-const EXTRAS_HEIGHT_THRESHOLD_DP = 200;
+const TIGHT_HEIGHT_DP = 130;
 
 export interface TodayWidgetProps {
   state: WidgetViewState;
   /** What's actually being tracked right now, independent of `state` — see widget-data.ts's `loadWidgetTrackingState`. `null` while idle. */
   tracking: WidgetTrackingState | null;
-  /** Current widget height in dp, from `widgetTaskHandler`'s `widgetInfo.height` — react-native-android-widget gives no "size class" the way iOS's `.widgetFamily` does, so this is the only signal available for "is there room to show more than the compact layout." */
+  /** Current widget height in dp, from `widgetTaskHandler`'s `widgetInfo.height` — react-native-android-widget gives no "size class" the way iOS's `.widgetFamily` does, so this is the only signal available for how much content fits. */
   heightDp: number;
 }
 
@@ -63,7 +88,7 @@ export function TodayWidget({ state, tracking, heightDp }: TodayWidgetProps) {
   // (there's something live to look at); otherwise it goes to today's
   // schedule, same as before tracking existed.
   const rootDeepLink = tracking ? timerDeepLink() : todayDeepLink();
-  const hasRoomForExtras = heightDp >= EXTRAS_HEIGHT_THRESHOLD_DP;
+  const isTight = heightDp < TIGHT_HEIGHT_DP;
   return (
     <FlexWidget
       style={rootStyle}
@@ -71,20 +96,33 @@ export function TodayWidget({ state, tracking, heightDp }: TodayWidgetProps) {
       clickActionData={{ uri: rootDeepLink }}
       accessibilityLabel={tracking ? "Open GoalSlot timer" : "Open GoalSlot schedule"}
     >
-      <Header />
-      <FlexWidget style={bodyStyle}>
-        <Body state={state} tracking={tracking} hasRoomForExtras={hasRoomForExtras} />
-      </FlexWidget>
-      {tracking && <TrackingBand tracking={tracking} />}
+      <Header state={state} />
+      <Body state={state} tracking={tracking} isTight={isTight} />
+      {tracking && <TrackingBand tracking={tracking} isTight={isTight} />}
     </FlexWidget>
   );
 }
 
-function Header() {
+/**
+ * The eyebrow row doubles as the day's progress readout: "3/8 done" sits
+ * opposite "TODAY" rather than in a section of its own. That's what lets a
+ * wide widget use its horizontal space instead of growing another band, and
+ * it means progress is visible at every size instead of only on a tall one.
+ */
+function Header({ state }: { state: WidgetViewState }) {
+  const progress =
+    state.kind === "block"
+      ? `${state.dayProgress.done}/${state.dayProgress.total} done`
+      : state.kind === "progress"
+        ? `${state.done}/${state.total} done`
+        : null;
   return (
     <FlexWidget style={headerStyle}>
-      <FlexWidget style={brandDotStyle} />
-      <TextWidget text="TODAY" style={eyebrowStyle} />
+      <FlexWidget style={headerLeftStyle}>
+        <FlexWidget style={brandDotStyle} />
+        <TextWidget text="TODAY" style={eyebrowStyle} />
+      </FlexWidget>
+      {progress !== null && <TextWidget text={progress} style={headerProgressStyle} />}
     </FlexWidget>
   );
 }
@@ -92,11 +130,11 @@ function Header() {
 function Body({
   state,
   tracking,
-  hasRoomForExtras,
+  isTight,
 }: {
   state: WidgetViewState;
   tracking: WidgetTrackingState | null;
-  hasRoomForExtras: boolean;
+  isTight: boolean;
 }) {
   switch (state.kind) {
     case "block":
@@ -109,72 +147,81 @@ function Body({
           status={state.status}
           block={state.block}
           showTrackButton={!tracking && !!state.block.goalId}
-          dayProgress={hasRoomForExtras ? state.dayProgress : null}
+          isTight={isTight}
         />
       );
     case "progress":
-      return <ProgressBody done={state.done} total={state.total} />;
-    case "empty-day":
       return (
         <MessageBody
-          headline="Nothing scheduled"
-          detail="Your day is wide open."
+          accent={colors.primary}
+          headline={state.done >= state.total && state.total > 0 ? "All done for today" : "Nothing left today"}
+          detail={state.done >= state.total && state.total > 0 ? "Nice work." : "Your remaining blocks are finished."}
         />
       );
+    case "empty-day":
+      return <MessageBody accent={colors.border} headline="Nothing scheduled" detail="Your day is wide open." />;
     case "unavailable":
-      return <MessageBody headline="Open GoalSlot" detail="Tap to view your day." />;
+      return <MessageBody accent={colors.border} headline="Open GoalSlot" detail="Tap to view your day." />;
   }
+}
+
+/**
+ * The block's own colour, as a bar down the left edge. This is the element
+ * that stretches (`height: "match_parent"` inside a `flex: 1` row), so extra
+ * height on a large resize lands here instead of pooling as blank card —
+ * see this file's LAYOUT INTENT note. Fades top-to-bottom rather than
+ * sitting flat, matching the iOS widget's accent bar.
+ */
+function AccentBar({ color }: { color: `#${string}` }) {
+  return (
+    <FlexWidget
+      style={{
+        ...accentBarStyle,
+        backgroundGradient: { from: color, to: withAlpha(color, FADE_ALPHA), orientation: "TOP_BOTTOM" },
+      }}
+    />
+  );
+}
+
+/**
+ * The tinted surface a block/message/tracking row sits on — the bar's colour
+ * carried into the card itself at low opacity, same idea as the iOS
+ * widget's `accent.opacity(0.11)` panel fill. Kept as one function rather
+ * than a static style since the accent varies per block.
+ */
+function panelStyle(accent: `#${string}`): FlexWidgetStyle {
+  return { ...bodyRowStyle, backgroundColor: withAlpha(accent, PANEL_TINT_ALPHA) };
 }
 
 function BlockBody({
   status,
   block,
   showTrackButton,
-  dayProgress,
+  isTight,
 }: {
   status: "active" | "upcoming";
   block: { title: string; timeRange: string; color: string; goalId?: string };
   showTrackButton: boolean;
-  /** Non-null only when the caller has already decided there's room to show it — see `TodayWidget`'s `hasRoomForExtras`. */
-  dayProgress: { done: number; total: number } | null;
+  isTight: boolean;
 }) {
   const isActive = status === "active";
+  const accent = toHexColor(block.color, colors.primary);
   return (
-    <FlexWidget style={blockColumnStyle}>
-      <FlexWidget style={blockRowStyle}>
-        <FlexWidget style={blockColumnStyle}>
-          <FlexWidget style={blockTopRowStyle}>
-            <FlexWidget style={{ ...accentDotStyle, backgroundColor: toHexColor(block.color, colors.primary) }} />
-            <FlexWidget style={statusChipStyle(isActive)}>
-              <TextWidget text={isActive ? "NOW" : "NEXT"} style={statusChipTextStyle(isActive)} />
-            </FlexWidget>
-          </FlexWidget>
-          <TextWidget text={block.title} style={blockTitleStyle} truncate="END" maxLines={1} />
-          <TextWidget text={block.timeRange} style={blockTimeStyle} />
+    <FlexWidget style={panelStyle(accent)}>
+      <AccentBar color={accent} />
+      <FlexWidget style={bodyContentStyle}>
+        <FlexWidget style={statusChipStyle(isActive)}>
+          <TextWidget text={isActive ? "NOW" : "NEXT"} style={statusChipTextStyle(isActive)} />
         </FlexWidget>
-        {showTrackButton && block.goalId && <TrackButton goalId={block.goalId} />}
+        <TextWidget text={block.title} style={blockTitleStyle} truncate="END" maxLines={1} />
+        {!isTight && <TextWidget text={block.timeRange} style={blockTimeStyle} truncate="END" maxLines={1} />}
       </FlexWidget>
-      {/* Fills the extra room a large resize leaves below the block instead
-          of it sitting blank — see `EXTRAS_HEIGHT_THRESHOLD_DP`. */}
-      {dayProgress && <DayProgressRow done={dayProgress.done} total={dayProgress.total} />}
+      {showTrackButton && block.goalId && <TrackButton goalId={block.goalId} />}
     </FlexWidget>
   );
 }
 
-function DayProgressRow({ done, total }: { done: number; total: number }) {
-  const allDone = done >= total && total > 0;
-  return (
-    <FlexWidget style={dayProgressRowStyle}>
-      <TextWidget text="TODAY'S PROGRESS" style={dayProgressLabelStyle} />
-      <TextWidget
-        text={allDone ? `All ${total} blocks done — nice work` : `${done} of ${total} blocks done so far`}
-        style={dayProgressValueStyle}
-      />
-    </FlexWidget>
-  );
-}
-
-/** Its own `clickAction`, separate from the root widget's — tapping it starts tracking directly instead of just opening the app. Mirrors the iOS widget's medium-size "Start" button (targets/widget/GoalSlotWidget.swift). */
+/** Its own `clickAction`, separate from the root widget's — tapping it starts tracking directly instead of just opening the app. Mirrors the iOS widget's "Start" button (targets/widget/GoalSlotWidget.swift). */
 function TrackButton({ goalId }: { goalId: string }) {
   return (
     <FlexWidget
@@ -188,59 +235,69 @@ function TrackButton({ goalId }: { goalId: string }) {
   );
 }
 
-/** A persistent status band for "what's being tracked right now" — shown regardless of what today's schedule body above is displaying, since the two can disagree (e.g. tracking a goal that isn't even one of today's scheduled blocks). Task wins over its parent goal as the headline label (`primaryLabel`), with the goal as a subtitle when there is one — see widget-data.ts's `loadWidgetTrackingState`. */
-function TrackingBand({ tracking }: { tracking: WidgetTrackingState }) {
-  const isPaused = tracking.status === "paused";
+/** The non-block states (nothing scheduled / all done / signed out). Keeps the same bar-plus-content anatomy as `BlockBody` so the widget doesn't restructure itself between states — only the copy and the bar colour change. */
+function MessageBody({
+  accent,
+  headline,
+  detail,
+}: {
+  accent: `#${string}`;
+  headline: string;
+  detail: string;
+}) {
   return (
-    <FlexWidget style={trackingBandStyle}>
+    <FlexWidget style={panelStyle(accent)}>
+      <AccentBar color={accent} />
+      <FlexWidget style={bodyContentStyle}>
+        <TextWidget text={headline} style={blockTitleStyle} truncate="END" maxLines={1} />
+        <TextWidget text={detail} style={blockTimeStyle} truncate="END" maxLines={1} />
+      </FlexWidget>
+    </FlexWidget>
+  );
+}
+
+/**
+ * A persistent footer for "what's being tracked right now" — shown
+ * regardless of what the schedule body above is displaying, since the two
+ * can disagree (e.g. tracking a goal that isn't one of today's scheduled
+ * blocks). Task wins over its parent goal as the headline (`primaryLabel`),
+ * with the goal as a subtitle when there is one — see widget-data.ts's
+ * `loadWidgetTrackingState`.
+ */
+function TrackingBand({ tracking, isTight }: { tracking: WidgetTrackingState; isTight: boolean }) {
+  const isPaused = tracking.status === "paused";
+  const accent = isPaused ? colors.mutedForeground : colors.primary;
+  return (
+    <FlexWidget style={{ ...trackingBandStyle, backgroundColor: withAlpha(accent, PANEL_TINT_ALPHA) }}>
       <FlexWidget style={trackingHeaderRowStyle}>
         <FlexWidget style={trackingStatusGroupStyle}>
-          <FlexWidget style={{ ...trackingDotStyle, backgroundColor: isPaused ? colors.mutedForeground : colors.primary }} />
-          <TextWidget text={isPaused ? "Paused" : "Tracking"} style={trackingLabelStyle} />
+          <FlexWidget style={{ ...trackingDotStyle, backgroundColor: accent }} />
+          <TextWidget text={isPaused ? "PAUSED" : "TRACKING"} style={trackingLabelStyle} />
+          <TextWidget text={tracking.primaryLabel} style={trackingTitleStyle} truncate="END" maxLines={1} />
         </FlexWidget>
         <TextWidget text={tracking.elapsedLabel} style={trackingElapsedStyle} />
       </FlexWidget>
-      <TextWidget text={tracking.primaryLabel} style={trackingTitleStyle} truncate="END" maxLines={1} />
-      {tracking.secondaryLabel && (
+      {!isTight && tracking.secondaryLabel && (
         <TextWidget text={tracking.secondaryLabel} style={trackingSubtitleStyle} truncate="END" maxLines={1} />
       )}
-      <ProgressBar progress={tracking.progress} isPaused={isPaused} />
+      <ProgressBar progress={tracking.progress} accent={accent} />
     </FlexWidget>
   );
 }
 
 /**
  * A flexbox-ratio trick, not a native progress primitive (the library
- * doesn't have one): a fixed-height row split into a filled leading
- * segment and an empty trailing one, sized via `flex` the same way
- * `flex-grow` would size two siblings — see widget-data.ts's
+ * doesn't have one): a fixed-height row split into a filled leading segment
+ * and an empty trailing one, sized via `flex` the same way `flex-grow`
+ * would size two siblings — see widget-data.ts's
  * `WidgetTrackingState.progress` for why this isn't live-ticking.
  */
-function ProgressBar({ progress, isPaused }: { progress: number; isPaused: boolean }) {
+function ProgressBar({ progress, accent }: { progress: number; accent: `#${string}` }) {
   const filled = Math.min(1, Math.max(0, progress));
   return (
     <FlexWidget style={progressTrackStyle}>
-      <FlexWidget style={{ flex: filled, backgroundColor: isPaused ? colors.mutedForeground : colors.primary }} />
-      <FlexWidget style={{ flex: 1 - filled }} />
-    </FlexWidget>
-  );
-}
-
-function ProgressBody({ done, total }: { done: number; total: number }) {
-  const allDone = done >= total && total > 0;
-  return (
-    <FlexWidget style={blockColumnStyle}>
-      <TextWidget text={`${done} of ${total}`} style={statValueStyle} />
-      <TextWidget text={allDone ? "blocks done — nice work" : "blocks done today"} style={blockTimeStyle} />
-    </FlexWidget>
-  );
-}
-
-function MessageBody({ headline, detail }: { headline: string; detail: string }) {
-  return (
-    <FlexWidget style={blockColumnStyle}>
-      <TextWidget text={headline} style={blockTitleStyle} maxLines={1} />
-      <TextWidget text={detail} style={blockTimeStyle} />
+      <FlexWidget style={{ flex: filled, height: "match_parent", backgroundColor: accent }} />
+      <FlexWidget style={{ flex: 1 - filled, height: "match_parent" }} />
     </FlexWidget>
   );
 }
@@ -256,12 +313,17 @@ const rootStyle: FlexWidgetStyle = {
   flexDirection: "column",
   backgroundColor: colors.card,
   borderRadius: radii.card,
-  borderWidth: 1,
-  borderColor: colors.border,
   padding: spacing.md,
 };
 
 const headerStyle: FlexWidgetStyle = {
+  width: "match_parent",
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+};
+
+const headerLeftStyle: FlexWidgetStyle = {
   flexDirection: "row",
   alignItems: "center",
   flexGap: spacing.xs,
@@ -274,145 +336,46 @@ const brandDotStyle: FlexWidgetStyle = {
   width: 6,
   height: 6,
   borderRadius: radii.full,
-  backgroundColor: colors.primary,
+  backgroundGradient: { from: colors.primary, to: withAlpha(colors.primary, FADE_ALPHA), orientation: "TL_BR" },
 };
 
 const eyebrowStyle: TextWidgetStyle = {
   fontSize: typography.size.twoxs,
   fontWeight: "600",
-  letterSpacing: 0.5,
+  letterSpacing: 0.8,
   color: colors.mutedForeground,
 };
 
-// `justifyContent: "flex-start"`, not "center" — the widget is now freely
-// resizable (app.json's `resizeMode`/`maxResizeWidth`/`maxResizeHeight`), and
-// centering left a large dead gap ABOVE the content on a tall resize (the
-// content floats mid-card, disconnected from the "TODAY" header above it).
-// Anchoring to the top keeps content flush under the header regardless of
-// how much extra height the user drags in; any leftover space collects
-// below instead, which reads as breathing room rather than a layout bug.
-const bodyStyle: FlexWidgetStyle = {
-  flex: 1,
-  flexDirection: "column",
-  justifyContent: "flex-start",
-};
-
-const blockRowStyle: FlexWidgetStyle = {
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "space-between",
-};
-
-const dayProgressRowStyle: FlexWidgetStyle = {
-  flexDirection: "column",
-  flexGap: spacing.xxs,
-  marginTop: spacing.md,
-  paddingTop: spacing.sm,
-  borderTopWidth: 1,
-  borderTopColor: colors.border,
-};
-
-const dayProgressLabelStyle: TextWidgetStyle = {
-  fontSize: typography.size.twoxs,
-  fontWeight: "600",
-  letterSpacing: 0.5,
-  color: colors.mutedForeground,
-};
-
-const dayProgressValueStyle: TextWidgetStyle = {
-  fontSize: typography.size.sm,
-  fontWeight: "600",
-  color: colors.foreground,
-};
-
-const blockColumnStyle: FlexWidgetStyle = {
-  flexDirection: "column",
-  flexGap: spacing.xxs,
-};
-
-const trackButtonStyle: FlexWidgetStyle = {
-  paddingHorizontal: spacing.md,
-  paddingVertical: spacing.sm,
-  borderRadius: radii.full,
-  backgroundColor: colors.primary,
-};
-
-const trackButtonTextStyle: TextWidgetStyle = {
-  fontSize: typography.size.sm,
-  fontWeight: "600",
-  color: colors.primaryForeground,
-};
-
-const trackingBandStyle: FlexWidgetStyle = {
-  flexDirection: "column",
-  flexGap: spacing.xxs,
-  marginTop: spacing.xs,
-  paddingTop: spacing.xs,
-  borderTopWidth: 1,
-  borderTopColor: colors.border,
-};
-
-const trackingHeaderRowStyle: FlexWidgetStyle = {
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "space-between",
-  flexGap: spacing.xxs,
-};
-
-const trackingStatusGroupStyle: FlexWidgetStyle = {
-  flexDirection: "row",
-  alignItems: "center",
-  flexGap: spacing.xxs,
-};
-
-const trackingDotStyle: FlexWidgetStyle = {
-  width: 6,
-  height: 6,
-  borderRadius: radii.full,
-};
-
-const trackingLabelStyle: TextWidgetStyle = {
+const headerProgressStyle: TextWidgetStyle = {
   fontSize: typography.size.twoxs,
   fontWeight: "600",
   letterSpacing: 0.3,
   color: colors.mutedForeground,
 };
 
-const trackingElapsedStyle: TextWidgetStyle = {
-  fontSize: typography.size.twoxs,
-  fontWeight: "700",
-  color: colors.foreground,
-};
-
-const trackingTitleStyle: TextWidgetStyle = {
-  fontSize: typography.size.sm,
-  fontWeight: "600",
-  color: colors.foreground,
-};
-
-const trackingSubtitleStyle: TextWidgetStyle = {
-  fontSize: typography.size.twoxs,
-  color: colors.mutedForeground,
-};
-
-const progressTrackStyle: FlexWidgetStyle = {
-  flexDirection: "row",
-  height: 4,
-  borderRadius: radii.full,
-  backgroundColor: colors.secondary,
-  overflow: "hidden",
-};
-
-const blockTopRowStyle: FlexWidgetStyle = {
+/** `flex: 1` is what hands the leftover card height to this row (and so to the accent bar inside it) rather than leaving it as blank space at one end. Also the base a tinted panel is built from — see `panelStyle`. */
+const bodyRowStyle: FlexWidgetStyle = {
+  flex: 1,
+  width: "match_parent",
   flexDirection: "row",
   alignItems: "center",
-  justifyContent: "space-between",
+  marginTop: spacing.sm,
+  marginBottom: spacing.sm,
+  borderRadius: radii.lg,
+  padding: spacing.sm,
 };
 
-const accentDotStyle: FlexWidgetStyle = {
-  width: 10,
-  height: 10,
+const accentBarStyle: FlexWidgetStyle = {
+  width: 5,
+  height: "match_parent",
   borderRadius: radii.full,
+  marginRight: spacing.md,
+};
+
+const bodyContentStyle: FlexWidgetStyle = {
+  flex: 1,
+  flexDirection: "column",
+  flexGap: spacing.xxs,
 };
 
 function statusChipStyle(isActive: boolean): FlexWidgetStyle {
@@ -436,20 +399,94 @@ function statusChipTextStyle(isActive: boolean): TextWidgetStyle {
   };
 }
 
+// 18px, up from the row-title 16px the app uses inside a list: the widget
+// shows exactly one block, so its title is the whole point of the surface
+// rather than one row among many.
 const blockTitleStyle: TextWidgetStyle = {
-  fontSize: typography.size.md,
+  fontSize: typography.size.lg,
   fontWeight: "700",
   color: colors.foreground,
 };
 
 const blockTimeStyle: TextWidgetStyle = {
-  fontSize: typography.size.sm,
+  fontSize: typography.size.xs,
   color: colors.mutedForeground,
 };
 
-const statValueStyle: TextWidgetStyle = {
-  fontSize: typography.size.xxl,
-  fontWeight: "700",
-  letterSpacing: -1,
+const trackButtonStyle: FlexWidgetStyle = {
+  paddingHorizontal: spacing.lg,
+  paddingVertical: spacing.sm,
+  marginLeft: spacing.sm,
+  borderRadius: radii.full,
+  // A gradient capsule rather than a flat fill — same fade the accent bar
+  // uses, matching the iOS widget's Start button.
+  backgroundGradient: { from: colors.primary, to: withAlpha(colors.primary, FADE_ALPHA), orientation: "TOP_BOTTOM" },
+};
+
+const trackButtonTextStyle: TextWidgetStyle = {
+  fontSize: typography.size.sm,
+  fontWeight: "600",
+  color: colors.primaryForeground,
+};
+
+/** Tinted the same way `panelStyle` tints a block row (see `TrackingBand`), so the running-session panel reads as the same kind of surface rather than a plain divider-and-text strip. */
+const trackingBandStyle: FlexWidgetStyle = {
+  width: "match_parent",
+  flexDirection: "column",
+  flexGap: spacing.xs,
+  marginTop: spacing.xs,
+  borderRadius: radii.lg,
+  padding: spacing.sm,
+};
+
+const trackingHeaderRowStyle: FlexWidgetStyle = {
+  width: "match_parent",
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+};
+
+const trackingStatusGroupStyle: FlexWidgetStyle = {
+  flex: 1,
+  flexDirection: "row",
+  alignItems: "center",
+  flexGap: spacing.xs,
+};
+
+const trackingDotStyle: FlexWidgetStyle = {
+  width: 6,
+  height: 6,
+  borderRadius: radii.full,
+};
+
+const trackingLabelStyle: TextWidgetStyle = {
+  fontSize: typography.size.twoxs,
+  fontWeight: "600",
+  letterSpacing: 0.5,
+  color: colors.mutedForeground,
+};
+
+const trackingTitleStyle: TextWidgetStyle = {
+  fontSize: typography.size.sm,
+  fontWeight: "600",
   color: colors.foreground,
+};
+
+const trackingElapsedStyle: TextWidgetStyle = {
+  fontSize: typography.size.sm,
+  fontWeight: "700",
+  color: colors.foreground,
+};
+
+const trackingSubtitleStyle: TextWidgetStyle = {
+  fontSize: typography.size.twoxs,
+  color: colors.mutedForeground,
+};
+
+const progressTrackStyle: FlexWidgetStyle = {
+  width: "match_parent",
+  flexDirection: "row",
+  height: 4,
+  borderRadius: radii.full,
+  backgroundColor: colors.secondary,
 };

@@ -36,6 +36,7 @@ import {
   BlockDetailSheet,
   DayStrip,
   getDayWindow,
+  HOUR_HEIGHT,
   minuteToY,
   positionBlocks,
   ScheduleBlockSheet,
@@ -79,6 +80,12 @@ export default function ScheduleScreen() {
   const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
   const [now, setNow] = useState(() => new Date());
   const [detailBlock, setDetailBlock] = useState<ScheduleBlock | null>(null);
+  // The ScrollView's own on-screen height, measured once via onLayout below.
+  // Threaded into getDayWindow so a lightly-scheduled day's trimmed hour
+  // range (±1hr around its content, see layout.ts) is widened to actually
+  // fill this device's viewport instead of leaving blank page background
+  // beneath a canvas that's shorter than the screen.
+  const [viewportHeight, setViewportHeight] = useState(0);
 
   const blockSheetRef = useRef<ScheduleBlockSheetRef>(null);
   const detailRef = useRef<BottomSheetModal>(null);
@@ -168,9 +175,13 @@ export default function ScheduleScreen() {
     [detailBlock, allBlocks],
   );
 
+  // Rounded up: a partial trailing hour still needs its full row to avoid
+  // landing back below the viewport by a few px.
+  const minWindowHours = viewportHeight > 0 ? Math.ceil(viewportHeight / HOUR_HEIGHT) : undefined;
+
   const dayWindow = useMemo(
-    () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? []),
-    [weeklyQuery.data, selectedDay],
+    () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? [], minWindowHours),
+    [weeklyQuery.data, selectedDay, minWindowHours],
   );
 
   const scheduledMinutes = useMemo(
@@ -337,7 +348,7 @@ export default function ScheduleScreen() {
               and it has to be settable before the blocks it will govern
               exist. */}
           <Pressable
-            style={styles.remindersToggle}
+            style={({ pressed }) => [styles.remindersToggle, pressed && styles.remindersTogglePressed]}
             onPress={handleToggleAllReminders}
             // The circle reads better at 36 than at 44 next to the title, so
             // the touch target is bought back with hitSlop (36 + 2×8 = 52),
@@ -382,6 +393,14 @@ export default function ScheduleScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        // Measures this ScrollView's own frame (not its content) — feeds
+        // `minWindowHours` above. Only grows: a transient shrink (keyboard,
+        // rotation mid-gesture) shouldn't yank the window back down and
+        // reintroduce blank space for the frames until it re-measures.
+        onLayout={(e) => {
+          const height = e.nativeEvent.layout.height;
+          setViewportHeight((current) => Math.max(current, height));
+        }}
         // Lands the offset the day-change effect asked for, once the new
         // canvas has actually been measured. See `pendingScrollY`.
         onContentSizeChange={() => {
@@ -436,7 +455,12 @@ export default function ScheduleScreen() {
         )}
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={openCreateSheet} accessibilityRole="button" accessibilityLabel="Add time slot">
+      <Pressable
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+        onPress={openCreateSheet}
+        accessibilityRole="button"
+        accessibilityLabel="Add time slot"
+      >
         <Icon name="add" size={26} color={colors.primaryForeground} />
       </Pressable>
 
@@ -501,6 +525,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  // This circle previously had no press feedback at all — a static hit
+  // against every other tappable surface on this screen (day pills, blocks,
+  // the FAB below) that all give something back under a finger.
+  remindersTogglePressed: {
+    backgroundColor: colors.secondary,
+  },
   eyebrow: {
     ...typography.label,
     color: colors.mutedForeground,
@@ -518,8 +548,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.sm,
   },
+  // `headline`, not `h2` — h2 is the small uppercase group-label role
+  // (see tokens.ts), which made the day name read like a caption sitting
+  // under the pills rather than the heading it actually is for everything
+  // below it. Headline gives it real weight in the hierarchy, one step under
+  // the "Schedule" screen title and clearly above the meta line beside it.
   summaryDay: {
-    ...typography.h2,
+    ...typography.headline,
     color: colors.foreground,
   },
   summaryMeta: {
@@ -544,5 +579,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     ...shadows.fab,
+  },
+  // Every other pressable on this screen (day pills, blocks) gives a spring
+  // scale-down under a finger; the FAB — the screen's single most-used
+  // control — had nothing. A flat opacity dip is enough to read as "pressed"
+  // without pulling in Reanimated for a one-off static state.
+  fabPressed: {
+    opacity: 0.85,
   },
 });

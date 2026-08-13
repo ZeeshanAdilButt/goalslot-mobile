@@ -819,7 +819,11 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    // radii.lg (control role) — matches the Cancel/Save buttons below and
+    // BlockDetailSheet's Edit/Delete pair; this field previously used
+    // radii.md (chip role), which read as a smaller-radius mismatch against
+    // every other control-shaped surface in the two schedule sheets.
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
@@ -862,7 +866,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.card,
@@ -1003,7 +1007,7 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.card,
@@ -1017,7 +1021,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: minTouchTarget,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
   },

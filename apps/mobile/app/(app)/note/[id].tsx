@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BackHandler,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -29,11 +30,13 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
+  CoreBridge,
   RichText,
+  TenTapStartKit,
   Toolbar,
   useBridgeState,
   useEditorBridge,
@@ -43,7 +46,7 @@ import {
 import type { Note, NoteDetailResponse } from "@goalslot/shared";
 
 import { ErrorState, LoadingState } from "@/components";
-import { colors } from "@/theme";
+import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -114,7 +117,7 @@ function BackButton({ onPress }: { onPress?: () => void }) {
     <Pressable
       onPress={onPress ?? (() => router.replace("/notes"))}
       hitSlop={12}
-      style={styles.backButton}
+      style={({ pressed }) => [styles.backButton, pressed ? styles.backButtonPressed : null]}
       accessibilityRole="button"
       accessibilityLabel="Back to notes"
     >
@@ -130,6 +133,19 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   const [title, setTitle] = useState(note.title);
   const [saveFailed, setSaveFailed] = useState(false);
   const [initTimedOut, setInitTimedOut] = useState(false);
+  // Android-only: `avoidIosKeyboard` (10tap-editor) is iOS-first by design —
+  // it does resize the WebView's own document padding on Android too (see
+  // RichText.tsx), but only assumes the *toolbar* needs clearing, on the
+  // premise that windowSoftInputMode="adjustResize" has already shrunk this
+  // screen's view tree so the WebView itself excludes the keyboard. That
+  // premise doesn't hold here — nested inside a hidden-tab screen (see the
+  // header comment), the resize doesn't reliably reach this subtree, so
+  // both the always-visible Toolbar and the tail of the document can end up
+  // sitting behind the keyboard. Tracking the keyboard height ourselves and
+  // feeding it into layout (below) doesn't depend on that OS behavior at
+  // all: the flex column always reserves the right amount of space,
+  // regardless of whether adjustResize already did its job.
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
 
   const lastSavedTitleRef = useRef(note.title);
   const lastSavedContentRef = useRef(initialContent);
@@ -142,8 +158,75 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     autofocus: false,
     avoidIosKeyboard: true,
     editable: !readOnly,
+    // The editor is a WebView, so it does NOT inherit this screen's React
+    // Native padding — without this its text renders flush against the
+    // device's left edge ("collapsed into my left border"). The gutter has
+    // to be applied inside the document, and `.ProseMirror` is the
+    // contenteditable root tentap mounts the document into. Matched to the
+    // 20pt horizontal inset the rest of this screen uses (see the title
+    // input and `fallbackContent` below) so the body text lines up with the
+    // title above it instead of stepping in or out at the boundary.
+    bridgeExtensions: [
+      ...TenTapStartKit,
+      CoreBridge.configureCSS(`
+        .ProseMirror {
+          padding: ${spacing.md}px ${spacing.xl}px ${spacing.xxxxl}px ${spacing.xl}px;
+          font-size: 16px;
+          line-height: 1.6;
+          color: ${colors.foreground};
+        }
+        .ProseMirror p {
+          margin: 0 0 12px;
+        }
+        .ProseMirror h1, .ProseMirror h2, .ProseMirror h3 {
+          font-weight: 700;
+          color: ${colors.foreground};
+          margin: 24px 0 8px;
+          line-height: 1.3;
+        }
+        .ProseMirror blockquote {
+          margin: 12px 0;
+          padding-left: 12px;
+          border-left: 3px solid ${colors.primary};
+          color: ${colors.mutedForeground};
+        }
+        .ProseMirror a {
+          color: ${colors.primaryText};
+        }
+        .ProseMirror code {
+          background-color: ${colors.muted};
+          padding: 2px 4px;
+          border-radius: 4px;
+          font-size: 14px;
+        }
+        .ProseMirror ::selection {
+          background-color: ${colors.primaryBorder};
+        }
+      `),
+    ],
   });
   const editorState = useBridgeState(editor);
+
+  const insets = useSafeAreaInsets();
+
+  // See the androidKeyboardHeight comment above — this is the RN Keyboard
+  // API tracking the task asked for, scoped to Android only since iOS
+  // already gets correct behavior from `avoidIosKeyboard` + the "padding"
+  // KeyboardAvoidingView below.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) => {
+      setAndroidKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setAndroidKeyboardHeight(0);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   // Debounced (1000ms) HTML snapshot of the document — each emission that
   // differs from the last saved value triggers the update mutation below.
   const editedContent = useEditorContent(editor, {
@@ -365,12 +448,37 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         <>
           <RichText editor={editor} onLoad={handleWebViewLoad} />
           {!readOnly ? (
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
-              style={styles.toolbarContainer}
-            >
-              <Toolbar editor={editor} />
-            </KeyboardAvoidingView>
+            Platform.OS === "ios" ? (
+              <KeyboardAvoidingView
+                behavior="padding"
+                style={[styles.toolbarContainer, { paddingBottom: insets.bottom }]}
+              >
+                <Toolbar editor={editor} />
+              </KeyboardAvoidingView>
+            ) : (
+              // Android: `KeyboardAvoidingView`'s `behavior` has no Android
+              // equivalent of "padding" (see the file-level comment above),
+              // so instead of floating this bar over the WebView at a fixed
+              // `bottom: 0` (which requires the OS to have already resized
+              // this screen's view tree for it to land above the keyboard),
+              // it's laid out as a normal flex sibling below the WebView.
+              // `marginBottom` grows with the tracked keyboard height, which
+              // shrinks the WebView's own flex-allotted space by the same
+              // amount — the WebView gets genuinely smaller, so its internal
+              // viewport/cursor tracking has correct bounds to work with,
+              // and this bar always ends up sitting right above the
+              // keyboard regardless of whether adjustResize did its job for
+              // this subtree. `insets.bottom` covers the home-indicator/nav
+              // gesture area when the keyboard is closed.
+              <View
+                style={[
+                  styles.toolbarContainerAndroid,
+                  { marginBottom: androidKeyboardHeight || insets.bottom },
+                ]}
+              >
+                <Toolbar editor={editor} />
+              </View>
+            )
           ) : null}
         </>
       )}
@@ -381,82 +489,120 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.card,
+    // A shade off the header/title card so the page reads as one surface
+    // resting on the app's base background, rather than a single flat slab
+    // of white — the same card-on-background layering the rest of the app
+    // uses (see foundation.ts's `background` vs `card`).
+    backgroundColor: colors.background,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+    backgroundColor: colors.card,
   },
   backButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.control,
+  },
+  backButtonPressed: {
+    backgroundColor: colors.secondary,
   },
   backButtonText: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: typography.size.md,
+    fontWeight: typography.weight.semibold,
     color: colors.foreground,
   },
   readOnlyBadge: {
-    marginRight: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 6,
+    marginRight: spacing.sm,
+    paddingVertical: spacing.xxs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.pill,
     backgroundColor: colors.muted,
   },
   readOnlyBadgeText: {
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.semibold,
     color: colors.mutedForeground,
   },
   titleInput: {
-    fontSize: 22,
-    fontWeight: "700",
+    fontSize: typography.size.xxl,
+    fontWeight: typography.weight.bold,
+    letterSpacing: -0.4,
     color: colors.foreground,
-    paddingHorizontal: 20,
-    paddingTop: 4,
-    paddingBottom: 12,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.card,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
   },
   saveFailedBanner: {
-    marginHorizontal: 20,
-    marginBottom: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 6,
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.chip,
     backgroundColor: colors.destructiveMuted,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.destructive,
   },
   saveFailedText: {
-    fontSize: 12,
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.medium,
+    lineHeight: 16,
     color: colors.destructive,
   },
+  // iOS: floats over the WebView, positioned by `avoidIosKeyboard` +
+  // KeyboardAvoidingView's "padding" behavior.
   toolbarContainer: {
     position: "absolute",
     width: "100%",
     bottom: 0,
+    backgroundColor: colors.card,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    ...shadows.raised,
+  },
+  // Android: a normal flex sibling after the WebView instead — see the
+  // render-time comment on where this is used for why. Same visual
+  // treatment as the iOS bar (border + shadow) so the two platforms read
+  // as the same component.
+  toolbarContainerAndroid: {
+    width: "100%",
+    backgroundColor: colors.card,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    ...shadows.raised,
   },
   fallbackScroll: {
     flex: 1,
+    backgroundColor: colors.card,
   },
   fallbackContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 32,
-    gap: 16,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xxxl,
+    gap: spacing.lg,
   },
   fallbackNotice: {
-    padding: 12,
-    borderRadius: 8,
+    padding: spacing.md,
+    borderRadius: radii.chip,
     backgroundColor: colors.warningMuted,
   },
   fallbackNoticeText: {
-    fontSize: 13,
+    fontSize: typography.size.xs,
+    lineHeight: 18,
     color: colors.warningForeground,
   },
   fallbackBody: {
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: typography.size.md,
+    lineHeight: 26,
     color: colors.foreground,
   },
 });

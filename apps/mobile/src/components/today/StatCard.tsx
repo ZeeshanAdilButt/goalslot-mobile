@@ -114,12 +114,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   value: {
-    // Explicit rather than a token: the semantic scale tops out at 24px
-    // (`fontSize.xxl`) before jumping to the 72px timer `display`, and this
-    // tile needs the step in between.
-    fontSize: 30,
-    fontWeight: "700",
-    letterSpacing: -1,
+    // `statValue` is the semantic role foundation.ts built for exactly this
+    // spot — "the big number on a stat tile" — and cites this component by
+    // name. Using the token (36px) instead of a hand-rolled 30px also picks
+    // up its explicit lineHeight, which is what keeps all four tiles'
+    // baselines aligned across iOS/Android instead of drifting per-platform.
+    ...typography.statValue,
     color: colors.foreground,
   },
   detail: {

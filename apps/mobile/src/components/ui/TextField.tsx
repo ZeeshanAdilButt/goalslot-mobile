@@ -26,17 +26,18 @@ export interface TextFieldProps extends TextInputProps {
 }
 
 export const TextField = forwardRef<TextInput, TextFieldProps>(function TextField(
-  { label, error, style, onFocus, onBlur, accessibilityLabel, secureToggle, secureTextEntry, ...rest },
+  { label, error, style, onFocus, onBlur, accessibilityLabel, secureToggle, secureTextEntry, editable = true, ...rest },
   ref,
 ) {
   const [focused, setFocused] = useState(false);
   const [revealed, setRevealed] = useState(false);
 
   const isSecure = secureToggle ? !revealed : secureTextEntry;
+  const isDisabled = editable === false;
 
   return (
     <View style={styles.container}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      {label ? <Text style={[styles.label, isDisabled && styles.labelDisabled]}>{label}</Text> : null}
       <View style={styles.inputWrapper}>
         <TextInput
           ref={ref}
@@ -45,11 +46,14 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
             secureToggle && styles.inputWithToggle,
             focused && styles.inputFocused,
             !!error && styles.inputError,
+            isDisabled && styles.inputDisabled,
             style,
           ]}
           placeholderTextColor={colors.mutedForeground}
           accessibilityLabel={accessibilityLabel ?? label}
+          accessibilityState={{ disabled: isDisabled }}
           secureTextEntry={isSecure}
+          editable={editable}
           onFocus={(event) => {
             setFocused(true);
             onFocus?.(event);
@@ -92,7 +96,11 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1.5,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    // `radii.control` (12) — the role foundation.ts documents for "buttons,
+    // inputs, select rows": this previously used `radii.md` (8, the `chip`
+    // role), which read a step tighter-cornered than the Button primitive
+    // sitting right next to it in the same form.
+    borderRadius: radii.control,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     fontSize: typography.size.md,
@@ -108,6 +116,14 @@ const styles = StyleSheet.create({
   },
   inputError: {
     borderColor: colors.destructive,
+  },
+  inputDisabled: {
+    backgroundColor: colors.secondary,
+    borderColor: colors.border,
+    color: colors.mutedForeground,
+  },
+  labelDisabled: {
+    color: colors.mutedForeground,
   },
   toggle: {
     position: "absolute",

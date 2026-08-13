@@ -53,9 +53,26 @@ export interface DayWindow {
   endHour: number;
 }
 
-export function getDayWindow(blocks: readonly ScheduleBlock[]): DayWindow {
+/**
+ * Below this, a lightly-scheduled day's trimmed window (±1hr around its
+ * content) renders shorter than a typical phone viewport — the canvas ends
+ * a few hundred px down and the rest of the screen is just blank page
+ * background beneath the ScrollView's content. The default keeps every
+ * existing caller and test exactly as it was (nothing here changes without
+ * `minHours` being passed); it's `schedule.tsx` that raises it to match the
+ * canvas's own measured on-screen height, so the timeline reliably fills
+ * whatever viewport it's actually given rather than leaving dead space
+ * below it on a light day.
+ */
+const DEFAULT_MIN_WINDOW_HOURS = 3;
+
+export function getDayWindow(
+  blocks: readonly ScheduleBlock[],
+  minHours: number = DEFAULT_MIN_WINDOW_HOURS,
+): DayWindow {
   if (blocks.length === 0) {
-    return { startHour: EMPTY_DAY_START_HOUR, endHour: EMPTY_DAY_END_HOUR };
+    const endHour = Math.max(EMPTY_DAY_END_HOUR, EMPTY_DAY_START_HOUR + minHours);
+    return { startHour: EMPTY_DAY_START_HOUR, endHour: Math.min(24, endHour) };
   }
 
   let earliest = 24 * 60;
@@ -66,7 +83,7 @@ export function getDayWindow(blocks: readonly ScheduleBlock[]): DayWindow {
   }
 
   const startHour = Math.max(0, Math.floor(earliest / 60) - 1);
-  const endHour = Math.min(24, Math.max(startHour + 3, Math.ceil(latest / 60) + 1));
+  const endHour = Math.min(24, Math.max(startHour + minHours, Math.ceil(latest / 60) + 1));
   return { startHour, endHour };
 }
 

@@ -217,7 +217,12 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    // radii.lg (control role, 12px) — an input is a control the same as the
+    // Cancel/Save buttons below, not a chip; radii.md (8, chip role) read as
+    // a smaller-radius mismatch against every other control-shaped surface
+    // in this sheet. Matches ScheduleBlockSheet's own input, fixed for the
+    // same reason.
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
@@ -253,8 +258,8 @@ const styles = StyleSheet.create({
     color: colors.white,
   },
   error: {
+    ...typography.bodySmall,
     color: colors.destructive,
-    fontSize: 13,
   },
   footer: {
     flexDirection: "row",
@@ -266,7 +271,7 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingVertical: spacing.md - 2,
     alignItems: "center",
     justifyContent: "center",
@@ -281,7 +286,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: minTouchTarget,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     paddingVertical: spacing.md - 2,
     alignItems: "center",
     justifyContent: "center",

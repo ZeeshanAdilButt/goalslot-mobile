@@ -259,7 +259,7 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
 
             <View style={styles.actionRow}>
               <Pressable
-                style={styles.editButton}
+                style={({ pressed }) => [styles.editButton, pressed && styles.editButtonPressed]}
                 onPress={handleEdit}
                 accessibilityRole="button"
                 accessibilityLabel="Edit"
@@ -268,7 +268,7 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
                 <Text style={styles.editText}>Edit</Text>
               </Pressable>
               <Pressable
-                style={styles.deleteButton}
+                style={({ pressed }) => [styles.deleteButton, pressed && styles.deleteButtonPressed]}
                 onPress={handleDelete}
                 accessibilityRole="button"
                 accessibilityLabel="Delete"
@@ -423,6 +423,12 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     backgroundColor: colors.muted,
   },
+  // Both Pressables here had no press feedback at all — a plain color-swap
+  // dim, matching the fade TouchableOpacity gives ScheduleBlockSheet's own
+  // Cancel/Save pair so every sheet in this flow feels equally responsive.
+  editButtonPressed: {
+    opacity: 0.7,
+  },
   editText: {
     ...typography.body,
     fontWeight: "700",
@@ -437,6 +443,9 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderRadius: radii.lg,
     backgroundColor: colors.destructiveMuted,
+  },
+  deleteButtonPressed: {
+    opacity: 0.7,
   },
   deleteText: {
     ...typography.body,

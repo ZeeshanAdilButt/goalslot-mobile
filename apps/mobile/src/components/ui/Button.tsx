@@ -136,6 +136,11 @@ export const Button = forwardRef<React.ComponentRef<typeof Pressable>, ButtonPro
           styles.surface,
           sizeSpec.container,
           spec.container,
+          // Disabled buttons drop their shadow rather than just fading it via
+          // the opacity below — a faded-but-still-elevated surface reads as a
+          // rendering glitch (a shadow implies "this is liftable", which a
+          // disabled control isn't), where a flat faded surface reads as inert.
+          isDisabled && styles.disabledShadow,
           isDisabled && styles.disabled,
           surfaceStyle,
         ]}
@@ -196,6 +201,10 @@ const styles = StyleSheet.create({
   },
   disabled: {
     opacity: 0.5, // web button.tsx:9 `disabled:opacity-50`
+  },
+  disabledShadow: {
+    shadowOpacity: 0,
+    elevation: 0,
   },
 });
 
@@ -272,7 +281,11 @@ const variantSpecs: Record<ButtonVariant, VariantSpec> = {
     pressedBackground: colors.secondary,
   },
   destructive: {
-    container: { backgroundColor: colors.destructive }, // `bg-rose-500 text-white`
+    // `bg-rose-500 text-white` — carries the same `shadow-sm` base elevation
+    // as the other filled variants (primary/brand/secondary above); it was
+    // the one filled variant missing it, which read as a flatter, lower-
+    // priority control than a destructive action should.
+    container: { backgroundColor: colors.destructive, ...shadows.subtle },
     foreground: colors.destructiveForeground,
     pressedBackground: colors.destructivePressed, // `hover:bg-rose-600`
   },

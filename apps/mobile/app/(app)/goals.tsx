@@ -295,7 +295,7 @@ export default function GoalsScreen() {
 
       {emptyStateHasCta ? null : (
         <Pressable
-          style={styles.fab}
+          style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
           onPress={openQuickAdd}
           hitSlop={8}
           accessibilityRole="button"
@@ -364,9 +364,13 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     paddingHorizontal: spacing.md,
     marginBottom: spacing.md,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     borderWidth: 1,
-    borderColor: colors.warningMuted,
+    // A real warning-colored border, not the same warningMuted as the fill —
+    // matching tasks.tsx's staleBanner, this sheet's near-identical retry
+    // strip. The muted-on-muted border used to be invisible against its own
+    // background, so the notice read as a flat tint with no defined edge.
+    borderColor: colors.warning,
     backgroundColor: colors.warningMuted,
   },
   staleNoticeText: {
@@ -387,5 +391,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     ...shadows.fab,
+  },
+  // Every other pressable on this screen (goal cards, segments) gives some
+  // kind of feedback under a finger; the FAB — the screen's most-used
+  // control — had none. A flat opacity dip is enough to read as "pressed"
+  // without pulling in Reanimated for a one-off static state.
+  fabPressed: {
+    opacity: 0.85,
   },
 });

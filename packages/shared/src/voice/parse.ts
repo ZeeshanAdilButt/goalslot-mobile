@@ -256,10 +256,22 @@ function toRules(group: RuleGroup): CommandRule[] {
  * Longest phrase first, which is the whole of the disambiguation strategy:
  * "start again" is a resume and "start tracking" is not, and both would
  * match the bare "start" rule if a shorter phrase were tried first.
+ *
+ * Explicit phrases beat hedged ones of the same length, so a rule the user
+ * clearly said is never lost to one that merely happens to be as long. Ties
+ * beyond that keep the table's own order, which makes the sort total and the
+ * parse reproducible from a log line rather than dependent on the engine's
+ * sort.
  */
-const COMMAND_RULES: readonly CommandRule[] = RULE_GROUPS.flatMap(toRules).sort(
-  (a, b) => b.phrase.length - a.phrase.length,
-)
+const COMMAND_RULES: readonly CommandRule[] = RULE_GROUPS.flatMap(toRules)
+  .map((rule, index) => ({ rule, index }))
+  .sort(
+    (a, b) =>
+      b.rule.phrase.length - a.rule.phrase.length ||
+      Number(a.rule.weak) - Number(b.rule.weak) ||
+      a.index - b.index,
+  )
+  .map(({ rule }) => rule)
 
 const BASE_CONFIDENCE = 0.9
 const EXACT_PHRASE_BONUS = 0.05
@@ -299,6 +311,23 @@ const CONNECTIVES = new Set([
  * rename the goal.
  */
 const CONTEXTUAL_NOISE = new Set(['time'])
+
+/**
+ * Generic words for the activity itself rather than the thing it is aimed
+ * at. "Start tracking time for my work for OloStep" names OloStep — the
+ * "work" is the same throwaway noun as the "time" before it, and reading it
+ * as part of the name produces "work for olostep", which matches the real
+ * goal too poorly to act on and drags an unrelated goal called "Work" into
+ * the ranking beside it. That soft, contested match is what sends a plain
+ * "start a timer" down the Coach's path and back as a proposal to edit the
+ * schedule.
+ *
+ * Unlike CONTEXTUAL_NOISE these are only dropped when a connective AND a
+ * real name follow, because a goal genuinely called "Work" is ordinary:
+ * "start tracking my work" still names it, and only "start tracking my work
+ * for X" gives it up in favour of X.
+ */
+const ACTIVITY_NOISE = new Set(['work', 'works', 'working', 'tracking'])
 
 const TRAILING_NOISE = new Set(['now', 'today', 'tonight', 'again', 'already'])
 
@@ -568,6 +597,23 @@ function normalizeUtterance(transcript: string, wakeWords: readonly string[]): r
   return stripTrailing(stripLeading(tokens, [...wake, ...LEADING]), TRAILING)
 }
 
+/**
+ * True when something that could be a name still follows `from`, once the
+ * connective tissue and the trailing throwaways are skipped. This is the
+ * guard that makes giving a word up safe: "my work for OloStep" has a name
+ * after the "for" and can spare the "work", while "my work for now" has
+ * nothing behind the connective and must keep it.
+ */
+function hasNameAfter(tokens: readonly string[], from: number): boolean {
+  for (let i = from; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (token === undefined) return false
+    if (DETERMINERS.has(token) || CONNECTIVES.has(token) || TRAILING_NOISE.has(token)) continue
+    return true
+  }
+  return false
+}
+
 function stripTargetNoise(tokens: readonly string[]): readonly string[] {
   let start = 0
   let end = tokens.length
@@ -586,12 +632,26 @@ function stripTargetNoise(tokens: readonly string[]): readonly string[] {
         continue
       }
     }
+    if (ACTIVITY_NOISE.has(token)) {
+      // Only ever given up to a name that follows it: the connective is what
+      // says the speaker is about to name the thing rather than still
+      // describing the doing of it.
+      const next = tokens[start + 1]
+      if (next !== undefined && CONNECTIVES.has(next) && hasNameAfter(tokens, start + 1)) {
+        start += 1
+        continue
+      }
+    }
     break
   }
 
+  // A name never ends in connective tissue. Stripping it matters once the
+  // words in front can be given up: "my work for now" sheds the "now" and
+  // would otherwise leave the goal named "work for".
   while (end > start) {
     const token = tokens[end - 1]
-    if (token === undefined || !TRAILING_NOISE.has(token)) break
+    if (token === undefined) break
+    if (!TRAILING_NOISE.has(token) && !CONNECTIVES.has(token) && !DETERMINERS.has(token)) break
     end -= 1
   }
 

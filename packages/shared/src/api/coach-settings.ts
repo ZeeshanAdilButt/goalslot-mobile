@@ -150,6 +150,147 @@ export function parseCoachByokBudget(input: string): number | null {
   return value
 }
 
+/**
+ * Human-readable token count for a budget or a usage figure: `375k`, `1.2M`.
+ *
+ * Budgets are six- and seven-digit numbers, and `250000` vs `2500000` is a
+ * factor-of-ten difference that a glance at the digits genuinely misreads.
+ */
+export function formatCoachTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '0'
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000
+    return `${millions.toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`
+  return String(Math.round(value))
+}
+
+// ---------------------------------------------------------------------------
+// Budget-exceeded detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a Coach failure is specifically "your BYOK monthly token budget is
+ * spent", as opposed to any other reason the coach declined to answer.
+ *
+ * WHY THIS MATCHES ON THE MESSAGE, which is normally the wrong thing to do:
+ * the API raises this as an `HttpException(429, { message: 'Monthly token
+ * budget exceeded', tokensUsed, tokensLimit })` — but it raises it from
+ * *inside* the async generator that backs the `@Sse()` chat endpoint. The
+ * controller's `asSseObservable` bridge catches everything the generator
+ * throws and re-emits it as a terminal SSE frame, `{ delta: '', done: true,
+ * error: <message> }`, on a response whose status line was already sent as
+ * 200. By the time the client sees it, the status code, the error code and
+ * the `tokensUsed`/`tokensLimit` fields are all gone: a bare string is the
+ * entire wire signal that survives. (See goal-slot-api
+ * `coach-ai.controller.ts#asSseObservable` and
+ * `coach-ai.service.ts#assertWithinBudget`.)
+ *
+ * So the string is matched deliberately loosely — "token budget" plus an
+ * exhaustion word — rather than by equality, so a server-side reword of the
+ * sentence doesn't silently turn the affordance off. Two things it must
+ * never match, and there are tests for both:
+ *
+ *   - The shared-key ceiling ('Shared Coach daily limit reached...'), which
+ *     is a different user in a different situation: they have no budget to
+ *     raise, they need to add a key of their own.
+ *   - A genuine HTTP 429 from the request throttler (30 messages/day), which
+ *     carries no budget wording at all and is fixed by waiting, not paying.
+ *
+ * Accepts the raw SSE `chunk.error` string, or a thrown error/axios-style
+ * object — the latter so this keeps working unchanged if the API ever moves
+ * the check in front of the stream and it starts arriving as a real 429.
+ */
+export function isCoachBudgetExceededError(input: unknown): boolean {
+  for (const candidate of collectErrorMessages(input)) {
+    const text = candidate.toLowerCase()
+    if (!text.includes('token budget')) continue
+    if (/exceed|reached|used up|over|out of|remain/.test(text)) return true
+  }
+  return false
+}
+
+function collectErrorMessages(input: unknown): string[] {
+  if (typeof input === 'string') return [input]
+  if (!input || typeof input !== 'object') return []
+
+  const out: string[] = []
+  const push = (value: unknown) => {
+    if (typeof value === 'string') out.push(value)
+    else if (Array.isArray(value)) out.push(value.filter((v): v is string => typeof v === 'string').join(', '))
+  }
+
+  const err = input as {
+    message?: unknown
+    error?: unknown
+    response?: { data?: { message?: unknown; error?: unknown } }
+  }
+  push(err.message)
+  push(err.error)
+  push(err.response?.data?.message)
+  push(err.response?.data?.error)
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Budget increments
+// ---------------------------------------------------------------------------
+
+export interface CoachBudgetIncrement {
+  /** How much bigger than the current budget, e.g. 50 for "+50%". */
+  percent: number
+  /** The absolute budget to PATCH — already rounded and clamped to the API's bounds. */
+  tokensLimit: number
+}
+
+/** The one-tap steps offered when the coach stops on a spent budget. */
+export const COACH_BUDGET_INCREMENT_PERCENTS: readonly number[] = [50, 100, 200]
+
+/**
+ * Turn "the budget is 250k and it's gone" into the two or three absolute
+ * numbers a user can pick between without doing arithmetic.
+ *
+ * Rounded UP to a readable step (nobody wants a 187,500-token budget) and
+ * clamped to the server's `@Min`/`@Max`, so every option here is a value the
+ * PATCH will actually accept. Options that collapse onto each other at the
+ * ceiling are de-duplicated, and once the budget IS the ceiling the list is
+ * empty — the caller should then say so rather than offer a no-op button.
+ *
+ * `current` tolerates null/0 (a state where the API hasn't told us the
+ * budget yet) by treating the minimum as the base, so the sheet still
+ * renders something tappable instead of a row of zeroes.
+ */
+export function coachBudgetIncrements(
+  current: number | null | undefined,
+  percents: readonly number[] = COACH_BUDGET_INCREMENT_PERCENTS,
+): CoachBudgetIncrement[] {
+  const base =
+    typeof current === 'number' && Number.isFinite(current) && current >= COACH_BYOK_MIN_TOKEN_BUDGET
+      ? current
+      : COACH_BYOK_MIN_TOKEN_BUDGET
+
+  const seen = new Set<number>()
+  const out: CoachBudgetIncrement[] = []
+  for (const percent of percents) {
+    const raised = roundBudgetUp(base * (1 + percent / 100))
+    const tokensLimit = Math.min(raised, COACH_BYOK_MAX_TOKEN_BUDGET)
+    // A step that doesn't actually raise anything (already at the ceiling)
+    // is worse than no button: it looks like an action and does nothing.
+    if (tokensLimit <= base) continue
+    if (seen.has(tokensLimit)) continue
+    seen.add(tokensLimit)
+    out.push({ percent, tokensLimit })
+  }
+  return out
+}
+
+/** Round to a step that reads as a decision rather than as a calculation. */
+function roundBudgetUp(value: number): number {
+  const step = value >= 1_000_000 ? 100_000 : value >= 100_000 ? 10_000 : value >= 10_000 ? 1_000 : 500
+  return Math.max(COACH_BYOK_MIN_TOKEN_BUDGET, Math.ceil(value / step) * step)
+}
+
 // ---------------------------------------------------------------------------
 // Habits profile
 // ---------------------------------------------------------------------------

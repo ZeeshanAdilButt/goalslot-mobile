@@ -37,6 +37,21 @@ const ROUTES = {
   scheduleDay: (dayOfWeek: ScheduleDayOfWeek): string => `/schedule?day=${dayOfWeek}`,
   timer: (): string => "/timer",
   timerAutoStart: (goalId: string): string => `/timer?autostart=1&goalId=${encodeURIComponent(goalId)}`,
+  // Used by the "Hey Siri, start timer in GoalSlot" App Intent
+  // (ios/GoalSlot/StartTimerIntent.swift) — no goalId is known at Intent
+  // time, so this asks the Timer screen to resolve the currently active
+  // schedule block itself (the same `resolveActiveBlock` call its
+  // auto-select-on-open effect already makes) and start tracking it.
+  timerAutoStartActive: (): string => "/timer?autostart=active",
+  // Used by the "Hey Siri, start timer for <name> in GoalSlot" App Intent
+  // (ios/GoalSlot/StartTimerForGoalIntent.swift) — carries the raw spoken
+  // words through for the Timer screen to fuzzy-match via the same
+  // `resolveSpokenTarget` the in-app Voice tab and Time Tracker mic button
+  // already use (packages/shared/src/voice/resolve.ts).
+  timerAutoStartSpoken: (spokenName: string): string =>
+    `/timer?autostart=spoken&spokenName=${encodeURIComponent(spokenName)}`,
+  journal: (): string => "/journal",
+  journalVoiceCapture: (): string => "/journal?voice=1",
 } as const;
 
 /** Must match `expo.scheme` in app.json. */
@@ -90,6 +105,58 @@ export function timerDeepLink(): string {
 /** Deep link to the Timer tab that immediately starts tracking against the given goal — see app/(app)/timer.tsx's `autostart` param handling. */
 export function timerAutoStartDeepLink(goalId: string): string {
   return toDeepLinkUrl(ROUTES.timerAutoStart(goalId));
+}
+
+/**
+ * Deep link to the Timer tab that starts tracking against whichever
+ * schedule block is active right now — the hand-off target for the "Hey
+ * Siri, start timer in GoalSlot" App Shortcut (see
+ * ios/GoalSlot/StartTimerIntent.swift). Unlike `timerAutoStartDeepLink`,
+ * no goalId is known at link-build time: the Timer screen is expected to
+ * resolve the active block itself (`resolveActiveBlock` from
+ * packages/shared/src/scheduling/fire-time.ts), the same way its existing
+ * auto-select-on-open effect already does, and then start it — as of this
+ * writing that effect only selects, it doesn't call `start()`, so wiring
+ * this `autostart=active` value all the way through is a follow-up change
+ * to app/(app)/timer.tsx, not yet done by this file.
+ */
+export function timerAutoStartActiveDeepLink(): string {
+  return toDeepLinkUrl(ROUTES.timerAutoStartActive());
+}
+
+/**
+ * Deep link to the Timer tab that starts tracking against a spoken goal or
+ * task name — the hand-off target for the "Hey Siri, start timer for
+ * <name> in GoalSlot" App Shortcut (see
+ * ios/GoalSlot/StartTimerForGoalIntent.swift). `spokenName` is the raw
+ * words Siri captured for its free-text parameter, passed through
+ * untouched for the Timer screen to fuzzy-match via
+ * `resolveSpokenTarget`/`parse.ts` (packages/shared/src/voice/), the same
+ * logic the in-app Voice tab and Time Tracker mic button already use (see
+ * src/components/voice/tracking-commands.ts). As of this writing,
+ * app/(app)/timer.tsx does not yet read this `autostart=spoken` value —
+ * see this repo's notes on the two "not yet consumed" deep-link gaps.
+ */
+export function timerAutoStartSpokenDeepLink(spokenName: string): string {
+  return toDeepLinkUrl(ROUTES.timerAutoStartSpoken(spokenName));
+}
+
+/** Shareable deep link to the Journal tab, today's entry, as-is (no voice capture). */
+export function journalDeepLink(): string {
+  return toDeepLinkUrl(ROUTES.journal());
+}
+
+/**
+ * Deep link to the Journal tab that opens today's entry and immediately
+ * starts live speech-to-text capture — the hand-off target for the "Talk
+ * about my day" Siri / App Shortcut voice trigger (see
+ * ios/GoalSlot/TalkAboutMyDayIntent.swift). Follows the same
+ * `?<flag>=1[&...]` idiom as `timerAutoStartDeepLink` above. app/(app)/journal.tsx
+ * reads the `voice` param via `useLocalSearchParams`, matching timer.tsx's
+ * `autostart` param pattern.
+ */
+export function journalVoiceCaptureDeepLink(): string {
+  return toDeepLinkUrl(ROUTES.journalVoiceCapture());
 }
 
 // ---------------------------------------------------------------------------

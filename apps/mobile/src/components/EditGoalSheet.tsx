@@ -101,13 +101,6 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     [],
   );
 
-  // Bumped from 70% -> 85% so the calendar grid (month header + 6 possible
-  // week rows) has room to show without forcing a scroll on every open when
-  // the deadline row is expanded — content still sits in a
-  // BottomSheetScrollView, so nothing is ever hard-clipped, this just cuts
-  // how often that scroll is needed.
-  const snapPoints = useMemo(() => ["85%"], []);
-
   const parsedTargetHours = Number(targetHours);
   // No format/validity check needed for `deadline`: it is only ever set by
   // DatePicker (always a well-formed "YYYY-MM-DD"), by `toDeadlineKey` on
@@ -221,7 +214,17 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   return (
     <BottomSheetModal
       ref={sheetRef}
-      snapPoints={snapPoints}
+      // enableDynamicSizing rather than a fixed snapPoints percentage — see
+      // QuickAddSheet's header comment: a fixed snap point is measured
+      // against the full window height, which on Android is exactly where
+      // the soft keyboard then lands, so the sheet's content (title/category
+      // inputs) ends up hidden behind it. Dynamic sizing measures the actual
+      // content and sits on top of whatever space the keyboard leaves,
+      // matching ScheduleBlockSheet's already-correct pattern. The expanding
+      // deadline calendar still renders fine: dynamic sizing re-measures on
+      // content change, and everything sits inside a BottomSheetScrollView
+      // regardless, so nothing is ever hard-clipped.
+      enableDynamicSizing
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
@@ -430,7 +433,12 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    // radii.lg (control role, 12px) — an input is a control the same as the
+    // Cancel/Save buttons below, not a chip; radii.md (8, chip role) read as
+    // a smaller-radius mismatch against every other control-shaped surface
+    // in this sheet. Matches ScheduleBlockSheet's own input, fixed for the
+    // same reason.
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
@@ -448,7 +456,7 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
   },
@@ -477,7 +485,7 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     gap: spacing.sm,
   },
@@ -487,7 +495,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: spacing.xs,
     minHeight: minTouchTarget,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
   },
   clearDeadlineText: {
     ...typography.bodySmall,
@@ -508,7 +516,7 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.card,
@@ -522,7 +530,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: minTouchTarget,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
   },

@@ -14,8 +14,18 @@
 // platform's own alert, naming what will go, because a misheard word must
 // never be able to remove a goal someone has been working toward for
 // months.
+//
+// LAYOUT RULE, and the reason this file was rebuilt: the Apply/Not now pair
+// must stay reachable no matter how much the model emitted. A batch like
+// "link all Work blocks to the OloStep goal" is one action PER BLOCK — a
+// dozen or more — and the previous version rendered every one of them at
+// full height above the footer, which pushed the only two buttons that
+// matter clean off the bottom of the screen. The action list is therefore
+// capped (see COLLAPSED_ACTION_LIMIT) behind an expander, every piece of
+// model-authored text is line-clamped, and the footer sits a predictable
+// distance below the header regardless of batch size.
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { CoachProposalAction, CoachProposalActionType, CoachProposalBlock } from "@goalslot/shared";
@@ -50,8 +60,29 @@ const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>([
   "DELETE_TASK",
 ]);
 
+/**
+ * How many action rows are shown before the list folds. Four is what fits
+ * above the fold on the shortest phone this app supports while still leaving
+ * the header, the footer and a hint of the expander visible — the point is
+ * that Apply is always on screen with the card, never a scroll away.
+ */
+const COLLAPSED_ACTION_LIMIT = 4;
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
 export function isDestructiveProposal(block: CoachProposalBlock): boolean {
   return block.actions.some((action) => DESTRUCTIVE_TYPES.has(action.type));
+}
+
+function readString(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readDayName(value: unknown): string | null {
+  return typeof value === "number" ? DAY_NAMES[((value % 7) + 7) % 7] ?? null : null;
 }
 
 /**
@@ -60,6 +91,13 @@ export function isDestructiveProposal(block: CoachProposalBlock): boolean {
  * against the query cache the way web's `describeAction` does — an id
  * lookup that misses would render an empty row on the one card whose whole
  * job is telling the user what they are agreeing to.
+ *
+ * The field list is deliberately wide. The narrow version this replaced only
+ * looked at title/startTime/endTime/date/deadline/duration, so an
+ * update-or-delete-by-id batch — the single most common shape, and exactly
+ * what "link all Work blocks to the OloStep goal" produces — described
+ * nothing at all and the card rendered a column of identical bare labels
+ * with no way to tell one row from the next.
  */
 function describeProposalAction(action: CoachProposalAction): string | null {
   const payload = action.payload ?? {};
@@ -71,9 +109,7 @@ function describeProposalAction(action: CoachProposalAction): string | null {
   // Spell out what Apply does instead of leaving a bare label on a card the
   // user is about to act on.
   if (action.type === "START_TIMER" || action.type === "STOP_TIMER") {
-    const taskName = typeof payload.taskName === "string" ? payload.taskName.trim() : "";
-    const goalName = typeof payload.goalName === "string" ? payload.goalName.trim() : "";
-    const target = taskName || goalName || null;
+    const target = readString(payload, "taskName") ?? readString(payload, "goalName");
     if (action.type === "START_TIMER") {
       return target
         ? `Starts the clock on "${target}" now, and runs until you stop it`
@@ -85,14 +121,56 @@ function describeProposalAction(action: CoachProposalAction): string | null {
   }
 
   const bits: string[] = [];
-  if (typeof payload.title === "string") bits.push(`"${payload.title}"`);
-  if (typeof payload.startTime === "string" && typeof payload.endTime === "string") {
-    bits.push(`${payload.startTime}–${payload.endTime}`);
+
+  // What the thing is called. Models are inconsistent about which key holds
+  // it, so take the first that is actually present.
+  const name =
+    readString(payload, "title") ??
+    readString(payload, "name") ??
+    readString(payload, "taskName") ??
+    readString(payload, "goalName");
+  if (name !== null) bits.push(`"${name}"`);
+
+  // The goal a block/task/entry is being attached to, when that isn't
+  // already the name above — this is the whole content of a "link these to
+  // that goal" batch, and it used to be dropped on the floor.
+  const goalName = readString(payload, "goalName");
+  if (goalName !== null && goalName !== name) bits.push(`goal "${goalName}"`);
+
+  const start = readString(payload, "startTime");
+  const end = readString(payload, "endTime");
+  if (start !== null && end !== null) bits.push(`${start}–${end}`);
+  else if (start !== null) bits.push(`from ${start}`);
+
+  const days = payload.daysOfWeek;
+  if (Array.isArray(days)) {
+    const named = days.map(readDayName).filter((day): day is string => day !== null);
+    if (named.length > 0) bits.push(named.join(", "));
+  } else {
+    const day = readDayName(payload.dayOfWeek);
+    if (day !== null) bits.push(day);
   }
-  if (typeof payload.date === "string") bits.push(payload.date);
-  if (typeof payload.deadline === "string") bits.push(`due ${payload.deadline}`);
+
+  const date = readString(payload, "date");
+  if (date !== null) bits.push(date);
+
+  const deadline = readString(payload, "deadline");
+  if (deadline !== null) bits.push(`due ${deadline}`);
+
   if (typeof payload.duration === "number") bits.push(`${payload.duration} min`);
-  if (bits.length === 0 && action.id) bits.push(`#${action.id.slice(0, 8)}`);
+
+  const status = readString(payload, "status");
+  if (status !== null) bits.push(status.toLowerCase());
+
+  // Last resort so two rows in a by-id batch are never indistinguishable.
+  // `id` lives on the action for some models and inside the payload for
+  // others; both are checked because a row that says nothing is worse than a
+  // row that says a short hash.
+  if (bits.length === 0) {
+    const id = action.id ?? (typeof payload.id === "string" ? payload.id : null);
+    if (id !== null && id.length > 0) bits.push(`#${id.slice(0, 8)}`);
+  }
+
   return bits.length > 0 ? bits.join(" · ") : null;
 }
 
@@ -125,9 +203,40 @@ type CardState =
   | { phase: "applied"; message: string }
   | { phase: "failed"; message: string };
 
+interface ActionRowProps {
+  action: CoachProposalAction;
+  destructive: boolean;
+}
+
+function ActionRow({ action, destructive }: ActionRowProps) {
+  const detail = describeProposalAction(action);
+  return (
+    <View style={styles.row}>
+      <View style={[styles.rowMarker, destructive && styles.rowMarkerDestructive]} />
+      {/* flexShrink is 0 by default in React Native, so this column has to
+          say so explicitly — without it a long dictated title makes the row
+          wider than the card instead of wrapping inside it. */}
+      <View style={styles.rowBody}>
+        <Text
+          style={[styles.actionLabel, destructive && styles.actionLabelDestructive]}
+          numberOfLines={1}
+        >
+          {ACTION_LABELS[action.type] ?? action.type}
+        </Text>
+        {detail !== null ? (
+          <Text style={styles.actionDetail} numberOfLines={3} ellipsizeMode="tail">
+            {detail}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCardProps) {
   const [state, setState] = useState<CardState>({ phase: "idle" });
-  const destructive = isDestructiveProposal(block);
+  const [expanded, setExpanded] = useState(false);
+  const destructive = useMemo(() => isDestructiveProposal(block), [block]);
 
   const run = useCallback(async () => {
     if (onApply === undefined) return;
@@ -157,37 +266,78 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
     ]);
   }, [block, destructive, run]);
 
+  const applying = state.phase === "applying";
   const applied = state.phase === "applied";
   const actionCount = block.actions.length;
-  const summaryForScreenReader = `Proposed change. ${block.summary ?? ""} ${actionCount} ${
-    actionCount === 1 ? "action" : "actions"
-  }.${destructive ? " Includes a deletion." : ""}`;
+  const hidden = Math.max(0, actionCount - COLLAPSED_ACTION_LIMIT);
+  const visibleActions = expanded ? block.actions : block.actions.slice(0, COLLAPSED_ACTION_LIMIT);
+  const countLabel = `${actionCount} ${actionCount === 1 ? "change" : "changes"}`;
+  const summaryForScreenReader = `Proposed change. ${block.summary ?? ""} ${countLabel}.${
+    destructive ? " Includes a deletion." : ""
+  }`;
 
   return (
-    <View
-      style={[styles.card, applied && styles.cardApplied]}
-      accessible={false}
-      accessibilityLabel={summaryForScreenReader}
-    >
-      <View style={[styles.header, applied && styles.headerApplied]}>
-        <Text style={styles.headerLabel} accessibilityLabel={summaryForScreenReader}>
-          {applied ? "APPLIED" : "PROPOSED CHANGE"}
-        </Text>
-        {block.summary ? <Text style={styles.summary}>{block.summary}</Text> : null}
+    <View style={[styles.card, applied && styles.cardApplied]}>
+      <View
+        style={[styles.header, applied && styles.headerApplied]}
+        accessible
+        accessibilityRole="header"
+        accessibilityLabel={summaryForScreenReader}
+      >
+        <View style={styles.headerTop}>
+          <View style={[styles.eyebrow, applied && styles.eyebrowApplied]}>
+            {applied ? <Icon name="check" size={iconSize.xs} color={colors.success} /> : null}
+            <Text style={[styles.eyebrowText, applied && styles.eyebrowTextApplied]} numberOfLines={1}>
+              {applied ? "Applied" : "Proposed change"}
+            </Text>
+          </View>
+          {/* flexShrink:0 keeps the count from being squeezed to nothing by a
+              long eyebrow at large font scales. */}
+          <Text style={styles.countText} numberOfLines={1}>
+            {countLabel}
+          </Text>
+        </View>
+
+        {block.summary ? (
+          <Text style={styles.summary} numberOfLines={4} ellipsizeMode="tail">
+            {block.summary}
+          </Text>
+        ) : null}
+
+        {destructive && !applied ? (
+          <View style={styles.warningChip}>
+            <Icon name="alert" size={iconSize.xs} color={colors.destructive} />
+            <Text style={styles.warningChipText} numberOfLines={2}>
+              Includes something that will be deleted
+            </Text>
+          </View>
+        ) : null}
       </View>
 
-      {block.actions.map((action, index) => {
-        const detail = describeProposalAction(action);
-        const isDestructive = DESTRUCTIVE_TYPES.has(action.type);
-        return (
-          <View key={`${action.type}-${index}`} style={styles.row}>
-            <Text style={[styles.actionLabel, isDestructive && styles.actionLabelDestructive]}>
-              {ACTION_LABELS[action.type] ?? action.type}
-            </Text>
-            {detail ? <Text style={styles.actionDetail}>{detail}</Text> : null}
+      {visibleActions.map((action, index) => (
+        <ActionRow
+          key={`${action.type}-${index}`}
+          action={action}
+          destructive={DESTRUCTIVE_TYPES.has(action.type)}
+        />
+      ))}
+
+      {hidden > 0 ? (
+        <Pressable
+          onPress={() => setExpanded((value) => !value)}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? "Show fewer changes" : `Show all ${actionCount} changes`}
+          accessibilityState={{ expanded }}
+          style={({ pressed }) => [styles.expander, pressed && styles.pressed]}
+        >
+          <Text style={styles.expanderText} numberOfLines={1}>
+            {expanded ? "Show fewer" : `Show all ${actionCount} changes`}
+          </Text>
+          <View style={expanded ? styles.chevronUp : undefined}>
+            <Icon name="chevron-down" size={iconSize.sm} color={colors.mutedForeground} />
           </View>
-        );
-      })}
+        </Pressable>
+      ) : null}
 
       {state.phase === "applied" ? (
         <View style={styles.resultRow} accessibilityLiveRegion="polite">
@@ -197,9 +347,10 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
       ) : null}
 
       {state.phase === "failed" ? (
-        <Text style={styles.errorText} accessibilityRole="alert">
-          {state.message}
-        </Text>
+        <View style={styles.errorRow} accessibilityRole="alert">
+          <Icon name="alert" size={iconSize.sm} color={colors.destructive} />
+          <Text style={styles.errorText}>{state.message}</Text>
+        </View>
       ) : null}
 
       {onApply === undefined ? (
@@ -207,40 +358,66 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
           {destructive ? "Includes a delete. " : ""}
           Preview only — nothing has changed.
         </Text>
-      ) : applied ? null : (
+      ) : applied ? (
+        onDismiss ? (
+          <View style={styles.footer}>
+            <Pressable
+              onPress={onDismiss}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss this applied change"
+              style={({ pressed }) => [
+                styles.button,
+                styles.dismissButton,
+                styles.dismissButtonSolo,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.dismissText} numberOfLines={1}>
+                Done
+              </Text>
+            </Pressable>
+          </View>
+        ) : null
+      ) : (
         <View style={styles.footer}>
           {onDismiss ? (
             <Pressable
               onPress={onDismiss}
-              disabled={state.phase === "applying"}
+              disabled={applying}
               accessibilityRole="button"
               accessibilityLabel="Dismiss this proposed change"
-              style={({ pressed }) => [styles.dismissButton, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [styles.button, styles.dismissButton, pressed && styles.pressed]}
             >
-              <Text style={styles.dismissText}>Not now</Text>
+              <Text style={styles.dismissText} numberOfLines={1}>
+                Not now
+              </Text>
             </Pressable>
           ) : null}
           <Pressable
             onPress={handleApply}
-            disabled={state.phase === "applying"}
+            disabled={applying}
             accessibilityRole="button"
             accessibilityLabel={
               destructive
                 ? `Apply ${actionCount === 1 ? "this change" : `these ${actionCount} changes`}, including a deletion`
                 : `Apply ${actionCount === 1 ? "this change" : `these ${actionCount} changes`}`
             }
-            accessibilityState={{ disabled: state.phase === "applying", busy: state.phase === "applying" }}
+            accessibilityState={{ disabled: applying, busy: applying }}
             style={({ pressed }) => [
+              styles.button,
               styles.applyButton,
               destructive && styles.applyButtonDestructive,
-              state.phase === "applying" && styles.applyButtonBusy,
-              pressed && styles.buttonPressed,
+              applying && styles.applyButtonBusy,
+              pressed && styles.pressed,
             ]}
           >
-            {state.phase === "applying" ? (
-              <ActivityIndicator size="small" color={colors.primaryForeground} />
+            {applying ? (
+              <ActivityIndicator size="small" color={colors.white} />
             ) : (
-              <Text style={[styles.applyText, destructive && styles.applyTextDestructive]}>
+              <Text
+                style={[styles.applyText, destructive && styles.applyTextDestructive]}
+                numberOfLines={1}
+              >
                 {state.phase === "failed" ? "Try again" : destructive ? "Review & apply" : "Apply"}
               </Text>
             )}
@@ -256,7 +433,12 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     borderRadius: radii.card,
     borderWidth: 1,
-    borderColor: colors.primaryDark,
+    // A neutral outline, like every other card in the app. This used to be
+    // `primaryDark` — a saturated brand-yellow ring — which on the Voice
+    // screen sat directly under a solid brand-yellow "You said" bubble and
+    // made the whole viewport read as one undifferentiated yellow mass.
+    // Brand yellow now appears once per card, on the Apply button.
+    borderColor: colors.border,
     backgroundColor: colors.card,
     overflow: "hidden",
   },
@@ -264,32 +446,105 @@ const styles = StyleSheet.create({
     borderColor: colors.success,
   },
   header: {
-    backgroundColor: colors.warningMuted,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
-    gap: spacing.xxs,
+    gap: spacing.sm,
   },
   headerApplied: {
     backgroundColor: colors.successMuted,
   },
-  headerLabel: {
+  headerTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  // The brand-tinted chip treatment (yellow-50 fill, yellow-200 border,
+  // yellow-700 text) rather than a full-bleed tinted band — see the
+  // primaryMuted/primaryBorder/primaryText notes in theme/foundation.ts.
+  // Raw #F2CC0D fails contrast as text on white, which is why primaryText
+  // exists and is used here instead.
+  eyebrow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 1,
+    gap: spacing.xs,
+    paddingVertical: spacing.xxs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.chip,
+    borderWidth: 1,
+    borderColor: colors.primaryBorder,
+    backgroundColor: colors.primaryMuted,
+  },
+  eyebrowApplied: {
+    borderColor: colors.success,
+    backgroundColor: colors.successMuted,
+  },
+  eyebrowText: {
     ...typography.label,
+    color: colors.primaryText,
+    flexShrink: 1,
+  },
+  eyebrowTextApplied: {
+    color: colors.success,
+  },
+  countText: {
+    ...typography.label,
+    color: colors.mutedForeground,
+    flexShrink: 0,
+  },
+  // The card's headline. It was `bodySmall` (12px) — smaller than the
+  // detail text under each action row, which inverted the hierarchy and
+  // made the one sentence explaining what the user is agreeing to the least
+  // prominent text on the card.
+  summary: {
+    ...typography.title,
     color: colors.foreground,
   },
-  summary: {
+  warningChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.chip,
+    backgroundColor: colors.destructiveMuted,
+  },
+  warningChipText: {
     ...typography.bodySmall,
-    fontWeight: "700",
-    color: colors.foreground,
+    fontWeight: "600",
+    color: colors.destructive,
+    flexShrink: 1,
   },
   row: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  rowMarker: {
+    width: spacing.xs,
+    height: spacing.xs,
+    borderRadius: radii.pill,
+    backgroundColor: colors.mutedForegroundLight,
+    flexShrink: 0,
+    // Optical alignment with the cap height of the label beside it.
+    marginTop: spacing.sm,
+  },
+  rowMarkerDestructive: {
+    backgroundColor: colors.destructive,
+  },
+  rowBody: {
+    flex: 1,
+    minWidth: 0,
     gap: spacing.xxs,
   },
   actionLabel: {
-    ...typography.caption,
+    ...typography.body,
+    fontWeight: "600",
     color: colors.foreground,
   },
   actionLabelDestructive: {
@@ -298,6 +553,26 @@ const styles = StyleSheet.create({
   actionDetail: {
     ...typography.bodySmall,
     color: colors.mutedForeground,
+  },
+  expander: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.muted,
+  },
+  expanderText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.mutedForeground,
+    flexShrink: 1,
+  },
+  chevronUp: {
+    transform: [{ rotate: "180deg" }],
   },
   resultRow: {
     flexDirection: "row",
@@ -314,12 +589,21 @@ const styles = StyleSheet.create({
     color: colors.foreground,
     flex: 1,
   },
+  errorRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.destructiveMuted,
+  },
   errorText: {
     ...typography.bodySmall,
     fontWeight: "600",
     color: colors.destructive,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
+    flex: 1,
   },
   footnote: {
     ...typography.bodySmall,
@@ -331,32 +615,43 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: "row",
+    alignItems: "stretch",
     gap: spacing.sm,
     padding: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
   },
-  dismissButton: {
-    flex: 1,
+  button: {
+    // `flex: 1` alone sets flexBasis to 0, so a label that needs more room
+    // than half the card gets truncated rather than widening the button.
+    // flexBasis "auto" lets each button start from its intrinsic width and
+    // share the remainder, which is what keeps "Review & apply" on one line.
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: "auto",
     minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radii.control,
+  },
+  dismissButton: {
+    flexGrow: 0,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.card,
   },
+  // The applied state's "Done" is the only control in its footer, so it
+  // takes the full width rather than sitting as a lone stub on the left.
+  dismissButtonSolo: {
+    flexGrow: 1,
+  },
   dismissText: {
     ...typography.body,
     fontWeight: "600",
-    color: colors.foreground,
+    color: colors.mutedForeground,
   },
   applyButton: {
-    flex: 1,
-    minHeight: minTouchTarget,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radii.control,
     backgroundColor: colors.primary,
   },
   applyButtonDestructive: {
@@ -365,8 +660,8 @@ const styles = StyleSheet.create({
   applyButtonBusy: {
     backgroundColor: colors.foreground,
   },
-  buttonPressed: {
-    opacity: 0.8,
+  pressed: {
+    opacity: 0.7,
   },
   applyText: {
     ...typography.body,

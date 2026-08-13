@@ -9,8 +9,10 @@ import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
 import { VoiceTabButton } from "@/components/voice/VoiceTabButton";
+import { GlobalTrackingBanner } from "@/components/timer/GlobalTrackingBanner";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
-import { syncIOSWidget } from "@/widgets/ios-widget-sync";
+import { useTimerStore } from "@/lib/timer-store";
+import { syncWidgets } from "@/widgets/widget-sync";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
 export default function AppLayout() {
@@ -18,6 +20,13 @@ export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  // How much room to reserve above <Tabs/> for the tracking banner. Kept as
+  // measured state (via GlobalTrackingBanner's onLayout) rather than a
+  // guessed constant, so it stays correct under font scaling/a11y text
+  // sizes and needs no hand tuning if the banner's own content ever changes
+  // height. Zero (the default) means every screen's content starts exactly
+  // where it always has.
+  const [bannerHeight, setBannerHeight] = useState(0);
 
   // One socket for the whole authenticated app, so an incoming message
   // updates the conversation list from anywhere — not only while a Messages
@@ -45,20 +54,45 @@ export default function AppLayout() {
     [router],
   );
 
-  // Keeps the iOS home-screen widget's snapshot fresh — see
-  // src/widgets/ios-widget-sync.ts for why "on foreground" is the sync
-  // point rather than something timer-driven the way Android's widget is.
-  // No-ops on Android. Runs once now (this layout only mounts once
-  // authenticated, so this doubles as "just logged in / just opened app")
-  // and again on every foreground transition after that.
+  // Keeps the home-screen widget in step with the app on BOTH platforms —
+  // see src/widgets/widget-sync.ts for why the two need different machinery
+  // behind one call. Three triggers:
+  //
+  //  1. mount — this layout only mounts once authenticated, so it doubles as
+  //     "just signed in / just opened the app".
+  //  2. foreground — picks up anything that changed while backgrounded.
+  //  3. timer transitions — the important one. Neither platform notices a
+  //     session starting on its own: Android would wait for the next
+  //     `updatePeriodMillis` tick (30 min) and iOS for the next foreground,
+  //     so without this a running timer simply doesn't appear on the home
+  //     screen. Keyed on the fields the widget actually renders, so an
+  //     unrelated store write doesn't cause a redraw.
   useEffect(() => {
-    void syncIOSWidget();
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState === "active") {
-        void syncIOSWidget();
+    void syncWidgets();
+
+    const appStateSubscription = AppState.addEventListener(
+      "change",
+      (nextState) => {
+        if (nextState === "active") {
+          void syncWidgets();
+        }
+      },
+    );
+
+    const unsubscribeTimer = useTimerStore.subscribe((state, previous) => {
+      if (
+        state.status !== previous.status ||
+        state.taskId !== previous.taskId ||
+        state.goalId !== previous.goalId
+      ) {
+        void syncWidgets();
       }
     });
-    return () => subscription.remove();
+
+    return () => {
+      appStateSubscription.remove();
+      unsubscribeTimer();
+    };
   }, []);
 
   // No live session — bounce to login. `status` is 'authenticated' |
@@ -96,85 +130,147 @@ export default function AppLayout() {
           signed-in session, so they survive a sign-in's notification sweep
           and edits made outside the Schedule tab. See the component. */}
       <ScheduleRemindersSync />
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarActiveTintColor: colors.primaryDark,
-          tabBarInactiveTintColor: colors.mutedForeground,
-          tabBarStyle: {
-            backgroundColor: colors.card,
-            borderTopColor: colors.border,
-            borderTopWidth: 1,
-            // The voice mic is drawn with a negative top margin so it breaks
-            // the bar's top line. Without this it is clipped flat against it
-            // and stops reading as raised at all.
-            overflow: "visible",
-          },
-          tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: "600",
-          },
-        }}
-      >
-        <Tabs.Screen
-          name="index"
-          options={{ title: "Today", tabBarIcon: ({ color, size }) => <Icon name="today" color={color} size={size} /> }}
-        />
-        <Tabs.Screen
-          name="schedule"
-          options={{
-            title: "Schedule",
-            tabBarIcon: ({ color, size }) => <Icon name="schedule" color={color} size={size} />,
+      {/* paddingTop reserves exactly the tracking banner's own footprint
+          (see bannerHeight above) so it pushes every screen's content down
+          instead of painting over it — the banner used to be a pure overlay,
+          which covered a screen's own top-of-page content (e.g. Schedule's
+          "PLAN YOUR WEEK" heading) whenever a session was running. Zero when
+          idle, so this is a no-op the vast majority of the time. */}
+      <View style={{ flex: 1, paddingTop: bannerHeight }}>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarActiveTintColor: colors.primaryDark,
+            tabBarInactiveTintColor: colors.mutedForeground,
+            tabBarStyle: {
+              backgroundColor: colors.card,
+              borderTopColor: colors.border,
+              borderTopWidth: 1,
+              // The voice mic is drawn with a negative top margin so it breaks
+              // the bar's top line. Without this it is clipped flat against it
+              // and stops reading as raised at all.
+              overflow: "visible",
+            },
+            tabBarLabelStyle: {
+              fontSize: 11,
+              fontWeight: "600",
+            },
           }}
-        />
-        {/* The mic. `tabBarButton` replaces the whole tab item, which is what
+        >
+          <Tabs.Screen
+            name="index"
+            options={{
+              title: "Today",
+              tabBarIcon: ({ color, size }) => (
+                <Icon name="today" color={color} size={size} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="schedule"
+            options={{
+              title: "Schedule",
+              tabBarIcon: ({ color, size }) => (
+                <Icon name="schedule" color={color} size={size} />
+              ),
+            }}
+          />
+          {/* The mic. `tabBarButton` replaces the whole tab item, which is what
             lets the control break the bar's top line — see VoiceTabButton.
             It stays a real route so a screen reader announces it as a tab
             and the back gesture behaves normally. */}
-        <Tabs.Screen
-          name="voice"
-          options={{
-            title: "Voice",
-            tabBarButton: (props) => <VoiceTabButton {...props} />,
-          }}
-        />
-        <Tabs.Screen
-          name="tasks"
-          options={{ title: "Tasks", tabBarIcon: ({ color, size }) => <Icon name="tasks" color={color} size={size} /> }}
-        />
-        <Tabs.Screen
-          name="timer"
-          options={{ title: "Timer", tabBarIcon: ({ color, size }) => <Icon name="timer" color={color} size={size} /> }}
-        />
-        {/* Off the bar to make room for the mic (see the note above), still a
+          <Tabs.Screen
+            name="voice"
+            options={{
+              title: "Voice",
+              tabBarButton: (props) => <VoiceTabButton {...props} />,
+            }}
+          />
+          <Tabs.Screen
+            name="tasks"
+            options={{
+              title: "Tasks",
+              tabBarIcon: ({ color, size }) => (
+                <Icon name="tasks" color={color} size={size} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="timer"
+            options={{
+              title: "Timer",
+              tabBarIcon: ({ color, size }) => (
+                <Icon name="timer" color={color} size={size} />
+              ),
+            }}
+          />
+          {/* Off the bar to make room for the mic (see the note above), still a
             first-class row in the drawer's Plan group. */}
-        <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
-        <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
-        <Tabs.Screen name="reports" options={{ title: "Reports", href: null }} />
-        <Tabs.Screen name="categories" options={{ title: "Categories", href: null }} />
-        <Tabs.Screen name="journal" options={{ title: "Journal", href: null }} />
-        <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
-        {/* The note editor is a route, not a tab: hiding the tab bar while
+          <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
+          <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
+          <Tabs.Screen
+            name="reports"
+            options={{ title: "Reports", href: null }}
+          />
+          <Tabs.Screen
+            name="categories"
+            options={{ title: "Categories", href: null }}
+          />
+          <Tabs.Screen
+            name="journal"
+            options={{ title: "Journal", href: null }}
+          />
+          <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
+          {/* The note editor is a route, not a tab: hiding the tab bar while
             it's focused makes it read as a full-screen push. */}
-        <Tabs.Screen name="note/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
-        {/* Messaging, same shape as Notes: a list screen plus a detail route
+          <Tabs.Screen
+            name="note/[id]"
+            options={{ href: null, tabBarStyle: { display: "none" } }}
+          />
+          {/* Messaging, same shape as Notes: a list screen plus a detail route
             that presents as a full-screen push. Both stay registered even
             when the service isn't configured — expo-router routes off the
             files on disk, so unregistering them here would leave two screens
             reachable by URL with no options applied. The drawer entry is what
             actually gates discovery (see DrawerContent), and both screens
             degrade to a clear "not available" state rather than crashing. */}
-        <Tabs.Screen name="messages" options={{ title: "Messages", href: null }} />
-        <Tabs.Screen name="message/[id]" options={{ href: null, tabBarStyle: { display: "none" } }} />
-        <Tabs.Screen name="settings" options={{ title: "Settings", href: null }} />
-      </Tabs>
+          <Tabs.Screen
+            name="messages"
+            options={{ title: "Messages", href: null }}
+          />
+          <Tabs.Screen
+            name="message/[id]"
+            options={{ href: null, tabBarStyle: { display: "none" } }}
+          />
+          <Tabs.Screen
+            name="settings"
+            options={{ title: "Settings", href: null }}
+          />
+        </Tabs>
+      </View>
+
+      {/* Renders nothing while idle; a slim tap-through-to-Timer pill while a
+          session is running or paused, docked below the safe-area top on
+          every tab. Painted as an absolute overlay (paint order: after
+          <Tabs/>, so it draws above each tab's own content) purely so its
+          own drop shadow can render over the content below it — the space
+          it visually occupies is real, though: `bannerHeight` above pads
+          <Tabs/> by the banner's own measured footprint, so this never
+          actually covers anything, it just needs overlay paint order to
+          cast its shadow correctly. Reserves room on its right so it never
+          runs under the hamburger below. */}
+      <GlobalTrackingBanner onContentHeightChange={setBannerHeight} />
 
       {/* Floating hamburger — the affordance that opens the drawer. Every
           screen here renders `headerShown: false` and draws its own in-screen
           header, so there's no shared header bar to dock a menu button into.
           Top-right keeps it clear of each screen's own title text, and the
           SafeAreaView inset keeps it below the status bar/notch. */}
-      <SafeAreaView style={styles.hamburgerSafeArea} edges={["top", "right"]} pointerEvents="box-none">
+      <SafeAreaView
+        style={styles.hamburgerSafeArea}
+        edges={["top", "right"]}
+        pointerEvents="box-none"
+      >
         <Pressable
           onPress={openDrawer}
           style={styles.hamburgerButton}
@@ -186,7 +282,12 @@ export default function AppLayout() {
         </Pressable>
       </SafeAreaView>
 
-      <AppDrawer open={drawerOpen} onClose={closeDrawer} pathname={pathname} onNavigate={navigateFromDrawer} />
+      <AppDrawer
+        open={drawerOpen}
+        onClose={closeDrawer}
+        pathname={pathname}
+        onNavigate={navigateFromDrawer}
+      />
     </View>
   );
 }

@@ -248,6 +248,46 @@ export function buildCategoryBreakdown(
 }
 
 /**
+ * Time-by-goal rollup for a single day, largest first — the drill-down shown
+ * when a bar in the "Focus per day" chart is tapped.
+ *
+ * Returns the same `CategorySlice` shape `buildCategoryBreakdown` does on
+ * purpose: the day view reuses `CategoryDonut` (colour swatch + name +
+ * percent + duration rows) rather than inventing a second chart type for
+ * "time by goal" when "time by category" already renders that pattern.
+ *
+ * Grouped by `goalId` rather than category — a day can hold several sessions
+ * against the same goal but different categories (or none), and the ask this
+ * answers is "what did I work on Wednesday", which is a goal question, not a
+ * category one. Entries with no goal attached pool into the same
+ * `UNCATEGORIZED_KEY` sentinel `buildCategoryBreakdown` uses, for the same
+ * reason: unfiled time must stay visible, not disappear from the report.
+ */
+export function buildDayGoalBreakdown(entries: TimeEntry[], dateKey: string, neutralColor: string): CategorySlice[] {
+  const buckets = new Map<string, { minutes: number; name: string; color: string }>();
+  for (const entry of entries) {
+    if (entry.date.slice(0, 10) !== dateKey) continue;
+
+    const bucketKey = entry.goalId ?? UNCATEGORIZED_KEY;
+    const existing = buckets.get(bucketKey);
+    if (existing) {
+      existing.minutes += entry.duration;
+    } else {
+      buckets.set(bucketKey, {
+        minutes: entry.duration,
+        name: entry.goal?.title ?? "No goal",
+        color: entry.goal?.color ?? neutralColor,
+      });
+    }
+  }
+
+  return [...buckets.entries()]
+    .map(([key, bucket]) => ({ key, name: bucket.name, minutes: bucket.minutes, color: bucket.color }))
+    .filter((slice) => slice.minutes > 0)
+    .sort((a, b) => b.minutes - a.minutes);
+}
+
+/**
  * Period-over-period change. A jump from nothing to something is reported as
  * "new" rather than as an infinite percentage.
  */

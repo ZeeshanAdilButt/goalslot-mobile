@@ -48,7 +48,7 @@
 // shows selected with that date as its label, with the calendar
 // auto-expanded so the value isn't hidden behind a collapsed row.
 
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import {
   BottomSheetBackdrop,
@@ -139,8 +139,6 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
     [],
   );
 
-  const snapPoints = useMemo(() => ["65%"], []);
-
   const trimmedMinutes = estimatedMinutes.trim();
   const parsedMinutes = trimmedMinutes.length > 0 ? Number(trimmedMinutes) : undefined;
   const minutesValid = parsedMinutes === undefined || (Number.isFinite(parsedMinutes) && parsedMinutes >= 1);
@@ -209,7 +207,17 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
   return (
     <BottomSheetModal
       ref={sheetRef}
-      snapPoints={snapPoints}
+      // enableDynamicSizing rather than a fixed snapPoints percentage — see
+      // QuickAddSheet's header comment: a fixed snap point is measured
+      // against the full window height, which on Android is exactly where
+      // the soft keyboard then lands, so the sheet's inputs end up hidden
+      // behind it. Dynamic sizing measures the actual content and sits on
+      // top of whatever space the keyboard leaves, matching
+      // ScheduleBlockSheet's already-correct pattern. The expanding custom
+      // date picker still renders fine: dynamic sizing re-measures on
+      // content change, and everything sits inside a BottomSheetScrollView
+      // regardless, so nothing is ever hard-clipped.
+      enableDynamicSizing
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
@@ -383,7 +391,12 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    // radii.lg (control role, 12px) — an input is a control the same as the
+    // Cancel/Save buttons below, not a chip; radii.md (8, chip role) read as
+    // a smaller-radius mismatch against every other control-shaped surface
+    // in this sheet. Matches ScheduleBlockSheet's own input, fixed for the
+    // same reason.
+    borderRadius: radii.lg,
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: Platform.select({ ios: spacing.md, android: spacing.sm, default: spacing.sm + spacing.xxs }),
@@ -425,16 +438,16 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     padding: spacing.sm,
   },
   fieldError: {
+    ...typography.bodySmall,
     color: colors.destructive,
-    fontSize: 12,
   },
   error: {
+    ...typography.bodySmall,
     color: colors.destructive,
-    fontSize: 13,
   },
   footer: {
     flexDirection: "row",
@@ -446,7 +459,7 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.card,
@@ -460,7 +473,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: minTouchTarget,
     backgroundColor: colors.primary,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     alignItems: "center",
     justifyContent: "center",
   },

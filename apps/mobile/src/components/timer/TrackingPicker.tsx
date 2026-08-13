@@ -17,21 +17,36 @@
 // returned "No matches") that the split exists to make impossible here. When
 // a query does come back empty the sheet says which query failed and offers
 // to clear it, rather than leaving the user staring at a bare "No matches"
-// with no idea that a filter is in play.
+// with no idea that a filter is in play. The GOAL → TASK CASCADE below never
+// touches this: it's an additive shortcut, not a second filtering path, so
+// this invariant can't regress by way of it.
 //
 // Selection semantics: picking a task clears any picked goal and vice versa
 // (see timer.tsx's handlers) — a run is tracked against one or the other,
 // never both.
+//
+// GOAL → TASK CASCADE. Picking a goal is no longer necessarily the sheet's
+// last word: if that goal has its own tasks, they're surfaced right below
+// the search row as a scoped quick-pick (<GoalTaskQuickPick>) — see that
+// component's header — so finding "the task under the goal I just picked"
+// doesn't mean scrolling the full flat list a second time. The full list
+// underneath is untouched and still searches everything (previous
+// paragraph); the cascade is purely an addition above it, and picking a
+// *task* — from the chips or from the flat list — still closes the sheet
+// exactly as it always has. Only a *goal* pick with tasks to cascade to
+// keeps the sheet open; a goal with no tasks closes immediately, matching
+// the old one-tap-and-done behaviour.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { Goal, Task } from "@goalslot/shared";
 
+import { GoalTaskQuickPick } from "@/components/timer/GoalTaskQuickPick";
 import { Icon } from "@/components/ui/Icon";
 import { filterGoals, filterTasks, normalizeQuery } from "@/components/timer/tracking-search";
-import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 export interface TrackingPickerProps {
   visible: boolean;
@@ -70,6 +85,19 @@ export function TrackingPicker({
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState("");
 
+  // Which goal's tasks the quick-pick chip row is currently scoped to, if
+  // any. Set either by tapping a goal this session, or (see the effect
+  // below) by opening the sheet while a goal or a goal's task is already the
+  // current selection — reopening to "Change" a task should still offer its
+  // siblings rather than making the user re-find the goal first.
+  const [scopedGoalId, setScopedGoalId] = useState<string | null>(null);
+  // Distinguishes "the sheet is showing my *existing* selection" from "I just
+  // picked something new this time it was open" — purely so the bottom
+  // button can read "Done" instead of "Cancel" once a pick has actually been
+  // made, since "Cancel" would otherwise imply an already-applied goal pick
+  // could be undone by tapping it.
+  const [pickedThisSession, setPickedThisSession] = useState(false);
+
   const visibleGoals = useMemo(() => filterGoals(goals, query), [goals, query]);
   const visibleTasks = useMemo(() => filterTasks(tasks, query), [tasks, query]);
 
@@ -80,13 +108,82 @@ export function TrackingPicker({
   // an empty state useless.
   const nothingToShow = !searching && goals.length === 0 && tasks.length === 0;
 
+  const scopedGoal = useMemo(
+    () => (scopedGoalId ? (goals.find((g) => g.id === scopedGoalId) ?? null) : null),
+    [goals, scopedGoalId],
+  );
+  // Scoped against the FULL `tasks` array, not `visibleTasks` — the chip row
+  // is a shortcut on top of the flat list, not a second filter derived from
+  // whatever the search box happens to contain right now.
+  const scopedTasks = useMemo(
+    () => (scopedGoal ? tasks.filter((t) => t.goalId === scopedGoal.id) : []),
+    [scopedGoal, tasks],
+  );
+
   const clearSearch = () => setQuery("");
+
+  // Re-syncs the cascade's scope on the OPENING edge of `visible` only (not
+  // on every render while it stays open) — `wasVisibleRef` is what tells
+  // "just opened" apart from "still open, and the goals/tasks query cache
+  // happened to refetch in the background". Without that distinction a
+  // background refetch mid-session would silently reset `pickedThisSession`
+  // (flipping the bottom button back to "Cancel") and re-derive the scope
+  // out from under a user actively narrowing their pick.
+  const wasVisibleRef = useRef(false);
+  useEffect(() => {
+    const justOpened = visible && !wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    if (!justOpened) return;
+
+    setPickedThisSession(false);
+    if (!selectedId) {
+      setScopedGoalId(null);
+      return;
+    }
+    const goalMatch = goals.find((g) => g.id === selectedId);
+    if (goalMatch) {
+      setScopedGoalId(goalMatch.id);
+      return;
+    }
+    const taskMatch = tasks.find((t) => t.id === selectedId);
+    setScopedGoalId(taskMatch?.goalId ?? null);
+  }, [visible, selectedId, goals, tasks]);
 
   const handleClose = () => {
     // A stale query would otherwise still be filtering the list the next time
     // the sheet opens, which reads as "my goals disappeared".
     clearSearch();
+    setScopedGoalId(null);
+    setPickedThisSession(false);
     onClose();
+  };
+
+  /** Task picked either from the scoped chip row or the flat list — always terminal. */
+  const handleSelectTask = (task: Task) => {
+    onPickTask(task);
+    handleClose();
+  };
+
+  /**
+   * Goal picked from the flat list. Applies immediately (so the row's own
+   * "selected" check mark and TrackingTarget both reflect it right away even
+   * though the sheet stays open) and only closes on its own if there's
+   * nothing to cascade to — see this file's header.
+   */
+  const handleSelectGoal = (goal: Goal) => {
+    onPickGoal(goal);
+    setPickedThisSession(true);
+    const hasTasks = tasks.some((t) => t.goalId === goal.id);
+    if (hasTasks) {
+      setScopedGoalId(goal.id);
+    } else {
+      handleClose();
+    }
+  };
+
+  const handleSelectNone = () => {
+    onPickNone();
+    handleClose();
   };
 
   return (
@@ -147,6 +244,24 @@ export function TrackingPicker({
             ) : null}
           </View>
 
+          {/* The goal → task cascade. Lives outside the ScrollView, right
+              under the search row, so it reads as a persistent shortcut
+              rather than the first section of the scrollable list — and so
+              it can't be scrolled out of view the moment it appears, which
+              is exactly when the user needs to see it. Hidden while
+              searching: search already surfaces every matching task
+              regardless of goal (this file's header), so the two would be
+              showing overlapping, differently-scoped answers to the same
+              question at once. */}
+          {!searching && scopedGoal ? (
+            <GoalTaskQuickPick
+              goal={scopedGoal}
+              tasks={scopedTasks}
+              selectedTaskId={selectedId}
+              onPickTask={handleSelectTask}
+            />
+          ) : null}
+
           <ScrollView
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
@@ -165,7 +280,7 @@ export function TrackingPicker({
                 accentColor={null}
                 selected={!selectedId}
                 accessibilityLabel="Track without a goal or task"
-                onPress={onPickNone}
+                onPress={handleSelectNone}
               />
             ) : null}
 
@@ -207,7 +322,7 @@ export function TrackingPicker({
                         accentColor={goal.color}
                         selected={selectedId === goal.id}
                         accessibilityLabel={`Track goal "${goal.title}"`}
-                        onPress={() => onPickGoal(goal)}
+                        onPress={() => handleSelectGoal(goal)}
                       />
                     ))}
                   </>
@@ -224,7 +339,7 @@ export function TrackingPicker({
                         accentColor={task.goal?.color ?? null}
                         selected={selectedId === task.id}
                         accessibilityLabel={`Track task "${task.title}"`}
-                        onPress={() => onPickTask(task)}
+                        onPress={() => handleSelectTask(task)}
                       />
                     ))}
                   </>
@@ -237,9 +352,12 @@ export function TrackingPicker({
             style={styles.closeButton}
             onPress={handleClose}
             accessibilityRole="button"
-            accessibilityLabel="Cancel"
+            accessibilityLabel={pickedThisSession ? "Done" : "Cancel"}
           >
-            <Text style={styles.closeText}>Cancel</Text>
+            {/* Reads "Done" once a goal has actually been applied this time
+                the sheet was open (see `handleSelectGoal`) — "Cancel" would
+                wrongly imply that pick is still undoable by tapping here. */}
+            <Text style={styles.closeText}>{pickedThisSession ? "Done" : "Cancel"}</Text>
           </Pressable>
         </Pressable>
       </Pressable>
@@ -304,6 +422,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     // paddingBottom is applied inline, from the safe-area inset.
     maxHeight: "80%",
+    // theme/tokens.ts's `shadows` re-export doesn't carry the foundation's
+    // dedicated `modal` preset (only `card`/`fab`/`subtle`/`raised` made it
+    // across), so `raised` — "a surface floating over other content" — is
+    // the closest token actually available here. The sheet had no shadow of
+    // its own before and relied entirely on the backdrop scrim to read as a
+    // separate layer.
+    ...shadows.raised,
   },
   handle: {
     alignSelf: "center",
@@ -333,6 +458,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.background,
+    // "A control seated ON a surface (button, input)" — theme/foundation.ts.
+    ...shadows.subtle,
   },
   searchInput: {
     flex: 1,
@@ -409,6 +536,7 @@ const styles = StyleSheet.create({
   rowSelected: {
     borderColor: colors.foreground,
     backgroundColor: colors.secondary,
+    ...shadows.subtle,
   },
   rowPressed: {
     opacity: 0.7,

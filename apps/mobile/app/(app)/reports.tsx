@@ -24,7 +24,7 @@
 // untouched and still share their cache with the Goals/Tasks screens.
 
 import { useCallback, useMemo, useState } from "react";
-import { RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -35,6 +35,7 @@ import { EmptyState, ErrorState, Skeleton } from "@/components";
 import {
   buildCategoryBreakdown,
   buildDayBuckets,
+  buildDayGoalBreakdown,
   computeTrend,
   getPeriodRanges,
   sumMinutesInRange,
@@ -59,17 +60,28 @@ const MAX_DONUT_SIZE = 200;
  * top-right over every screen. Same 64pt index.tsx and schedule.tsx use.
  */
 const HAMBURGER_CLEARANCE = 64;
-/** Screen padding (spacing.xl) + card padding (spacing.lg), both sides. */
-const DONUT_HORIZONTAL_INSET = 2 * spacing.xl + 2 * spacing.lg + spacing.xxl;
+// Screen padding (spacing.xl) + card padding (spacing.xxl — see `card` in
+// the stylesheet below), both sides, plus a buffer term. Keep this in step
+// with `styles.card.padding`: if that padding changes and this doesn't, the
+// donut is sized for a card wider than the one it actually renders inside.
+const DONUT_HORIZONTAL_INSET = 2 * spacing.xl + 2 * spacing.xxl + spacing.xxl;
 
-/** Inclusive day count for a `YYYY-MM-DD` range. Parsed from parts, never `new Date(str)` — see aggregate.ts. */
+/** Parsed from parts, never `new Date(str)` — see aggregate.ts's header for why. */
+function parseDateKey(key: string): Date {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+/** Inclusive day count for a `YYYY-MM-DD` range. */
 function countDays(range: PeriodRange): number {
-  const toDate = (key: string) => {
-    const [year, month, day] = key.split("-").map(Number);
-    return new Date(year, month - 1, day);
-  };
-  const diffMs = toDate(range.end).getTime() - toDate(range.start).getTime();
+  const diffMs = parseDateKey(range.end).getTime() - parseDateKey(range.start).getTime();
   return Math.max(1, Math.round(diffMs / 86_400_000) + 1);
+}
+
+/** Heading for the tapped-day drill-down, e.g. "Today" or "Wednesday, 12 Aug". */
+function formatDayHeading(dateKey: string): string {
+  if (dateKey === getLocalDateString()) return "Today";
+  return parseDateKey(dateKey).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" });
 }
 
 export default function ReportsScreen() {
@@ -77,6 +89,13 @@ export default function ReportsScreen() {
   const { width } = useWindowDimensions();
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [chartWidth, setChartWidth] = useState(0);
+  // `dateKey` of the bar the user drilled into, or null when the "Focus per
+  // day" chart is showing only the aggregate. Not cleared on period switch —
+  // if it's still a real bar in the new `buckets` (e.g. flipping week ->
+  // month -> week lands back on the same days) the drill-down just keeps
+  // showing; `selectedBucket` below is what actually gates the UI, so a
+  // dateKey that doesn't exist in the new period's buckets silently hides it.
+  const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
 
   // The wall-clock instant every period boundary is measured from. Held in
   // state rather than read inline because `getPeriodRanges` and
@@ -154,6 +173,24 @@ export default function ReportsScreen() {
     () => buildCategoryBreakdown(timeEntries, ranges.current, categories, colors.mutedForeground),
     [timeEntries, ranges, categories],
   );
+
+  // Only a real bar in the *current* buckets counts as selected — see the
+  // state comment above for why a stale dateKey from a different period
+  // isn't cleared explicitly.
+  const selectedBucket = useMemo(
+    () => buckets.find((bucket) => bucket.dateKey === selectedDayKey) ?? null,
+    [buckets, selectedDayKey],
+  );
+  const daySlices = useMemo(
+    () => (selectedBucket ? buildDayGoalBreakdown(timeEntries, selectedBucket.dateKey, colors.mutedForeground) : []),
+    [timeEntries, selectedBucket],
+  );
+  const handleSelectDay = useCallback((dateKey: string) => {
+    // Tapping the already-selected bar closes the drill-down rather than
+    // re-showing it — the same "tap to toggle" a user expects from any
+    // selectable chip.
+    setSelectedDayKey((previous) => (previous === dateKey ? null : dateKey));
+  }, []);
 
   // Time tracked without a goal attached. Sessions can now be started with
   // nothing selected, so this is ordinary rather than exceptional — and it
@@ -335,9 +372,40 @@ export default function ReportsScreen() {
                       Nothing logged {period === "week" ? "this week" : "this month"} yet.
                     </Text>
                   ) : (
-                    <FocusBarChart buckets={buckets} width={chartWidth} labelEvery={period === "week" ? 1 : 7} />
+                    <FocusBarChart
+                      buckets={buckets}
+                      width={chartWidth}
+                      labelEvery={period === "week" ? 1 : 7}
+                      selectedDateKey={selectedBucket?.dateKey}
+                      onSelectDay={handleSelectDay}
+                    />
                   )}
                 </View>
+
+                {selectedBucket ? (
+                  <View style={styles.dayBreakdown}>
+                    <View style={styles.dayBreakdownHeader}>
+                      <View style={styles.dayBreakdownHeading}>
+                        <Text style={styles.dayBreakdownTitle}>{formatDayHeading(selectedBucket.dateKey)}</Text>
+                        <Text style={styles.cardTotal}>{formatDuration(selectedBucket.minutes)}</Text>
+                      </View>
+                      <Pressable
+                        onPress={() => setSelectedDayKey(null)}
+                        hitSlop={spacing.sm}
+                        style={styles.dayBreakdownClose}
+                        accessibilityRole="button"
+                        accessibilityLabel="Close day breakdown"
+                      >
+                        <Text style={styles.dayBreakdownCloseText}>Close</Text>
+                      </Pressable>
+                    </View>
+                    {daySlices.length === 0 ? (
+                      <Text style={styles.emptyChartText}>Nothing tracked this day.</Text>
+                    ) : (
+                      <CategoryDonut slices={daySlices} size={donutSize} />
+                    )}
+                  </View>
+                ) : null}
               </View>
             </Reveal>
 
@@ -453,7 +521,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.card,
-    padding: spacing.lg,
+    // xxl rather than the lg a compact row-card would use: these cards are
+    // content-heavy (a chart, a legend, sometimes both at once) and lg's
+    // tighter gutter read cramped once the goal drill-down could stack a
+    // second block underneath — see tokens.ts's spacing rhythm note.
+    padding: spacing.xxl,
     gap: spacing.lg,
     ...shadows.card,
   },
@@ -463,8 +535,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
+  // A card's primary line gets the `title` role, not the tiny uppercase
+  // `label` eyebrow style the header above it already uses — two eyebrows
+  // stacked (screen eyebrow, then a caps card title) read as flat, same-
+  // weight chrome with nothing standing out as the actual heading.
   cardTitle: {
-    ...typography.label,
+    ...typography.title,
     color: colors.foreground,
   },
   cardTotal: {
@@ -490,5 +566,47 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
     textAlign: "center",
     paddingTop: spacing.md,
+  },
+  // The per-day goal drill-down, appended under the "Focus per day" chart
+  // when a bar is tapped. A top divider is what tells the eye this is a
+  // second block reacting to the tap, not part of the chart itself.
+  dayBreakdown: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: spacing.md,
+  },
+  dayBreakdownHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  dayBreakdownHeading: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: spacing.sm,
+  },
+  dayBreakdownTitle: {
+    ...typography.body,
+    fontWeight: "700",
+    color: colors.foreground,
+  },
+  // Styled as a small dismiss chip (same pill-on-a-View idiom StatCard's
+  // trend chip uses, rather than colouring the Text node directly — more
+  // reliable corner clipping on Android) so it reads as a tappable control
+  // and not another piece of copy.
+  dayBreakdownClose: {
+    backgroundColor: colors.secondary,
+    paddingVertical: spacing.xxs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.full,
+  },
+  dayBreakdownCloseText: {
+    ...typography.caption,
+    textTransform: "none",
+    letterSpacing: 0,
+    color: colors.mutedForeground,
   },
 });

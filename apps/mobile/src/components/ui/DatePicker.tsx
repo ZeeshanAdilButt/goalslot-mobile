@@ -71,7 +71,7 @@ export function DatePicker({ value, onChange, minDate }: DatePickerProps) {
         <Pressable
           onPress={goPrevMonth}
           hitSlop={8}
-          style={styles.navButton}
+          style={({ pressed }) => [styles.navButton, pressed && styles.navButtonPressed]}
           accessibilityRole="button"
           accessibilityLabel="Previous month"
         >
@@ -83,7 +83,7 @@ export function DatePicker({ value, onChange, minDate }: DatePickerProps) {
         <Pressable
           onPress={goNextMonth}
           hitSlop={8}
-          style={styles.navButton}
+          style={({ pressed }) => [styles.navButton, pressed && styles.navButtonPressed]}
           accessibilityRole="button"
           accessibilityLabel="Next month"
         >
@@ -118,23 +118,26 @@ export function DatePicker({ value, onChange, minDate }: DatePickerProps) {
               accessibilityLabel={cell.key}
               accessibilityState={{ selected: isSelected, disabled: isDisabled }}
             >
-              <View
-                style={[
-                  styles.dayCircle,
-                  isSelected && styles.dayCircleSelected,
-                  isToday && !isSelected && styles.dayCircleToday,
-                ]}
-              >
-                <Text
+              {({ pressed }) => (
+                <View
                   style={[
-                    styles.dayText,
-                    isSelected && styles.dayTextSelected,
-                    isDisabled && styles.dayTextDisabled,
+                    styles.dayCircle,
+                    pressed && !isSelected && styles.dayCirclePressed,
+                    isSelected && styles.dayCircleSelected,
+                    isToday && !isSelected && styles.dayCircleToday,
                   ]}
                 >
-                  {cell.day}
-                </Text>
-              </View>
+                  <Text
+                    style={[
+                      styles.dayText,
+                      isSelected && styles.dayTextSelected,
+                      isDisabled && styles.dayTextDisabled,
+                    ]}
+                  >
+                    {cell.day}
+                  </Text>
+                </View>
+              )}
             </Pressable>
           );
         })}
@@ -161,6 +164,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radii.full,
+  },
+  // Neither nav button nor day cell had any press feedback before — a tap
+  // registered with no visible acknowledgement until the month/selection
+  // actually changed a beat later.
+  navButtonPressed: {
+    backgroundColor: colors.secondary,
   },
   flipHorizontal: {
     transform: [{ scaleX: -1 }],
@@ -196,6 +205,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
     alignItems: "center",
     justifyContent: "center",
+  },
+  dayCirclePressed: {
+    backgroundColor: colors.secondary,
   },
   dayCircleSelected: {
     backgroundColor: colors.primary,

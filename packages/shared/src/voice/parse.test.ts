@@ -82,6 +82,54 @@ describe('parseVoiceCommand — the commands the Time Tracker offers', () => {
   })
 })
 
+describe('parseVoiceCommand — "start tracking time for my work for X"', () => {
+  // The reported bug, verbatim: this asked for a timer on a goal called
+  // OloStep and produced a set of proposed edits to the schedule instead.
+  // The parse was already START_TRACKING; what broke was the name, which
+  // came out as "work for olostep" and matched the real goal too weakly for
+  // the tracker to act on, so the sentence went to the Coach — which is
+  // under standing instructions to offer to link unlinked schedule blocks to
+  // a goal, and duly offered exactly that.
+  it('names the goal, not the work being done on it', () => {
+    const said = 'start tracking time for my work for Olostep'
+    expect(parseVoiceCommand(said).type).toBe('START_TRACKING')
+    expect(targetOf(said)).toEqual({ kind: 'unspecified', name: 'olostep' })
+  })
+
+  it('reads the same request phrased as a polite question', () => {
+    const said = 'Can you start tracking time for my work for Olostep?'
+    expect(parseVoiceCommand(said).type).toBe('START_TRACKING')
+    expect(targetOf(said)).toEqual({ kind: 'unspecified', name: 'olostep' })
+  })
+
+  it.each([
+    ['start tracking my work on olostep', 'olostep'],
+    ['start working on my work for olostep', 'olostep'],
+    ['begin tracking time for my work for olo step', 'olo step'],
+    ['track time for my work for olostep', 'olostep'],
+    ['start tracking time for my work for the olostep goal', 'olostep'],
+  ])('%s names %s', (transcript, name) => {
+    expect(parseVoiceCommand(transcript).type).toBe('START_TRACKING')
+    expect(targetOf(transcript)?.name).toBe(name)
+  })
+
+  it('keeps a goal genuinely called Work when nothing is named after it', () => {
+    // The word is only ever given up to a name behind a connective. A user
+    // whose goal is literally "Work" still gets their timer.
+    expect(targetOf('start tracking my work')).toEqual({ kind: 'unspecified', name: 'work' })
+    expect(targetOf('start tracking my work now')).toEqual({ kind: 'unspecified', name: 'work' })
+    expect(targetOf('start tracking my work for now')).toEqual({ kind: 'unspecified', name: 'work' })
+    expect(targetOf('start tracking the work goal')).toEqual({ kind: 'goal', name: 'work' })
+  })
+
+  it('does not eat a name that merely begins with the word', () => {
+    expect(targetOf('start tracking my work trip planning')).toEqual({
+      kind: 'unspecified',
+      name: 'work trip planning',
+    })
+  })
+})
+
 describe('parseVoiceCommand — what it refuses', () => {
   it('never reads cancel as a stop', () => {
     // The two sit next to each other in a user's head and mean opposite

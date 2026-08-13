@@ -4,7 +4,10 @@ import {
   COACH_BYOK_MAX_TOKEN_BUDGET,
   COACH_BYOK_MIN_TOKEN_BUDGET,
   COACH_BYOK_PROVIDERS,
+  coachBudgetIncrements,
   coachByokProviderMeta,
+  formatCoachTokenCount,
+  isCoachBudgetExceededError,
   parseCoachByokBudget,
   validateCoachByokKey,
 } from './coach-settings'
@@ -86,5 +89,105 @@ describe('coachByokProviderMeta', () => {
     // A user with no key at all should meet the option they can act on
     // without a credit card before the ones they can't.
     expect(COACH_BYOK_PROVIDERS[0]?.provider).toBe('GEMINI')
+  })
+})
+
+describe('isCoachBudgetExceededError', () => {
+  // The exact string the API's asSseObservable bridge forwards for
+  // assertWithinBudget's HttpException, which is all the client ever sees.
+  const SSE_MESSAGE = 'Monthly token budget exceeded'
+
+  it('matches the message the SSE stream actually delivers', () => {
+    expect(isCoachBudgetExceededError(SSE_MESSAGE)).toBe(true)
+  })
+
+  it('survives a reword of that sentence', () => {
+    expect(isCoachBudgetExceededError('Your monthly token budget has been used up.')).toBe(true)
+    expect(isCoachBudgetExceededError('Out of monthly token budget')).toBe(true)
+    expect(isCoachBudgetExceededError('MONTHLY TOKEN BUDGET EXCEEDED')).toBe(true)
+  })
+
+  it('does NOT match the shared-key daily ceiling', () => {
+    // A different user in a different situation: no budget of their own to
+    // raise. Offering "increase your budget" here would be a dead end.
+    expect(
+      isCoachBudgetExceededError(
+        'Shared Coach daily limit reached. Add your own free Gemini or OpenRouter key in Settings to keep going.',
+      ),
+    ).toBe(false)
+  })
+
+  it('does NOT match an unrelated failure, including a throttler 429', () => {
+    expect(isCoachBudgetExceededError('Request failed (429)')).toBe(false)
+    expect(isCoachBudgetExceededError('ThrottlerException: Too Many Requests')).toBe(false)
+    expect(isCoachBudgetExceededError('Internal error during streaming')).toBe(false)
+    expect(isCoachBudgetExceededError(null)).toBe(false)
+    expect(isCoachBudgetExceededError(undefined)).toBe(false)
+    expect(isCoachBudgetExceededError({})).toBe(false)
+  })
+
+  it('reads a thrown error or an axios response body, not just a bare string', () => {
+    // Insurance: if the API ever moves the check in front of the stream this
+    // arrives as a real 429 instead, and the affordance must not vanish.
+    expect(isCoachBudgetExceededError(Object.assign(new Error(SSE_MESSAGE), { status: 429 }))).toBe(true)
+    expect(isCoachBudgetExceededError({ response: { data: { message: SSE_MESSAGE } } })).toBe(true)
+    expect(isCoachBudgetExceededError({ response: { data: { message: ['x', SSE_MESSAGE] } } })).toBe(true)
+  })
+})
+
+describe('coachBudgetIncrements', () => {
+  it('offers absolute values, rounded to something a person would choose', () => {
+    expect(coachBudgetIncrements(250_000)).toEqual([
+      { percent: 50, tokensLimit: 380_000 },
+      { percent: 100, tokensLimit: 500_000 },
+      { percent: 200, tokensLimit: 750_000 },
+    ])
+  })
+
+  it('rounds up, never below the raw increment the label promises', () => {
+    for (const { percent, tokensLimit } of coachBudgetIncrements(12_345)) {
+      expect(tokensLimit).toBeGreaterThanOrEqual(12_345 * (1 + percent / 100))
+    }
+  })
+
+  it('never proposes a value the API would reject', () => {
+    for (const base of [0, 1_000, 12_345, 250_000, 60_000_000, COACH_BYOK_MAX_TOKEN_BUDGET]) {
+      for (const { tokensLimit } of coachBudgetIncrements(base)) {
+        expect(tokensLimit).toBeGreaterThanOrEqual(COACH_BYOK_MIN_TOKEN_BUDGET)
+        expect(tokensLimit).toBeLessThanOrEqual(COACH_BYOK_MAX_TOKEN_BUDGET)
+      }
+    }
+  })
+
+  it('de-duplicates steps that collapse onto the ceiling', () => {
+    const options = coachBudgetIncrements(90_000_000)
+    expect(options).toHaveLength(1)
+    expect(options[0]?.tokensLimit).toBe(COACH_BYOK_MAX_TOKEN_BUDGET)
+  })
+
+  it('offers nothing at all once the budget is the ceiling', () => {
+    // A button that cannot raise anything must not render.
+    expect(coachBudgetIncrements(COACH_BYOK_MAX_TOKEN_BUDGET)).toEqual([])
+  })
+
+  it('falls back to the minimum when the current budget is unknown', () => {
+    expect(coachBudgetIncrements(null)[0]?.tokensLimit).toBe(1_500)
+    expect(coachBudgetIncrements(undefined)).toEqual(coachBudgetIncrements(COACH_BYOK_MIN_TOKEN_BUDGET))
+    expect(coachBudgetIncrements(0)).toEqual(coachBudgetIncrements(COACH_BYOK_MIN_TOKEN_BUDGET))
+  })
+
+  it('honours a caller-supplied set of steps', () => {
+    expect(coachBudgetIncrements(100_000, [25])).toEqual([{ percent: 25, tokensLimit: 130_000 }])
+  })
+})
+
+describe('formatCoachTokenCount', () => {
+  it('keeps six- and seven-digit budgets legible at a glance', () => {
+    expect(formatCoachTokenCount(375_000)).toBe('375k')
+    expect(formatCoachTokenCount(1_000_000)).toBe('1M')
+    expect(formatCoachTokenCount(1_250_000)).toBe('1.3M')
+    expect(formatCoachTokenCount(1_000)).toBe('1k')
+    expect(formatCoachTokenCount(940)).toBe('940')
+    expect(formatCoachTokenCount(0)).toBe('0')
   })
 })

@@ -749,9 +749,9 @@ function Stagger({
   );
 }
 
-/** Placeholder sized to the stat value's 30px line so tiles don't resize when data lands. */
+/** Placeholder sized to `typography.statValue`'s 40px line so tiles don't resize when data lands. */
 function StatValueSkeleton() {
-  return <Skeleton width="60%" height={30} borderRadius={8} />;
+  return <Skeleton width="60%" height={40} borderRadius={8} />;
 }
 
 /**
@@ -968,7 +968,11 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   sectionTitle: {
-    ...typography.label,
+    // `h2` (not `label`) — foundation.ts's own citation for this role is
+    // exactly this: "small uppercase group label above a set of rows". The
+    // eyebrow-sized `label` role is a pill/eyebrow token, and at 10px it was
+    // reading as an afterthought above five different section bodies.
+    ...typography.h2,
     color: colors.mutedForeground,
   },
   countBadge: {

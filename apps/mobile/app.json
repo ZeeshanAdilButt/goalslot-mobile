@@ -79,6 +79,7 @@
         }
       ],
       "@bacons/apple-targets",
+      "./plugins/withAppActions",
       [
         "react-native-android-widget",
         {

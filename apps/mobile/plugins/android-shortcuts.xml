@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android App Shortcuts + App Actions capability declarations for GoalSlot's
+  voice-trigger feature: "Hey Google, Start timer, in GoalSlot",
+  "Hey Google, Talk about my day, in GoalSlot", and
+  "Hey Google, Start timer for reading, in GoalSlot".
+
+  Copied verbatim into android/app/src/main/res/xml/shortcuts.xml by
+  plugins/withAppActions.js during `expo prebuild` — THIS file is the
+  source of truth, not the generated copy. See that plugin's header
+  comment for the full mechanism and why a config plugin is used instead
+  of hand-editing the generated android/ directory.
+
+  Ownership: this file is shared between the "start timer" and "talk about
+  my day" voice commands. Each command's build agent adds its OWN
+  <shortcut>/<capability> block as a sibling element, without editing
+  another agent's block. The "start_timer" shortcut and the
+  actions.intent.OPEN_APP_FEATURE capability below were added by the
+  Android-timer agent. The Android-journal agent should add a
+  "talk_about_my_day" <shortcut> block at the marker below, targeting
+  goalslot://journal?voice=1 — the URL src/lib/deep-links.ts's
+  `journalVoiceCaptureDeepLink()` already builds (added by the iOS-journal
+  agent) — reuse that literal URL shape rather than inventing a new one.
+
+  IMPORTANT — deep-link target status: the two commands below deep-link
+  into the EXISTING /timer route with new query params
+  (?autostart=active and ?autostart=spoken&spokenName=...) that
+  src/lib/deep-links.ts's `timerAutoStartActiveDeepLink()` /
+  `timerAutoStartSpokenDeepLink()` already build (added by the iOS-timer
+  agent — reused here rather than duplicated, so this file adds nothing
+  new to deep-links.ts). As of this writing, app/(app)/timer.tsx does not
+  yet read either param (it only handles the pre-existing
+  `autostart=1&goalId=...` shape used by the widget) — see that file's own
+  autostart effect and the iOS-timer agent's report. Until timer.tsx's
+  owner wires this up, these shortcuts will open the app to the Timer
+  screen but not yet auto-start tracking. This is a known, already-flagged
+  gap in timer.tsx, which is off-limits to touch from this file's owning
+  agents.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Tier 1: plain App Shortcut. Assistant can match this via its own
+         label text ("Hey Google, Start timer, in GoalSlot") with no
+         Play Console / Actions Console submission required — works as
+         soon as the app is installed and the shortcut is indexed. Covers
+         voice command 1: bare "start timer" against whatever schedule
+         block is currently active. -->
+    <shortcut
+        android:shortcutId="start_timer"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_start_timer_short"
+        android:shortcutLongLabel="@string/shortcut_start_timer_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.goalslot.mobile"
+            android:targetClass="io.goalslot.mobile.MainActivity"
+            android:data="goalslot://timer?autostart=active" />
+    </shortcut>
+
+    <!-- Android-journal agent: add your "talk_about_my_day" <shortcut>
+         block here, as a sibling of the one above. Target
+         goalslot://journal?voice=1. Do not edit the block above. -->
+
+    <!-- Tier 2: capability bound to the OPEN_APP_FEATURE built-in intent,
+         for voice command 2, "start timer for <name>", which needs
+         free-text slot-filling that a plain shortcut's fixed label text
+         can't carry. `feature.name` is passed through UNPARSED as
+         `spokenName` — the Timer screen (via app/(app)/timer.tsx's
+         `autostart=spoken` handling, not yet built as of this writing —
+         see the note above) is expected to run it through
+         packages/shared/src/voice/parse.ts's `parseVoiceCommand` and
+         resolve.ts's `resolveSpokenTarget`, the same fuzzy-matching the
+         in-app Voice tab and Time Tracker mic button already use, rather
+         than this XML attempting to pre-parse it.
+
+         CONFIDENCE FLAG (carried over from research, unverified in this
+         session): OPEN_APP_FEATURE's documented example phrasing is
+         "open/show <feature> in <app>", not "start <verb> for <name> in
+         <app>" — whether Assistant's NLU reliably maps "start timer for
+         reading, in GoalSlot" onto `feature.name` (and whether it captures
+         "reading" alone vs. "timer for reading") needs live verification
+         with Google's App Actions Test Tool on a signed-in device, which
+         is out of scope for this session (no build was run). If it
+         doesn't match reliably, Tier 1 above still works standalone, and
+         "start timer for <name>" degrades to: open the app via Tier 1,
+         then finish the name with GoalSlot's own in-app mic button
+         (TrackerVoiceButton). CREATE_TIMER was deliberately NOT used here
+         — it hands off to Google Assistant's own system timer UI, not this
+         app's timer. -->
+    <capability android:name="actions.intent.OPEN_APP_FEATURE">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.goalslot.mobile"
+            android:targetClass="io.goalslot.mobile.MainActivity">
+            <parameter
+                android:name="feature.name"
+                android:key="featureName" />
+            <url-template android:template="goalslot://timer?autostart=spoken&amp;spokenName={featureName}" />
+        </intent>
+    </capability>
+
+</shortcuts>

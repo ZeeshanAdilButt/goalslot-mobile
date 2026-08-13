@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { namedTarget } from './intent'
+import { isNamedTarget, namedTarget } from './intent'
+import { parseVoiceCommand } from './parse'
 import { nameSimilarity, rankTargets, resolveSpokenTarget, type TargetCandidate } from './resolve'
 
 const GOALS: readonly TargetCandidate[] = [
@@ -8,6 +9,15 @@ const GOALS: readonly TargetCandidate[] = [
   { id: 'goal_fitness', name: 'Fitness', kind: 'goal' },
   { id: 'goal_quran', name: "Qur'an Study", kind: 'goal' },
   { id: 'task_invoices', name: 'Invoices', kind: 'task' },
+]
+
+/** The reporting user's list, near enough: a made-up brand beside a goal
+ * whose name is an everyday word the same sentence also contains. */
+const OLOSTEP_GOALS: readonly TargetCandidate[] = [
+  { id: 'goal_olostep', name: 'OloStep', kind: 'goal' },
+  { id: 'goal_work', name: 'Work', kind: 'goal' },
+  { id: 'goal_deen', name: 'Deen', kind: 'goal' },
+  { id: 'goal_fitness', name: 'Fitness', kind: 'goal' },
 ]
 
 describe('resolveSpokenTarget', () => {
@@ -48,6 +58,70 @@ describe('resolveSpokenTarget', () => {
 
     const anyKind = resolveSpokenTarget(namedTarget('unspecified', 'invoices'), GOALS)
     expect(anyKind.target?.id).toBe('task_invoices')
+  })
+})
+
+describe('resolveSpokenTarget — an invented brand name the recognizer keeps respelling', () => {
+  // "It doesn't read Olostep properly." A name with no dictionary entry
+  // behind it comes back spelled a different way almost every time, and
+  // where the space lands is the part that moves most.
+  it.each(['OloStep', 'olostep', 'Olostep', 'OLOSTEP', 'olo step', 'Olo Step', 'OLO STEP', 'ola step'])(
+    'hears %s as the OloStep goal and acts on it',
+    (said) => {
+      const resolution = resolveSpokenTarget(namedTarget('unspecified', said), OLOSTEP_GOALS)
+      expect(resolution.target?.id).toBe('goal_olostep')
+      expect(resolution.status).toBe('confident')
+    },
+  )
+
+  it('offers OloStep first for a mangling too far gone to act on unasked', () => {
+    // "All of step" is what a recognizer reaches for when it insists on real
+    // words. Close enough to head a "did you mean?", not close enough to
+    // start a timer on — a wrong-goal timer is worse than a question.
+    const resolution = resolveSpokenTarget(namedTarget('unspecified', 'all of step'), OLOSTEP_GOALS)
+    expect(resolution.status).toBe('needs-confirmation')
+    expect(resolution.candidates[0]?.id).toBe('goal_olostep')
+  })
+
+  it('never reaches an unrelated goal to fill the gap', () => {
+    // The goal is simply absent here. Tolerating a misspelling must not
+    // become tolerating a different word.
+    const resolution = resolveSpokenTarget(namedTarget('unspecified', 'olostep'), [
+      { id: 'goal_work', name: 'Work', kind: 'goal' },
+      { id: 'goal_deen', name: 'Deen', kind: 'goal' },
+      { id: 'goal_outreach', name: 'Outreach', kind: 'goal' },
+      { id: 'goal_onestop', name: 'One Stop Shop', kind: 'goal' },
+    ])
+    expect(resolution.status).toBe('unresolved')
+    expect(resolution.target).toBeNull()
+  })
+})
+
+describe('the spoken sentence from the OloStep report, end to end', () => {
+  it('starts a timer on OloStep instead of handing the sentence to the Coach', () => {
+    // Both halves of the bug in one assertion: the parse has to name the
+    // goal rather than the work, and the resolver has to be sure enough of
+    // that name to act. Anything short of 'confident' here is how the user
+    // ended up looking at proposed schedule edits.
+    const intent = parseVoiceCommand('start tracking time for my work for Olostep')
+    expect(intent.type).toBe('START_TRACKING')
+    if (intent.type === 'UNKNOWN' || !isNamedTarget(intent.target)) throw new Error('unreachable')
+
+    const resolution = resolveSpokenTarget(intent.target, OLOSTEP_GOALS)
+    expect(resolution.status).toBe('confident')
+    expect(resolution.target?.name).toBe('OloStep')
+  })
+
+  it.each([
+    'Can you start tracking time for my work for Olostep?',
+    'start tracking time for my work for olo step',
+    'hey can you please start tracking time for my work for OloStep',
+  ])('%s reaches the same goal', (said) => {
+    const intent = parseVoiceCommand(said)
+    if (intent.type === 'UNKNOWN' || !isNamedTarget(intent.target)) throw new Error('unreachable')
+    const resolution = resolveSpokenTarget(intent.target, OLOSTEP_GOALS)
+    expect(resolution.status).toBe('confident')
+    expect(resolution.target?.id).toBe('goal_olostep')
   })
 })
 
@@ -147,5 +221,18 @@ describe('nameSimilarity', () => {
 
   it('is symmetric and stable', () => {
     expect(nameSimilarity('dean', 'deen')).toBe(nameSimilarity('deen', 'dean'))
+  })
+
+  it('does not care where the recognizer put the space', () => {
+    expect(nameSimilarity('olo step', 'OloStep')).toBe(1)
+    expect(nameSimilarity('OloStep', 'Olo Step')).toBe(1)
+    expect(nameSimilarity('one stop shop', 'OneStopShop')).toBe(1)
+  })
+
+  it('closing the spaces up does not make a longer name match', () => {
+    // Whitespace-insensitive is not prefix-insensitive: the rest of the name
+    // is still words the speaker never said.
+    expect(nameSimilarity('olo step', 'Olostep Marketing Retainer')).toBeLessThan(0.6)
+    expect(nameSimilarity('deen', 'Deen Fitness Tracker')).toBeLessThan(0.6)
   })
 })

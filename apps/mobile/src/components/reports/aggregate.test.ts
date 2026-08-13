@@ -10,6 +10,7 @@
 import {
   buildCategoryBreakdown,
   buildDayBuckets,
+  buildDayGoalBreakdown,
   computeTrend,
   getPeriodRanges,
   sumMinutesInRange,
@@ -140,6 +141,67 @@ describe("buildCategoryBreakdown", () => {
     } as TimeEntry;
     const slices = buildCategoryBreakdown([fromBlock], range, categories, neutral);
     expect(slices[0].name).toBe("Deep Work");
+  });
+});
+
+describe("buildDayGoalBreakdown", () => {
+  const neutral = "#999999";
+
+  function withGoal(date: string, duration: number, goalId: string, title: string, color = "#ff0000"): TimeEntry {
+    return {
+      id: `${goalId}-${date}-${duration}`,
+      date,
+      duration,
+      goalId,
+      goal: { id: goalId, title, color },
+    } as TimeEntry;
+  }
+
+  function noGoal(date: string, duration: number): TimeEntry {
+    return { id: `none-${date}-${duration}`, date, duration } as TimeEntry;
+  }
+
+  it("only counts entries on the requested day", () => {
+    const slices = buildDayGoalBreakdown(
+      [withGoal("2026-08-11", 30, "g1", "Reading"), withGoal("2026-08-12", 45, "g1", "Reading")],
+      "2026-08-11",
+      neutral,
+    );
+    expect(slices).toEqual([{ key: "g1", name: "Reading", minutes: 30, color: "#ff0000" }]);
+  });
+
+  it("keeps two goals tracked the same day as separate slices, largest first", () => {
+    const slices = buildDayGoalBreakdown(
+      [
+        withGoal("2026-08-11", 20, "g1", "Reading"),
+        withGoal("2026-08-11", 50, "g2", "Deep Work", "#00ff00"),
+      ],
+      "2026-08-11",
+      neutral,
+    );
+    expect(slices.map((slice) => [slice.name, slice.minutes])).toEqual([
+      ["Deep Work", 50],
+      ["Reading", 20],
+    ]);
+  });
+
+  it("sums repeat sessions against the same goal that day into one slice", () => {
+    const slices = buildDayGoalBreakdown(
+      [withGoal("2026-08-11", 20, "g1", "Reading"), withGoal("2026-08-11", 10, "g1", "Reading")],
+      "2026-08-11",
+      neutral,
+    );
+    expect(slices).toHaveLength(1);
+    expect(slices[0].minutes).toBe(30);
+  });
+
+  it("pools time with no goal under the same UNCATEGORIZED_KEY sentinel the category breakdown uses", () => {
+    const slices = buildDayGoalBreakdown([noGoal("2026-08-11", 25)], "2026-08-11", neutral);
+    expect(slices).toEqual([{ key: UNCATEGORIZED_KEY, name: "No goal", minutes: 25, color: neutral }]);
+  });
+
+  it("returns nothing for a day with no tracked time", () => {
+    expect(buildDayGoalBreakdown([withGoal("2026-08-11", 30, "g1", "Reading")], "2026-08-12", neutral)).toEqual([]);
   });
 });
 

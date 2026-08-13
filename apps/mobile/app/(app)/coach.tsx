@@ -43,6 +43,7 @@ import {
 
 import { EmptyState, ErrorState, Skeleton } from "@/components";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
+import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { apiClient } from "@/lib/api-client";
 import { coachQueries } from "@/lib/queries";
@@ -301,9 +302,21 @@ export default function CoachScreen() {
         <View style={styles.bodyArea}>{body}</View>
 
         {error ? (
-          <Text style={styles.errorBanner} accessibilityRole="alert">
-            {error}
-          </Text>
+          <View>
+            <Text style={styles.errorBanner} accessibilityRole="alert">
+              {error}
+            </Text>
+            {/* Renders itself only when this failure IS "monthly token budget
+                exceeded" — every other error still gets the bare banner it
+                always got. `onRetry` re-sends: `handleSend` puts the text back
+                in the composer when a send fails, so the message the budget
+                ate is still there to send again once the cap goes up. */}
+            <CoachBudgetNotice
+              error={error}
+              onRetry={() => void handleSend()}
+              style={styles.budgetNotice}
+            />
+          </View>
         ) : null}
 
         <View style={styles.composer}>
@@ -476,6 +489,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.destructiveMuted,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.lg,
+  },
+  budgetNotice: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
   },
   composer: {
     flexDirection: "row",

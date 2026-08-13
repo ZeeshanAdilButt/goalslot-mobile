@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 import { StyleSheet, View, type StyleProp, type ViewProps, type ViewStyle } from "react-native";
 
 import { Icon, type IconName } from "@/components/ui/Icon";
-import { colors, radii } from "@/theme/tokens";
+import { colors, iconSize, radii } from "@/theme/tokens";
 
 export type IconBadgeTone = "brand" | "neutral" | "success" | "warning" | "danger" | "ink";
 
@@ -56,10 +56,16 @@ const toneSpecs: Record<IconBadgeTone, ToneSpec> = {
 };
 
 const sizeSpecs: Record<IconBadgeSize, { box: number; glyph: number; radius: number }> = {
-  sm: { box: 28, glyph: 14, radius: 8 }, // stat-card.tsx `h-7 w-7` + `size-3.5`
-  md: { box: 40, glyph: 20, radius: 12 },
-  lg: { box: 48, glyph: 22, radius: 14 }, // empty-state.tsx `h-12 w-12` + `size-5`
-  xl: { box: 72, glyph: 32, radius: 22 }, // mobile-only: the empty-state glyph as artwork, not as a label
+  sm: { box: 28, glyph: iconSize.xs, radius: 8 }, // stat-card.tsx `h-7 w-7` + `size-3.5`
+  md: { box: 40, glyph: iconSize.md, radius: 12 },
+  // empty-state.tsx `h-12 w-12` + `size-5` (20px = iconSize.md) — glyph was
+  // a stray 22 that matched neither the icon-size scale nor its own cited
+  // source.
+  lg: { box: 48, glyph: iconSize.md, radius: 14 },
+  // mobile-only: the empty-state glyph as artwork, not as a label. Bumped
+  // from an off-scale 32 to `iconSize.xxl` (36) to land on the icon scale
+  // and keep the same ~0.5 glyph:box ratio the `sm`/`md` steps use.
+  xl: { box: 72, glyph: iconSize.xxl, radius: 22 },
 };
 
 export function IconBadge({

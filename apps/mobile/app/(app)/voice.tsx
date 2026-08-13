@@ -34,6 +34,7 @@ import { currentCoachWeekScopeKey, extractCoachProposals, type CoachProposalActi
 
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { MicOrb } from "@/components/voice/MicOrb";
+import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { Icon } from "@/components/ui/Icon";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
@@ -42,7 +43,7 @@ import { coachQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
-import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RATE_LIMIT_MESSAGE = "You've used today's 30 Coach messages. It resets in 24 hours — try again later.";
 
@@ -53,12 +54,18 @@ const EXAMPLES = [
   "Move my study block to 7pm",
 ];
 
-interface Exchange {
+interface Turn {
+  /** Stable identity, independent of position — turns are only ever
+   * appended or removed by id, never reordered, so an array index would
+   * drift under either operation. */
+  id: number;
   transcript: string;
   reply: string;
   /** True while the model is still streaming. */
   streaming: boolean;
 }
+
+const EMPTY_DISMISSED: ReadonlySet<number> = new Set();
 
 export default function VoiceScreen() {
   const router = useRouter();
@@ -73,19 +80,56 @@ export default function VoiceScreen() {
   // src/components/voice/TrackerVoiceButton.tsx's `escalate`.
   const { transcript: forwarded } = useLocalSearchParams<{ transcript?: string }>();
 
-  const [exchange, setExchange] = useState<Exchange | null>(null);
+  // The whole conversation, oldest first, never wiped by a new turn
+  // starting — only ever appended to (or, for a turn that failed outright,
+  // removed by id). Pressing the mic again while an answer is already on
+  // screen used to `setExchange(null)`, which read as "the app forgot what
+  // we were just talking about" the instant a follow-up started, even
+  // though the follow-up is very often "no, the OTHER Tuesday" rather than
+  // a fresh subject. Keeping every turn means a follow-up composes with
+  // what is already on screen instead of replacing it.
+  const [history, setHistory] = useState<Turn[]>([]);
+  // Which proposal cards the user has waved off, keyed by the turn's id —
+  // never by array position, which would drift once turns can be removed.
+  // A Map, not a single "clear it all" flag: one reply can carry several
+  // proposals, and "Not now" on the second one used to wipe the transcript,
+  // the assistant's prose and the *other* cards along with it. Keying by
+  // turn id also means an earlier turn's dismissals survive a later turn
+  // starting, instead of every turn sharing one set indexed against
+  // whichever reply happens to be newest.
+  const [dismissedProposals, setDismissedProposals] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
+    new Map(),
+  );
+  const nextTurnId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
   /** Guards the forwarded transcript so a re-focus can't replay the same command. */
   const forwardedRef = useRef<string | null>(null);
 
+  const removeTurn = useCallback((turnId: number) => {
+    setHistory((current) => current.filter((turn) => turn.id !== turnId));
+    setDismissedProposals((current) => {
+      if (!current.has(turnId)) return current;
+      const next = new Map(current);
+      next.delete(turnId);
+      return next;
+    });
+  }, []);
+
   const handleCommand = useCallback(
     async (transcript: string): Promise<VoiceCommandOutcome> => {
-      setExchange({ transcript, reply: "", streaming: true });
+      const turnId = nextTurnId.current++;
+      // Appended, not assigned — whatever is already in `history` (an
+      // earlier answer, its proposal cards) stays exactly where it is.
+      setHistory((current) => [...current, { id: turnId, transcript, reply: "", streaming: true }]);
 
       const controller = new AbortController();
       abortRef.current?.abort();
       abortRef.current = controller;
+
+      const patchTurn = (patch: Partial<Pick<Turn, "reply" | "streaming">>) => {
+        setHistory((current) => current.map((turn) => (turn.id === turnId ? { ...turn, ...patch } : turn)));
+      };
 
       try {
         const stream = await apiClient.coach.streamChat(scopeKey, transcript, { signal: controller.signal });
@@ -94,18 +138,21 @@ export default function VoiceScreen() {
         for await (const chunk of stream) {
           if (chunk.delta) {
             accumulated += chunk.delta;
-            setExchange({ transcript, reply: accumulated, streaming: true });
+            patchTurn({ reply: accumulated, streaming: true });
           }
           if (chunk.error) streamError = chunk.error;
           if (chunk.done) break;
         }
 
         if (streamError !== undefined) {
-          setExchange(null);
+          // Only THIS turn goes away — a failed follow-up must not take the
+          // conversation it followed on from down with it. The failure
+          // itself surfaces through the dock's status line, not the thread.
+          removeTurn(turnId);
           return { kind: "failed", message: streamError };
         }
 
-        setExchange({ transcript, reply: accumulated, streaming: false });
+        patchTurn({ reply: accumulated, streaming: false });
         // The turn is persisted server-side, so the Coach chat screen has to
         // refetch or the same conversation reads differently depending on
         // which door you came in through.
@@ -118,7 +165,7 @@ export default function VoiceScreen() {
         return { kind: "handoff" };
       } catch (err) {
         if (controller.signal.aborted) return { kind: "handoff" };
-        setExchange(null);
+        removeTurn(turnId);
         const status = (err as { status?: number } | undefined)?.status;
         return {
           kind: "failed",
@@ -133,7 +180,7 @@ export default function VoiceScreen() {
         abortRef.current = null;
       }
     },
-    [scopeKey],
+    [removeTurn, scopeKey],
   );
 
   const { state, start, stop, cancel, reset, openSettings } = useVoiceCapture({
@@ -152,14 +199,24 @@ export default function VoiceScreen() {
   // an answer already on screen (coming back to re-read a result must not
   // silently reopen the mic), and a transcript forwarded from the tracker,
   // which is run instead of asking the user to repeat themselves.
-  const hasAnswer = exchange !== null;
+  const hasAnswer = history.length > 0;
   useFocusEffect(
     useCallback(() => {
       analytics.track({ name: "screenViewed", payload: { screenName: "voice" } });
       if (typeof forwarded === "string" && forwarded.length > 0 && forwardedRef.current !== forwarded) {
         forwardedRef.current = forwarded;
         void handleCommand(forwarded).then((outcome) => {
-          if (outcome.kind === "failed") setExchange({ transcript: forwarded, reply: "", streaming: false });
+          // handleCommand already removed its own (empty) turn on failure —
+          // this re-adds just the transcript so the words the tracker's mic
+          // heard stay visible next to the error in the status line, since
+          // the user never got to see them appear live the way they would
+          // have on this screen's own mic.
+          if (outcome.kind === "failed") {
+            setHistory((current) => [
+              ...current,
+              { id: nextTurnId.current++, transcript: forwarded, reply: "", streaming: false },
+            ]);
+          }
         });
       } else if (!hasAnswer) {
         void start();
@@ -178,10 +235,6 @@ export default function VoiceScreen() {
     }, [analytics, cancel, forwarded, handleCommand, start]),
   );
 
-  useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [exchange?.reply]);
-
   const handleMicPress = useCallback(() => {
     if (state.status === "listening") {
       void stop();
@@ -192,7 +245,10 @@ export default function VoiceScreen() {
       return;
     }
     if (state.status === "processing") return;
-    setExchange(null);
+    // No history reset here. Starting a new recording is a follow-up turn
+    // in the same thread, not a fresh conversation — see the note on
+    // `history` above. `handleCommand` appends the new turn once there is
+    // a transcript to append; nothing needs to happen to the old ones now.
     void start();
   }, [openSettings, start, state.status, stop]);
 
@@ -201,7 +257,47 @@ export default function VoiceScreen() {
     [apply],
   );
 
-  const parsed = exchange === null ? null : extractCoachProposals(exchange.reply);
+  const dismissProposal = useCallback((turnId: number, index: number) => {
+    setDismissedProposals((current) => {
+      const next = new Map(current);
+      const existing = next.get(turnId) ?? EMPTY_DISMISSED;
+      const updated = new Set(existing);
+      updated.add(index);
+      next.set(turnId, updated);
+      return next;
+    });
+  }, []);
+
+  // Every turn, parsed once per render — each carries its own reply text,
+  // so a turn already on screen from an earlier command never re-parses
+  // when a later one streams in.
+  const turns = useMemo(
+    () =>
+      history.map((turn) => {
+        const parsed = extractCoachProposals(turn.reply);
+        const dismissed = dismissedProposals.get(turn.id) ?? EMPTY_DISMISSED;
+        const visibleProposals = parsed.proposals
+          .map((block, index) => ({ block, index }))
+          .filter(({ index }) => !dismissed.has(index));
+        return { turn, parsed, visibleProposals };
+      }),
+    [dismissedProposals, history],
+  );
+  const latestReply = history.length > 0 ? history[history.length - 1].reply : "";
+  const totalVisibleProposals = turns.reduce((sum, { visibleProposals }) => sum + visibleProposals.length, 0);
+
+  // Deferred by a frame, and keyed on the visible proposal count, the
+  // latest reply's text and the number of turns, so a scroll is triggered
+  // by a new turn appearing as much as by the current one streaming. The
+  // cards mount in the same commit as the reply that produced them, so a
+  // synchronous scrollToEnd measures a content size taken from before they
+  // laid out — which is how a batch of a dozen actions ended up with its
+  // Apply button parked below the fold with nothing on screen suggesting
+  // there was more card to scroll to.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [history.length, latestReply, totalVisibleProposals]);
 
   const statusLine = (() => {
     switch (state.status) {
@@ -215,7 +311,7 @@ export default function VoiceScreen() {
       case "unavailable":
         return state.message;
       default:
-        return exchange === null ? "Tap the mic and say what you need" : "Tap the mic to ask something else";
+        return !hasAnswer ? "Tap the mic and say what you need" : "Tap the mic to ask something else";
     }
   })();
 
@@ -236,7 +332,7 @@ export default function VoiceScreen() {
         contentContainerStyle={styles.bodyContent}
         keyboardShouldPersistTaps="handled"
       >
-        {exchange === null ? (
+        {!hasAnswer ? (
           <View style={styles.examples}>
             <Text style={styles.examplesLabel}>Try saying</Text>
             {EXAMPLES.map((example) => (
@@ -247,31 +343,47 @@ export default function VoiceScreen() {
             ))}
           </View>
         ) : (
-          <>
-            <View style={styles.saidBubble}>
-              <Text style={styles.saidLabel}>You said</Text>
-              <Text style={styles.saidText}>{exchange.transcript}</Text>
-            </View>
+          // Every turn stays mounted — a new recording appends a turn below
+          // the last one rather than replacing it, so a follow-up reads as
+          // a continuation of the same conversation, not a reset of it.
+          <View style={styles.thread}>
+            {turns.map(({ turn, parsed, visibleProposals }, turnPosition) => (
+              <View key={turn.id} style={styles.turn}>
+                {turnPosition > 0 ? <View style={styles.turnDivider} /> : null}
 
-            {parsed !== null && parsed.cleaned.length > 0 ? (
-              <View style={styles.replyBubble} accessibilityLiveRegion="polite">
-                <Text style={styles.replyText}>{parsed.cleaned}</Text>
+                <View style={styles.saidBubble}>
+                  <Text style={styles.saidLabel}>You said</Text>
+                  <Text style={styles.saidText}>{turn.transcript}</Text>
+                </View>
+
+                {parsed.cleaned.length > 0 ? (
+                  <View style={styles.replyBubble} accessibilityLiveRegion="polite">
+                    <Text style={styles.replyText}>{parsed.cleaned}</Text>
+                  </View>
+                ) : null}
+
+                {parsed.pending ? <Text style={styles.pendingText}>Preparing a change…</Text> : null}
+
+                {visibleProposals.length > 0 ? (
+                  <View style={styles.proposals}>
+                    {visibleProposals.length > 1 ? (
+                      <Text style={styles.proposalsLabel}>
+                        {visibleProposals.length} changes waiting for your OK
+                      </Text>
+                    ) : null}
+                    {visibleProposals.map(({ block, index }) => (
+                      <CoachProposalCard
+                        key={index}
+                        block={block}
+                        onApply={applyActions}
+                        onDismiss={() => dismissProposal(turn.id, index)}
+                      />
+                    ))}
+                  </View>
+                ) : null}
               </View>
-            ) : null}
-
-            {parsed !== null && parsed.pending ? (
-              <Text style={styles.pendingText}>Preparing a change…</Text>
-            ) : null}
-
-            {parsed?.proposals.map((block, index) => (
-              <CoachProposalCard
-                key={index}
-                block={block}
-                onApply={applyActions}
-                onDismiss={() => setExchange(null)}
-              />
             ))}
-          </>
+          </View>
         )}
       </ScrollView>
 
@@ -283,6 +395,11 @@ export default function VoiceScreen() {
         >
           {statusLine}
         </Text>
+
+        <CoachBudgetNotice
+          error={state.status === "error" ? state.message : null}
+          style={{ alignSelf: "stretch" }}
+        />
 
         <MicOrb
           status={state.status}
@@ -367,7 +484,39 @@ const styles = StyleSheet.create({
   },
   bodyContent: {
     padding: spacing.lg,
+    // Enough room under the last card that its Apply button never sits
+    // flush against the dock's top border.
+    paddingBottom: spacing.xxl,
+  },
+  // One gap step per turn — visibly looser than the gap between elements
+  // *within* a turn (`turn` below), so a follow-up reads as a new beat in
+  // the conversation rather than one more line of the previous one.
+  thread: {
+    gap: spacing.xxl,
+  },
+  turn: {
     gap: spacing.md,
+  },
+  // Marks where a follow-up turn starts, for every turn after the first.
+  // Deliberately short and centred rather than a full-width rule — a
+  // full-bleed line reads as a hard section break, which overstates what is
+  // still one continuous back-and-forth.
+  turnDivider: {
+    alignSelf: "center",
+    width: 32,
+    height: StyleSheet.hairlineWidth * 2,
+    backgroundColor: colors.border,
+    borderRadius: radii.full,
+  },
+  // Proposal cards get their own stack so several of them read as a set
+  // with an explicit gutter between them, rather than as one long run of
+  // bordered boxes sharing the transcript's spacing.
+  proposals: {
+    gap: spacing.md,
+  },
+  proposalsLabel: {
+    ...typography.label,
+    color: colors.mutedForegroundLight,
   },
   examples: {
     gap: spacing.sm,
@@ -376,6 +525,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
+    ...shadows.card,
   },
   examplesLabel: {
     ...typography.label,
@@ -400,6 +550,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     gap: spacing.xxs,
+    ...shadows.subtle,
   },
   saidLabel: {
     ...typography.label,
@@ -420,6 +571,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
+    ...shadows.subtle,
   },
   replyText: {
     ...typography.body,
@@ -434,9 +586,21 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
-    paddingBottom: spacing.lg,
+    // A touch more than the top padding: the tab bar (which owns the actual
+    // home-indicator/gesture-nav inset) sits right below this, so the dock
+    // needs its own bit of breathing room above it rather than relying on
+    // that inset to provide it.
+    paddingBottom: spacing.xl,
+    borderTopLeftRadius: radii.sheet,
+    borderTopRightRadius: radii.sheet,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+    // `shadows.raised` cast upward (negative height) rather than down: this
+    // panel is pinned to the bottom of the screen, so its shadow has to
+    // fall into the content above it to read as floating, not off-screen
+    // beneath the tab bar where nothing would ever see it.
+    ...shadows.raised,
+    shadowOffset: { width: 0, height: -shadows.raised.shadowOffset.height },
     backgroundColor: colors.card,
   },
   statusLine: {

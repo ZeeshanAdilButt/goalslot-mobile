@@ -30,7 +30,7 @@ export function TimelineSkeleton() {
 
       {Array.from({ length: ROW_COUNT }).map((_, index) => (
         <View key={`label-${index}`} style={[styles.hourLabel, { top: index * HOUR_HEIGHT - spacing.xs }]}>
-          <Skeleton width={26} height={8} borderRadius={radii.sm} />
+          <Skeleton width={26} height={8} borderRadius={radii.sm} style={styles.hourLabelSkeleton} />
         </View>
       ))}
 
@@ -63,9 +63,18 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
   },
+  // Right-aligned within the same gutter width the real Timeline's hour
+  // labels occupy (GUTTER_WIDTH - spacing.sm, textAlign "right"), rather
+  // than a flush-left box that used to land in a different spot the moment
+  // real data swapped in.
   hourLabel: {
     position: "absolute",
-    left: spacing.md,
+    left: 0,
+    width: GUTTER_WIDTH - spacing.sm,
+    alignItems: "flex-end",
+  },
+  hourLabelSkeleton: {
+    marginRight: spacing.xxs,
   },
   block: {
     position: "absolute",

@@ -30,15 +30,22 @@ export interface VoiceTabButtonProps {
   accessibilityState?: { selected?: boolean };
 }
 
-/** Diameter. Larger than the 44pt floor because this is the bar's one hero control. */
-const ORB_SIZE = 58;
+/** Diameter. Larger than the 44pt floor because this is the bar's one hero control, but no larger than the bar can actually host — see LIFT. */
+const ORB_SIZE = 50;
 
 /**
- * How far the orb sits above the bar's top edge. Two thirds of it clears the
- * line, which is enough to read as "raised" without the icon drifting off
- * the touch target the row provides.
+ * How far the orb sits above the bar's top edge.
+ *
+ * This is a budget, not a taste call. A bottom tab row is ~49-56dp tall, and
+ * the orb plus the "Voice" caption plus the caption's own line box all have
+ * to fit inside it once the orb has been pulled up by this much. At the
+ * original 58dp orb / 20dp lift the sum overflowed the row on Android and
+ * the launcher clipped the caption through its middle — the "collapsed in my
+ * bottom bar" report. 50 - 14 leaves the orb occupying 36dp of the row, which
+ * keeps a full line box for the caption underneath it while still lifting
+ * enough of the circle above the bar's top line to read as raised.
  */
-const LIFT = 20;
+const LIFT = 14;
 
 export function VoiceTabButton({ onPress, accessibilityState }: VoiceTabButtonProps) {
   const selected = accessibilityState?.selected === true;

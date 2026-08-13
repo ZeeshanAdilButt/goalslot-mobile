@@ -18,7 +18,14 @@
 // session list.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import {
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -36,6 +43,7 @@ import {
   formatDuration,
   genId,
   getLocalDateString,
+  resolveActiveBlock,
   updateTimeEntrySchema,
   type CreateTimeEntryInput,
   type Goal,
@@ -56,7 +64,12 @@ import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { outbox } from "@/lib/offline";
-import { goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import {
+  goalQueries,
+  scheduleQueries,
+  taskQueries,
+  timeEntryQueries,
+} from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
@@ -65,6 +78,15 @@ import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RECENT_SKELETON_ROWS = 4;
+
+/**
+ * Same resolution `app/(app)/index.tsx` uses to drive the Today screen's
+ * "FOCUS NOW" card (see its own `DEVICE_TIMEZONE` for the fuller "why not
+ * device-local Date getters" rationale) — `resolveActiveBlock` needs an
+ * explicit IANA zone, and this is the only one available without asking the
+ * user to configure one.
+ */
+const DEVICE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /**
  * The floating hamburger (app/(app)/_layout.tsx) is absolutely positioned at
@@ -115,10 +137,28 @@ const RING_HEIGHT_FRACTION = 0.34;
 /** Screen padding (spacing.xl) + card padding (spacing.xl), both sides. */
 const RING_HORIZONTAL_INSET = 4 * spacing.xl;
 
-const STATUS_META: Record<TimerStatus, { label: string; dotColor: string; pulse: boolean; textColor: string }> = {
-  idle: { label: "Ready to start", dotColor: colors.mutedForeground, pulse: false, textColor: colors.white },
-  running: { label: "Tracking", dotColor: colors.primary, pulse: true, textColor: colors.primary },
-  paused: { label: "Paused", dotColor: colors.primary, pulse: false, textColor: colors.primary },
+const STATUS_META: Record<
+  TimerStatus,
+  { label: string; dotColor: string; pulse: boolean; textColor: string }
+> = {
+  idle: {
+    label: "Ready to start",
+    dotColor: colors.mutedForeground,
+    pulse: false,
+    textColor: colors.white,
+  },
+  running: {
+    label: "Tracking",
+    dotColor: colors.primary,
+    pulse: true,
+    textColor: colors.primary,
+  },
+  paused: {
+    label: "Paused",
+    dotColor: colors.primary,
+    pulse: false,
+    textColor: colors.primary,
+  },
 };
 
 export default function TimerScreen() {
@@ -136,8 +176,12 @@ export default function TimerScreen() {
   const resume = useTimerStore((s) => s.resume);
   const stop = useTimerStore((s) => s.stop);
 
-  const reminderIntervalMinutes = useSettingsStore((s) => s.timerReminderIntervalMinutes);
-  const setReminderIntervalMinutes = useSettingsStore((s) => s.setTimerReminderIntervalMinutes);
+  const reminderIntervalMinutes = useSettingsStore(
+    (s) => s.timerReminderIntervalMinutes,
+  );
+  const setReminderIntervalMinutes = useSettingsStore(
+    (s) => s.setTimerReminderIntervalMinutes,
+  );
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   // Which already-logged entry is mid-attach, so its history row can show
@@ -152,10 +196,17 @@ export default function TimerScreen() {
   const tasksQuery = useQuery(taskQueries.list());
   const goalsQuery = useQuery(goalQueries.list());
   const recentQuery = useQuery(timeEntryQueries.recent());
+  // Only fetched to drive the auto-select-on-open below — nothing else on
+  // this screen reads a block's start/end/title, so there is no ring/countdown
+  // UI here to keep updated live the way index.tsx's copy of this query does.
+  const scheduleQuery = useQuery(scheduleQueries.weekly());
 
   useFocusEffect(
     useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "timer" } });
+      analytics.track({
+        name: "screenViewed",
+        payload: { screenName: "timer" },
+      });
     }, [analytics]),
   );
 
@@ -166,26 +217,159 @@ export default function TimerScreen() {
   // params: this screen can remount (tab switch) while the params are still
   // in the URL, and firing `start()` a second time against an already-
   // running timer would silently reset its elapsed time.
-  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{ autostart?: string; goalId?: string }>();
+  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{
+    autostart?: string;
+    goalId?: string;
+  }>();
   const autoStartFired = useRef(false);
   useEffect(() => {
-    if (autostart !== "1" || !autoStartGoalId || autoStartFired.current || status !== "idle") return;
+    if (
+      autostart !== "1" ||
+      !autoStartGoalId ||
+      autoStartFired.current ||
+      status !== "idle"
+    )
+      return;
     autoStartFired.current = true;
     start(undefined, autoStartGoalId);
     hapticLight();
     analytics.track({ name: "timerStarted", payload: { taskId: undefined } });
   }, [analytics, autoStartGoalId, autostart, start, status]);
 
+  // True once the user has made a deliberate pick THIS visit to the screen
+  // (via the tracking picker), which is what stops the auto-select effect
+  // below from clobbering a choice they only just made — including "Just
+  // track time", which clears both ids and would otherwise look identical to
+  // "nothing selected yet" to that effect.
+  const userSelectedRef = useRef(false);
+
+  /**
+   * FEATURE: auto-select-on-open — mirrors dw-time-web's absence of this
+   * (there is no equivalent there), matching what `app/(app)/index.tsx`'s
+   * "FOCUS NOW" card already does with the same helper: default the tracker
+   * to whatever schedule block is live right now, so starting a session
+   * during a planned block doesn't require picking it by hand every time.
+   *
+   * Guarded four ways, all required:
+   *   - `autostart === "1"` — the widget deep-link above names its own
+   *     explicit goal and is about to call `start()` (or already has,
+   *     earlier in this same effect flush — see below). Deferring to it
+   *     entirely, rather than only skipping once it's visibly fired, closes
+   *     a real race: both effects close over the SAME render's `status`
+   *     ("idle"), since the deep-link effect's `start()` mutates the zustand
+   *     store synchronously but doesn't force a re-render before this effect
+   *     also runs in the same flush. Without this guard, this effect could
+   *     still see "idle", resolve a *different* schedule block, and call
+   *     `retarget()` right after — which is no longer the no-op it looks
+   *     like, because by the time `retarget()` itself reads `get().status`
+   *     the deep-link's `start()` has already flipped it to "running",
+   *     silently overwriting the goal the widget was asked to start.
+   *   - `status !== "idle"` — never re-point a session that's already
+   *     running or paused. A live session's attribution is the user's to
+   *     change, not this effect's.
+   *   - `userSelectedRef` — never override a pick the user already made this
+   *     visit, including a deliberate "Just track time".
+   *   - `selectedTask`/`selectedGoal` already set — covers a fast remount
+   *     mid-session without needing to know why. This is also what makes a
+   *     one-shot "has it ever fired" latch both unnecessary AND actively
+   *     wrong to add back: once this effect *does* auto-select something,
+   *     that same check stops it from running again on its own. A latch
+   *     otherwise permanently locks the effect out the first time it ever
+   *     sees a *reason* to skip — including the ordinary "a session is
+   *     already running" case — so returning to an idle, unattributed
+   *     screen later (a different block now live, after that earlier
+   *     session ended) would silently never auto-select again for the rest
+   *     of this screen's mounted lifetime. Re-running on every dependency
+   *     change is what makes that later block get picked up correctly, and
+   *     it's cheap: `resolveActiveBlock` is a plain array scan, not a
+   *     fetch.
+   */
+  useEffect(() => {
+    if (
+      autostart === "1" ||
+      status !== "idle" ||
+      userSelectedRef.current ||
+      selectedTask !== null ||
+      selectedGoal !== null
+    ) {
+      return;
+    }
+    // Wait for every list this needs to resolve ids against — an
+    // undefined-vs-empty distinction matters here (a still-loading query is
+    // `undefined`, a genuinely empty one is `[]`), so this can't just check
+    // `.length`.
+    if (!scheduleQuery.data || !tasksQuery.data || !goalsQuery.data) return;
+
+    const activeBlock = resolveActiveBlock(
+      scheduleQuery.data,
+      new Date(),
+      DEVICE_TIMEZONE,
+    );
+    const blockGoalId = activeBlock?.goalId ?? activeBlock?.goal?.id;
+    if (!blockGoalId) return;
+    const goal = goalsQuery.data.find((g) => g.id === blockGoalId);
+    if (!goal) return;
+
+    // A block can name several tasks; there's no ordering signal to prefer
+    // one over another, so the first is an acceptable simplification (per
+    // this feature's brief) rather than guessing at intent.
+    const blockTaskId = activeBlock?.tasks?.[0]?.id;
+    const task = blockTaskId
+      ? tasksQuery.data.find((t) => t.id === blockTaskId)
+      : undefined;
+
+    // Re-checks LIVE store state right before mutating anything — closes a
+    // real race, not a theoretical one: `status` above is the value this
+    // effect closed over at render time, which can be a beat stale if the
+    // persisted store (zustand `persist`, rehydrated from AsyncStorage
+    // asynchronously on cold start) finishes hydrating *between* that
+    // render and this effect actually running. If a session was already
+    // running before this screen ever mounted, this effect could still see
+    // a stale "idle" here, resolve some other block entirely, and call
+    // `retarget()` on what is — by the time `retarget()` itself reads
+    // `get().status` — now a genuinely live session, silently re-pointing
+    // it out from under the user. (Confirmed live, not hypothetical: a
+    // 10:51am session survived several reinstalls correctly, then had its
+    // label swapped to an unrelated goal with no restart, elapsed time
+    // unbroken — this is what did that.) `retarget()`'s own idle check
+    // protects the *opposite* direction (a truly idle store), so it can't
+    // catch this — the whole failure mode IS a store that stopped being
+    // idle in between.
+    if (useTimerStore.getState().status !== "idle") return;
+
+    if (task) {
+      setSelectedTask(task);
+      setSelectedGoal(null);
+      retarget(task.id, task.goalId);
+    } else {
+      setSelectedGoal(goal);
+      setSelectedTask(null);
+      retarget(undefined, goal.id);
+    }
+  }, [
+    goalsQuery.data,
+    retarget,
+    scheduleQuery.data,
+    selectedGoal,
+    selectedTask,
+    status,
+    tasksQuery.data,
+  ]);
+
   // What's actually being tracked right now — resolved from the store's
   // persisted ids against the loaded task/goal lists, so this is correct
   // even right after an app restart (before this screen ever set local
   // picker state). Falls back to the pre-start local selection while idle.
   const activeTask = useMemo(
-    () => tasksQuery.data?.find((t) => t.id === timerTaskId) ?? (status === "idle" ? selectedTask : null),
+    () =>
+      tasksQuery.data?.find((t) => t.id === timerTaskId) ??
+      (status === "idle" ? selectedTask : null),
     [tasksQuery.data, timerTaskId, status, selectedTask],
   );
   const activeGoal = useMemo(
-    () => goalsQuery.data?.find((g) => g.id === timerGoalId) ?? (status === "idle" ? selectedGoal : null),
+    () =>
+      goalsQuery.data?.find((g) => g.id === timerGoalId) ??
+      (status === "idle" ? selectedGoal : null),
     [goalsQuery.data, timerGoalId, status, selectedGoal],
   );
   const resolvedLabel = activeTask?.title ?? activeGoal?.title ?? null;
@@ -201,8 +385,10 @@ export default function TimerScreen() {
   // never be shown against a new one.
   const targetKey = `${timerTaskId ?? ""}|${timerGoalId ?? ""}`;
   const labelLatch = useRef<{ key: string; label: string } | null>(null);
-  if (resolvedLabel !== null) labelLatch.current = { key: targetKey, label: resolvedLabel };
-  const latchedLabel = labelLatch.current?.key === targetKey ? labelLatch.current.label : null;
+  if (resolvedLabel !== null)
+    labelLatch.current = { key: targetKey, label: resolvedLabel };
+  const latchedLabel =
+    labelLatch.current?.key === targetKey ? labelLatch.current.label : null;
 
   // Null here means "there is no title to show", which since one-tap
   // tracking landed covers two genuinely different situations: nothing is
@@ -226,12 +412,19 @@ export default function TimerScreen() {
   const activeColor = activeGoal?.color ?? activeTask?.goal?.color ?? null;
   // A task shows its parent goal; a goal shows its category — either way the
   // second line answers "which bucket does this belong to?".
-  const activeSublabel = activeTask ? (activeTask.goal?.title ?? null) : (activeGoal?.category ?? null);
+  const activeSublabel = activeTask
+    ? (activeTask.goal?.title ?? null)
+    : (activeGoal?.category ?? null);
 
   // Puts a persistent entry in the notification shade for the life of the
   // session, so a running timer is visible from outside the app. Degrades to
   // nothing at all if notification permission is refused.
-  useTimerNotification({ status, startedAt, pausedElapsedMs, label: activeLabel });
+  useTimerNotification({
+    status,
+    startedAt,
+    pausedElapsedMs,
+    label: activeLabel,
+  });
 
   // The recurring "still strictly focused?" nudge, ported from web's
   // REMINDER control. Separate from the ongoing shade entry above: these are
@@ -257,17 +450,30 @@ export default function TimerScreen() {
    * time-entries.service.ts) — no backend change was needed for this.
    */
   const attachToEntry = useCallback(
-    async (entry: TimeEntry, patch: { taskId?: string; taskTitle?: string; goalId?: string }) => {
+    async (
+      entry: TimeEntry,
+      patch: { taskId?: string; taskTitle?: string; goalId?: string },
+    ) => {
       setAttachingEntryId(entry.id);
       try {
-        await apiClient.timeEntries.update(entry.id, updateTimeEntrySchema.parse(patch));
+        await apiClient.timeEntries.update(
+          entry.id,
+          updateTimeEntrySchema.parse(patch),
+        );
         hapticCompletion();
-        void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+        void queryClient.invalidateQueries({
+          queryKey: timeEntryQueries.timeEntryQueries.all,
+        });
         // The goal's logged hours move with the entry, so the goal list is
         // stale too — Reports and Today both read it.
-        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+        void queryClient.invalidateQueries({
+          queryKey: goalQueries.goalQueries.all,
+        });
       } catch {
-        Alert.alert("Couldn't attach that", "Your logged time is safe. Please try again.");
+        Alert.alert(
+          "Couldn't attach that",
+          "Your logged time is safe. Please try again.",
+        );
       } finally {
         setAttachingEntryId(null);
       }
@@ -279,6 +485,7 @@ export default function TimerScreen() {
     (task: Task) => {
       const target = pickerTarget;
       setPickerTarget(null);
+      userSelectedRef.current = true;
       if (target?.kind === "entry") {
         void attachToEntry(target.entry, {
           taskId: task.id,
@@ -299,7 +506,7 @@ export default function TimerScreen() {
   const handlePickGoal = useCallback(
     (goal: Goal) => {
       const target = pickerTarget;
-      setPickerTarget(null);
+      userSelectedRef.current = true;
       if (target?.kind === "entry") {
         void attachToEntry(target.entry, { goalId: goal.id });
         return;
@@ -307,6 +514,13 @@ export default function TimerScreen() {
       setSelectedGoal(goal);
       setSelectedTask(null);
       retarget(undefined, goal.id);
+      // Deliberately does NOT close the sheet (contrast handlePickTask,
+      // which does via `setPickerTarget(null)` above it). Picking a goal is
+      // step one of the cascading flow TrackingPicker now offers: if the
+      // goal has tasks of its own, the sheet stays open showing them as a
+      // scoped quick-pick, and TrackingPicker itself decides when to call
+      // `onClose` — immediately if the goal has no tasks to narrow to,
+      // otherwise once the user picks one of them or backs out.
     },
     [attachToEntry, pickerTarget, retarget],
   );
@@ -314,6 +528,7 @@ export default function TimerScreen() {
   /** "Just track time" — clears the target, pre-start or mid-run. */
   const handlePickNone = useCallback(() => {
     setPickerTarget(null);
+    userSelectedRef.current = true;
     setSelectedTask(null);
     setSelectedGoal(null);
     retarget(undefined, undefined);
@@ -325,13 +540,19 @@ export default function TimerScreen() {
     // from its history row afterwards — or left unattributed for good.
     start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
     hapticLight();
-    analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
+    analytics.track({
+      name: "timerStarted",
+      payload: { taskId: selectedTask?.id },
+    });
   }, [analytics, selectedGoal, selectedTask, start]);
 
   const handlePause = useCallback(() => {
     pause();
     hapticLight();
-    analytics.track({ name: "timerPaused", payload: { taskId: timerTaskId ?? undefined } });
+    analytics.track({
+      name: "timerPaused",
+      payload: { taskId: timerTaskId ?? undefined },
+    });
   }, [analytics, pause, timerTaskId]);
 
   const handleResume = useCallback(() => {
@@ -397,7 +618,10 @@ export default function TimerScreen() {
         // current running segment's start, which both platforms' `resume`
         // resets to now and both platforms' `pause` sets to null — so a
         // session stopped from Paused sends nothing, same as on web.
-        startedAt: stoppedStartedAt !== null ? new Date(stoppedStartedAt).toISOString() : undefined,
+        startedAt:
+          stoppedStartedAt !== null
+            ? new Date(stoppedStartedAt).toISOString()
+            : undefined,
       });
     } catch {
       stopping.current = false;
@@ -417,9 +641,13 @@ export default function TimerScreen() {
       });
       setSelectedTask(null);
       setSelectedGoal(null);
-      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+      void queryClient.invalidateQueries({
+        queryKey: timeEntryQueries.timeEntryQueries.all,
+      });
       if (stoppedGoalId) {
-        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+        void queryClient.invalidateQueries({
+          queryKey: goalQueries.goalQueries.all,
+        });
       }
     };
 
@@ -476,13 +704,26 @@ export default function TimerScreen() {
     } finally {
       stopping.current = false;
     }
-  }, [activeTask, analytics, knownLabel, startedAt, status, stop, timerGoalId, timerTaskId]);
+  }, [
+    activeTask,
+    analytics,
+    knownLabel,
+    startedAt,
+    status,
+    stop,
+    timerGoalId,
+    timerTaskId,
+  ]);
 
   // The picker serves three jobs from one sheet — setting up the next run,
   // re-pointing a live one, and filing an entry that's already in history —
   // so what counts as "currently selected" depends on which one opened it.
   const pickerMode =
-    pickerTarget?.kind === "entry" ? "logged" : status === "idle" ? "prestart" : "running";
+    pickerTarget?.kind === "entry"
+      ? "logged"
+      : status === "idle"
+        ? "prestart"
+        : "running";
   const pickerSelectedId =
     pickerTarget?.kind === "entry"
       ? (pickerTarget.entry.taskId ?? pickerTarget.entry.goalId ?? null)
@@ -493,7 +734,11 @@ export default function TimerScreen() {
   const statusMeta = STATUS_META[status];
   const ringSize = Math.max(
     150,
-    Math.min(MAX_RING_SIZE, width - RING_HORIZONTAL_INSET, height * RING_HEIGHT_FRACTION),
+    Math.min(
+      MAX_RING_SIZE,
+      width - RING_HORIZONTAL_INSET,
+      height * RING_HEIGHT_FRACTION,
+    ),
   );
 
   // Fixed wall-clock start beats a second copy of the elapsed count already
@@ -505,17 +750,45 @@ export default function TimerScreen() {
         ? "Paused"
         : "Elapsed";
 
-  return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+  // The whole hero, hoisted into one element so it can be handed to the
+  // session list as its header — see `SessionHistory`'s `ListHeaderComponent`
+  // doc for why this screen has to have exactly one scroll container. The
+  // no-entries branches below reuse the identical element inside a plain
+  // ScrollView, so the screen looks and scrolls the same however much
+  // history exists.
+  const hero = (
+    <>
       <View style={styles.header}>
         <Text style={styles.eyebrow}>Focus</Text>
         <Text style={styles.headerTitle}>Time Tracker</Text>
       </View>
 
-      <View style={styles.timerCard}>
+      <View
+        style={[
+          styles.timerCard,
+          // A running/paused session gets a hairline of its own goal's color
+          // and steps up to the next elevation on the shadow ramp (see
+          // theme/foundation.ts's "THE RAMP" note: `raised` is for a surface
+          // that's actively floating over the rest of the screen, which is
+          // exactly what the hero card is while a session is live). Idle
+          // stays on the neutral border and the plain `card` elevation —
+          // this is a state cue, not decoration, so it only appears when
+          // there's a state to cue.
+          status !== "idle" && activeColor
+            ? { borderColor: activeColor, ...shadows.raised }
+            : status !== "idle"
+              ? shadows.raised
+              : null,
+        ]}
+      >
         <View style={styles.statusPill}>
           <PulsingDot color={statusMeta.dotColor} pulse={statusMeta.pulse} />
-          <Text style={[styles.statusPillText, status !== "idle" && { color: statusMeta.textColor }]}>
+          <Text
+            style={[
+              styles.statusPillText,
+              status !== "idle" && { color: statusMeta.textColor },
+            ]}
+          >
             {statusMeta.label}
           </Text>
         </View>
@@ -559,31 +832,46 @@ export default function TimerScreen() {
           one path that writes a TimeEntry. See the component's header for
           why this mic behaves differently from the one in the tab bar. */}
       <TrackerVoiceButton onStopSession={() => void handleStop()} />
+    </>
+  );
 
-      <View style={styles.listArea}>
-        {recentQuery.isPending ? (
+  return (
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      {recentQuery.isPending ? (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {hero}
           <View style={styles.skeletonArea}>
             {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
               <SkeletonListItem key={index} showLeading={false} />
             ))}
           </View>
-        ) : recentQuery.isError ? (
-          <ErrorState message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
-        ) : !recentQuery.data || recentQuery.data.length === 0 ? (
+        </ScrollView>
+      ) : recentQuery.isError ? (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {hero}
+          <ErrorState
+            message="Couldn't load recent entries."
+            onRetry={() => void recentQuery.refetch()}
+          />
+        </ScrollView>
+      ) : !recentQuery.data || recentQuery.data.length === 0 ? (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {hero}
           <EmptyState
             message="No sessions yet"
             description="Just press start — logged sessions land here. Attaching a goal is optional."
           />
-        ) : (
-          <SessionHistory
-            entries={recentQuery.data}
-            refreshing={recentQuery.isFetching && !recentQuery.isPending}
-            onRefresh={() => void recentQuery.refetch()}
-            onAttachGoal={(entry) => setPickerTarget({ kind: "entry", entry })}
-            attachingEntryId={attachingEntryId}
-          />
-        )}
-      </View>
+        </ScrollView>
+      ) : (
+        <SessionHistory
+          ListHeaderComponent={hero}
+          entries={recentQuery.data}
+          refreshing={recentQuery.isFetching && !recentQuery.isPending}
+          onRefresh={() => void recentQuery.refetch()}
+          onAttachGoal={(entry) => setPickerTarget({ kind: "entry", entry })}
+          attachingEntryId={attachingEntryId}
+        />
+      )}
 
       <TrackingPicker
         visible={pickerTarget !== null}
@@ -623,13 +911,21 @@ function PulsingDot({ color, pulse }: { color: string; pulse: boolean }) {
       opacity.value = 1;
       return;
     }
-    opacity.value = withRepeat(withTiming(0.3, { duration: 700, easing: Easing.inOut(Easing.ease) }), -1, true);
+    opacity.value = withRepeat(
+      withTiming(0.3, { duration: 700, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true,
+    );
     return () => cancelAnimation(opacity);
   }, [pulse, reduceMotion, opacity]);
 
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
-  return <Animated.View style={[styles.statusDot, { backgroundColor: color }, animatedStyle]} />;
+  return (
+    <Animated.View
+      style={[styles.statusDot, { backgroundColor: color }, animatedStyle]}
+    />
+  );
 }
 
 const styles = StyleSheet.create({
@@ -676,6 +972,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderRadius: radii.full,
     backgroundColor: colors.foreground,
+    // "A control seated ON a surface" — theme/foundation.ts's own rubric for
+    // when to reach for `shadows.subtle` — is exactly what this pill is
+    // sitting on the card. It had no elevation of its own before, so it read
+    // as a flat sticker rather than a chip resting on the hero.
+    ...shadows.subtle,
   },
   statusDot: {
     width: 6,
@@ -688,8 +989,16 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     color: colors.white,
   },
-  listArea: {
-    flex: 1,
+  /**
+   * Used by the three no-history branches, which scroll a plain ScrollView
+   * rather than the session list. `paddingBottom` clears the tab bar: its
+   * centre control is a circle lifted out of the row (see
+   * components/voice/VoiceTabButton.tsx), so the bar occludes more than its
+   * own height and content ending flush at the viewport bottom would sit
+   * underneath it.
+   */
+  scrollContent: {
+    paddingBottom: spacing.huge,
   },
   skeletonArea: {
     paddingHorizontal: spacing.xl,

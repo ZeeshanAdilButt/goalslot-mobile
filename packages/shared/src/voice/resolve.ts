@@ -134,6 +134,26 @@ function sortTokens(text: string): string {
   return text.split(' ').sort().join(' ')
 }
 
+/**
+ * The same text with every space closed up.
+ *
+ * Where a name is split is the single thing a recognizer is least reliable
+ * about on an invented brand name, because it has no dictionary entry to
+ * anchor on: "OloStep" comes back as "olo step" as readily as "olostep", and
+ * a goal stored as "Olo Step" hits the same problem in reverse. Comparing
+ * the spaceless skeletons makes that difference cost nothing, which is what
+ * "whitespace-insensitive" has to mean — the token-wise comparisons above
+ * cannot see it, since they are built on the very split that moved.
+ *
+ * This is a floor, never a ceiling: it joins the max() below, so it can only
+ * rescue a pair the other readings undersold. It stays honest about
+ * genuinely different names because it is still an edit ratio over the whole
+ * string — "deen" against "deenfitnesstracker" scores 0.22, not 1.
+ */
+function compact(text: string): string {
+  return text.replace(/ /g, '')
+}
+
 /** How much of `from`, weighted by word length, is accounted for by `to`. */
 function coverage(from: readonly string[], to: readonly string[]): number {
   let matched = 0
@@ -187,6 +207,7 @@ export function nameSimilarity(a: string, b: string): number {
     Math.max(
       editRatio(left, right),
       editRatio(sortTokens(left), sortTokens(right)),
+      editRatio(compact(left), compact(right)),
       tokenOverlap(left, right),
       soundsTheSame(left, right) ? PHONETIC_SCORE : 0,
     ),

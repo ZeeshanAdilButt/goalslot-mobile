@@ -493,7 +493,7 @@ export default function TasksScreen() {
       <View style={styles.listArea}>{content}</View>
 
       <Pressable
-        style={styles.fab}
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
         onPress={openQuickAdd}
         hitSlop={8}
         accessibilityRole="button"
@@ -792,6 +792,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     ...shadows.fab,
+  },
+  // Every other pressable on this screen (rows, swipe actions) gives some
+  // kind of feedback under a finger; the FAB — the screen's most-used
+  // control — had none. A flat opacity dip is enough to read as "pressed"
+  // without pulling in Reanimated for a one-off static state.
+  fabPressed: {
+    opacity: 0.85,
   },
 
   // --- Reschedule / Move sheets (same shape, so one set of styles) ---

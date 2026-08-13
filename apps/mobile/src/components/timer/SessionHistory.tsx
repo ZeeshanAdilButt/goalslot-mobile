@@ -87,6 +87,19 @@ export interface SessionHistoryProps {
   onAttachGoal: (entry: TimeEntry) => void;
   /** Id of the entry currently being saved, so its row can show the in-flight state. */
   attachingEntryId?: string | null;
+  /**
+   * Rendered above the first row, inside this list's own scroll view.
+   *
+   * The Timer screen passes its whole hero (title, ring, target, reminder
+   * picker, transport controls) through here rather than stacking it above
+   * the list as a sibling. That's what makes the screen scrollable: the hero
+   * is now taller than a phone viewport on its own, so as siblings it
+   * squeezed this list to nothing and there was no scroll container anywhere
+   * to reach either. Feeding it to the list instead gives the screen exactly
+   * one scroll view — and keeps FlashList's virtualization, which nesting it
+   * inside a ScrollView would have broken.
+   */
+  ListHeaderComponent?: React.ReactElement | null;
 }
 
 export function SessionHistory({
@@ -95,12 +108,14 @@ export function SessionHistory({
   onRefresh,
   onAttachGoal,
   attachingEntryId,
+  ListHeaderComponent,
 }: SessionHistoryProps) {
   const items = useMemo(() => buildItems(entries), [entries]);
 
   return (
     <FlashList
       data={items}
+      ListHeaderComponent={ListHeaderComponent}
       keyExtractor={(item) => item.key}
       // Lets FlashList recycle headers and rows separately instead of
       // reusing one cell shape for both.

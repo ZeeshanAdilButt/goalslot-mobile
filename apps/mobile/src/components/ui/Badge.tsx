@@ -99,11 +99,11 @@ const styles = StyleSheet.create({
   },
   sizeSm: {
     paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
+    paddingVertical: spacing.xxs, // badge.tsx `py-0.5` (2px) — was an off-scale 3px
   },
   sizeMd: {
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs + 1,
+    paddingVertical: spacing.xs, // one real step up from `sizeSm`, was an off-scale 5px
   },
   label: {
     ...typography.caption, // 11/semibold/uppercase — see the header note on why not 10px

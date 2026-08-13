@@ -17,6 +17,7 @@ export {
   blockDensity,
   blockStatus,
   getDayWindow,
+  HOUR_HEIGHT,
   isWithinWindow,
   minuteToY,
   positionBlocks,

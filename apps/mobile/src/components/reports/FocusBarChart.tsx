@@ -27,6 +27,8 @@ import Animated, {
 } from "react-native-reanimated";
 import Svg, { Line, Rect, Text as SvgText } from "react-native-svg";
 
+import { formatDuration } from "@goalslot/shared";
+
 import type { DayBucket } from "@/components/reports/aggregate";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { colors, spacing } from "@/theme/tokens";
@@ -112,9 +114,13 @@ export interface FocusBarChartProps {
   width: number;
   /** Label every Nth bar. 1 for a week (7 bars), ~7 for a month (28-31 bars). */
   labelEvery?: number;
+  /** `dateKey` of the day currently drilled into, if any — drawn with a highlight. */
+  selectedDateKey?: string | null;
+  /** Fires with a bucket's `dateKey` when its column is tapped. Omit to render a static, unpressable chart. */
+  onSelectDay?: (dateKey: string) => void;
 }
 
-export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartProps) {
+export function FocusBarChart({ buckets, width, labelEvery = 1, selectedDateKey, onSelectDay }: FocusBarChartProps) {
   // One listener for the whole chart rather than one per bar — a month view
   // would otherwise register 31 AccessibilityInfo subscriptions.
   const reduceMotion = useReduceMotion();
@@ -142,9 +148,26 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
   const minLabelGap = Math.max(1, Math.ceil(LABEL_MIN_WIDTH / Math.max(slot, 1)));
 
   const gridFractions = [0, 0.5, 1];
+  const chartHeight = PLOT_HEIGHT + LABEL_ROW_HEIGHT;
+  const selectedIndex = buckets.findIndex((bucket) => bucket.dateKey === selectedDateKey);
 
   return (
-    <Svg width={width} height={PLOT_HEIGHT + LABEL_ROW_HEIGHT}>
+    <Svg width={width} height={chartHeight}>
+      {selectedIndex >= 0 ? (
+        // Painted first so grid, bars and labels all sit on top of it — a
+        // full-height tint is what makes the selection legible even on a
+        // near-zero bar, where the bar's own colour change is too small to
+        // notice.
+        <Rect
+          x={Y_AXIS_WIDTH + selectedIndex * slot}
+          y={0}
+          width={slot}
+          height={chartHeight}
+          rx={4}
+          fill={colors.primaryMuted}
+        />
+      ) : null}
+
       {gridFractions.map((fraction) => {
         const y = baselineY - PLOT_HEIGHT * fraction;
         return (
@@ -179,6 +202,7 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
       {buckets.map((bucket, index) => {
         const x = Y_AXIS_WIDTH + index * slot + gap / 2;
         const targetHeight = maxMinutes > 0 ? (bucket.minutes / scaleMax) * PLOT_HEIGHT : 0;
+        const isSelected = bucket.dateKey === selectedDateKey;
         const color = bucket.minutes === 0 ? colors.border : bucket.isToday ? colors.primaryDark : colors.foreground;
 
         return (
@@ -188,7 +212,9 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
             width={barWidth}
             baselineY={baselineY}
             targetHeight={targetHeight}
-            color={bucket.isFuture ? colors.secondary : color}
+            // Selected wins over every other state — including "today" — so
+            // tapping today's own bar still visibly confirms the tap.
+            color={bucket.isFuture ? colors.secondary : isSelected ? colors.primary : color}
             delay={index * perBarDelay}
             radius={radius}
             reduceMotion={reduceMotion}
@@ -205,9 +231,13 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
         // beside a scheduled label drew both, and two 10pt day-numbers 8pt
         // apart overlap into an unreadable smear. Today wins the collision;
         // the scheduled label next to it is dropped.
+        const isSelected = bucket.dateKey === selectedDateKey;
         const isCollidingWithToday =
           todayIndex >= 0 && !bucket.isToday && Math.abs(index - todayIndex) < minLabelGap;
-        const shouldLabel = bucket.isToday || (index % labelEvery === 0 && !isCollidingWithToday);
+        // A selected label is always drawn, same as today's — the whole
+        // point of tapping a day is to single it out, so its label can't be
+        // the one a busy month view decides to skip.
+        const shouldLabel = bucket.isToday || isSelected || (index % labelEvery === 0 && !isCollidingWithToday);
         if (!shouldLabel) return null;
         return (
           <SvgText
@@ -215,14 +245,36 @@ export function FocusBarChart({ buckets, width, labelEvery = 1 }: FocusBarChartP
             x={Y_AXIS_WIDTH + index * slot + slot / 2}
             y={baselineY + LABEL_ROW_HEIGHT - 4}
             fontSize={10}
-            fontWeight={bucket.isToday ? "700" : "400"}
-            fill={bucket.isToday ? colors.foreground : colors.mutedForeground}
+            fontWeight={bucket.isToday || isSelected ? "700" : "400"}
+            fill={bucket.isToday || isSelected ? colors.foreground : colors.mutedForeground}
             textAnchor="middle"
           >
             {bucket.label}
           </SvgText>
         );
       })}
+
+      {onSelectDay
+        ? // Invisible hit targets, one per column, drawn last so they sit
+          // above the bars and grab the tap instead of a bar underneath
+          // eating it. A transparent fill still registers touches in
+          // react-native-svg — hit-testing is by shape geometry, not pixel
+          // alpha — and a full-height target is far easier to hit than the
+          // bar itself, which can be a couple of points tall.
+          buckets.map((bucket, index) => (
+            <Rect
+              key={`hit-${bucket.dateKey}`}
+              x={Y_AXIS_WIDTH + index * slot}
+              y={0}
+              width={slot}
+              height={chartHeight}
+              fill="transparent"
+              onPress={() => onSelectDay(bucket.dateKey)}
+              accessible
+              accessibilityLabel={`${bucket.label}, ${formatDuration(bucket.minutes)}${bucket.dateKey === selectedDateKey ? ", selected" : ""}`}
+            />
+          ))
+        : null}
     </Svg>
   );
 }
