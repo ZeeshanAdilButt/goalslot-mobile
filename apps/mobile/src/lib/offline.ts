@@ -23,6 +23,7 @@ import {
 import { apiClient, notify } from "./api-client";
 import { asyncStorageAdapter } from "./async-storage-adapter";
 import { deriveOnline } from "./derive-online";
+import { droppedTimeEntryMessage } from "./dropped-time-entry-message";
 import { messagingClient } from "./messaging-client";
 import { goalQueries, messagingQueries, scheduleQueries, taskQueries, timeEntryQueries } from "./queries";
 import { queryClient } from "./query-client";
@@ -107,9 +108,21 @@ operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("sc
 // far more sessions, and a "Discard" button standing between the user and
 // their own measured time. Queuing it here means an offline stop is banked
 // and replayed on reconnect like every other create.
+//
+// `onDropped` covers the case none of the above prevents: the queued replay
+// itself gets definitively rejected (e.g. a FREE-plan user already at their
+// daily entry cap by the time connectivity returns — through another device,
+// the web app, or another queued entry syncing first). Before the shared
+// engine grew this hook, that drop was silent: the outbox entry just
+// vanished, same as any other rejected replay, with no equivalent of the
+// live path's "Couldn't save time entry" alert. `messaging-send` below reacts
+// to its own definite rejections inline inside `execute` because it needs to
+// patch a cache entry synchronously with the throw; this one has no cache
+// entry to patch, so it uses the engine's generic hook instead.
 operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry-create", {
   execute: async (payload) => (await apiClient.timeEntries.create(payload)).data,
   invalidateKeys: [timeEntryQueries.timeEntryQueries.all],
+  onDropped: (payload) => notify(droppedTimeEntryMessage(payload)),
 });
 
 // A message the user sent while offline.
