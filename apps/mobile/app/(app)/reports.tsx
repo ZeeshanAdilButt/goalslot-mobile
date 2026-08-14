@@ -1,27 +1,11 @@
-// Reports tab: a deliberately small analytics view, not a port of the web
-// app's multi-card recharts dashboard (see DECISIONS.md — Reports was
-// deferred from v1, and the discovery notes said if it's ever built it
-// should condense to a handful of stat tiles plus charts, nothing more).
-// There is no reports API in `packages/shared` and this screen doesn't add
-// one: everything is computed client-side by ./src/components/reports/
-// aggregate.ts from data the existing query factories already expose.
+// Reports tab: a deliberately small analytics view, computed client-side by
+// ./src/components/reports/aggregate.ts — there is no reports API.
 //
-// Concepts mirrored from dw-time-web (presentation is native, not a port):
-//   - stat tiles: src/components/ui/stat-card.tsx
-//   - per-day trend chart: features/reports/components/focus-trend-card.tsx
-//   - time-by-category breakdown: features/reports/components/focus-category-pie-card.tsx
-//   - week boundaries: packages/shared's getReportingWeekDates, the same
-//     Monday-start reporting week the web app uses
-//
-// WHY this screen fetches its own date range instead of riding
-// `timeEntryQueries.recent()` (a fixed trailing 7 days) the way it used to:
-// a period selector and a "vs last week" delta both need entries the recent
-// window simply doesn't contain — you cannot compare against last month
-// while holding seven days. It uses the shared package's existing
-// `timeEntryQueries.range` key and the existing `getByDateRange` endpoint,
-// and asks for one combined window (previous period start -> current period
-// end) so the comparison costs no extra request. The goal/task queries are
-// untouched and still share their cache with the Goals/Tasks screens.
+// Fetches its own date range rather than riding `timeEntryQueries.recent()`
+// (a fixed trailing 7 days): a period selector and a "vs last week" delta
+// both need entries that fixed window doesn't contain. It asks for one
+// combined window (previous period start -> current period end) so the
+// comparison costs no extra request.
 
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";

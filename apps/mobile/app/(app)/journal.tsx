@@ -18,16 +18,10 @@
 // registered in src/lib/offline.ts. Only a genuine rejection (the server
 // answered and said no) restores the pre-save snapshot.
 //
-// THE DATE IS THE IDENTITY. One entry per day is a database rule rather than
-// a UI convention (a `[userId, date]` composite unique), and every write the
-// API exposes is keyed on that date and not on an entry id — POST is a real
-// upsert, DELETE takes a date. So Save makes exactly one call whether the day
-// is blank or has been edited twenty times, and this screen keeps no
-// create-vs-update bookkeeping at all. It used to: it tracked whether the
-// cached entry carried a real server id and PUT to
-// `/coach/journal/entries/:id` when it did — a route the API does not have,
-// so every save of an already-saved entry failed outright. See
-// packages/shared/src/api/journal.ts for the verified contract.
+// THE DATE IS THE IDENTITY. One entry per day is a database rule (a
+// `[userId, date]` composite unique), and every write is keyed on that date,
+// not an entry id — POST is a real upsert, DELETE takes a date. So Save
+// makes exactly one call whether the day is blank or already saved.
 //
 // The recent-entries rows below are also where an entry gets DELETED,
 // following the convention this app already uses for a destructive row
@@ -121,27 +115,13 @@ const ROW_ACCESSIBILITY_ACTIONS: AccessibilityActionInfo[] = [{ name: "delete", 
 // `start()` again, which is what makes the mic feel continuously open
 // despite the hook's one-shot, 15s-capped design.
 //
-// How long a run of *silent* segments (an empty transcript — the recognizer
-// heard nothing) is tolerated, in total elapsed wall-clock time, before
-// giving up and surfacing a message — rather than looping the mic forever
-// if, say, another app grabbed it. A silent segment and a genuine VoiceError
-// both land in the hook as `{ status: 'error', transcript: '' }` (see
-// handleError/settle in the hook), so the same budget and cap cover both.
+// How long a run of *silent* segments is tolerated, in total elapsed
+// wall-clock time, before giving up and surfacing a message.
 //
-// This is a *time* budget, not a retry count, on purpose. expo-speech-
-// recognition's non-continuous sessions (the mode this hook always uses —
-// see speech-recognition.ts) end themselves after a short gap in speech —
-// as little as 3s on iOS per the library's own README — which is far
-// shorter than a normal pause to think of what to say next mid-entry. Each
-// such platform-level timeout reaches this screen as an indistinguishable
-// silent segment, so counting *sessions* rather than *time* meant two
-// ordinary thinking-pauses were enough to exhaust a small fixed retry count
-// and silently end the whole dictation — precisely the reported bug
-// ("continues to add things... but after two sentences, it stopped working
-// somehow", with no crash or visible error). Budgeting elapsed silence
-// instead means any number of short platform timeouts get silently retried
-// through, and the mic only actually gives up once real silence has gone on
-// long enough that it is unlikely to still be a mid-thought pause.
+// This is a time budget, not a retry count, because the recognizer's short
+// per-session timeout is indistinguishable from a normal thinking pause —
+// counting time rather than attempts avoids ending dictation on an ordinary
+// silence.
 //
 // Two ways in, one path: the `?voice=1` deep link (Siri / the App Shortcut)
 // and the in-editor mic button both call the same `beginDictation` defined
@@ -548,16 +528,6 @@ export default function JournalScreen() {
     const content = draft;
     const previous = queryClient.getQueryData<JournalEntry | null>(entryKey);
 
-    // ONE call, whether this day has ever been saved or not.
-    //
-    // `POST /coach/journal/entries` is a Prisma upsert on the `[userId, date]`
-    // composite unique (see packages/shared/src/api/journal.ts), so there is
-    // no create-vs-update decision for this screen to make. It used to make
-    // one anyway — tracking whether the cached entry had a real server id and
-    // sending `PUT /coach/journal/entries/:id` when it did — and that route
-    // does not exist on the API, which pins its by-entry routes to a date
-    // regex a cuid can never match. Every save after the first one 404'd,
-    // rolled back, and showed "Couldn't save entry".
     const optimisticEntry: JournalEntry = {
       // Display bookkeeping only — the list's `keyExtractor` needs something
       // stable. The server addresses this row by date and never sees this id,
@@ -880,16 +850,8 @@ export default function JournalScreen() {
           <Text style={styles.dateSubline} numberOfLines={1}>
             {formatDisplayDate(selectedDate)}
           </Text>
-          {/* The whole block above is already the tap target that jumps back
-              to today (onPress={goToToday}, disabled when already on today)
-              — this makes that affordance visible instead of silent. Its own
-              Text node, not appended inline after the full date string:
-              `dateSubline` above is numberOfLines={1}, and a long locale date
-              ("Thursday, August 13, 2026") plus "  ·  Jump to today" on one
-              line regularly overflows a phone's width, so RN's own ellipsis
-              truncation was silently eating this text before it ever
-              rendered — "shows nothing" was accurate, not a bug report about
-              tapping. A second, short line can't hit that same limit. */}
+          {/* Own Text node rather than appended inline: appending can overflow
+              numberOfLines={1} and get silently truncated. */}
           {!isToday ? (
             <Text style={styles.dateSublineLink} numberOfLines={1}>
               Jump to today

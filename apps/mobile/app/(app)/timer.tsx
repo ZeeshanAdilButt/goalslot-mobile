@@ -1,35 +1,22 @@
 // Time Tracker tab: start/pause/resume/stop a timer against a task or goal,
 // then log it as a TimeEntry, plus a feed of recently logged sessions.
 //
-// The running-timer state itself lives in src/lib/timer-store.ts (a
-// persisted zustand store) rather than here — this screen just renders that
-// state. Note that the once-a-second tick that animates the clock now lives
-// inside <TimerRing/> instead of this component: it used to re-render the
-// whole screen (picker, controls, session list) every second purely to move
-// the digits. See that file's header for the full reasoning.
+// The running-timer state lives in src/lib/timer-store.ts (a persisted
+// zustand store) rather than here — this screen just renders that state.
+// The once-a-second clock tick lives inside <TimerRing/> rather than here,
+// so it doesn't re-render the whole screen every second.
 //
-// Product language and semantics follow dw-time-web's time-tracker feature
-// (dw-time-web/src/features/time-tracker/components/timer-display.tsx,
-// timer-controls.tsx, recent-entries.tsx) — the dark status pill with a
-// pulsing accent dot, the tabular hh:mm:ss clock with dimmed seconds, and
-// the "Tracking / Paused / Ready to start" vocabulary are all carried over.
-// The presentation is native rather than a port of the web layout: a
-// circular progress hero, round transport controls, and a day-grouped
-// session list.
+// Product language and layout follow dw-time-web's time-tracker feature,
+// re-presented natively (circular progress hero, round transport controls,
+// day-grouped session list) rather than ported directly.
 //
-// SECOND SOURCE OF TRUTH: dw-time-api's PR #72/#73 added a cross-device
-// `ActiveTimerSession` (`/timer/session`) that the Coach's voice/chat
-// START_TIMER/STOP_TIMER actions write to directly. This screen used to
-// know nothing about it — the local zustand store below was the only place
-// a running timer could exist, so a session started from the Coach screen
-// was completely invisible here, and pressing Start built a second,
-// independent local session against the same goal. `serverSessionQuery`
-// polls for one and, whenever it finds one, takes over as the source of
-// truth for status/elapsed/attribution (see `effectiveStatus` and friends,
-// just below the queries) and for what Start/Pause/Resume/Stop actually do.
-// The local store is untouched by any of this — a user who never touches
-// the Coach's timer actions still gets the exact local-only flow this
-// screen always had.
+// This screen also polls for a cross-device `ActiveTimerSession`
+// (`/timer/session`, written to by the Coach's voice/chat timer actions) via
+// `serverSessionQuery`, and treats it as the source of truth for
+// status/elapsed/attribution whenever one is present (see `effectiveStatus`
+// and friends, just below the queries). The local store is untouched by any
+// of this — a user who never touches the Coach's timer actions gets the
+// exact local-only flow this screen always had.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AppState, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -237,28 +224,9 @@ export default function TimerScreen() {
   });
   const rawServerSession = serverSessionQuery.data ?? null;
 
-  /**
-   * A DORMANT session — paused, no measured time, no attribution of any kind
-   * (see isDormantServerSession) — is deliberately NOT treated as a session
-   * at all below this line. `serverSession` is the live one or nothing, so
-   * every guard, handler and bit of render logic that already asks "is a
-   * server session in charge?" gets the right answer without knowing this
-   * distinction exists.
-   *
-   * WHY: a row like that is indistinguishable on screen from "nothing is
-   * happening" — 00:00:00, nothing attached — but it used to make the screen
-   * claim "Paused" forever, suppress the schedule-linked default (which
-   * refuses to touch a non-idle session, correctly), and route every
-   * attribution edit through PATCH /timer/session, the exact request that
-   * hangs for this shape of session (see packages/shared/src/api/client.ts's
-   * timeout note). The result was a dead end: no goal shown, no way to pick
-   * one, no way out. Nothing is lost by ignoring it — it holds no time and no
-   * attribution — and `handleStart` cleans it up for real when the user
-   * actually starts something.
-   *
-   * A session with REAL elapsed time or ANY attribution is never dormant, so
-   * this can't re-point or discard a session the user would recognise.
-   */
+  // A dormant session is excluded from `serverSession` entirely, so every
+  // guard below just sees "no server session" — see isDormantServerSession
+  // in timer-attribution.ts.
   const dormantServerSession = isDormantServerSession(rawServerSession) ? rawServerSession : null;
   const serverSession = dormantServerSession === null ? rawServerSession : null;
   const hasServerSession = serverSession !== null;
@@ -312,14 +280,9 @@ export default function TimerScreen() {
   const effectiveTaskId = hasServerSession ? (serverSession.taskId ?? null) : timerTaskId;
   const effectiveGoalId = hasServerSession ? (serverSession.goalId ?? null) : timerGoalId;
 
-  /**
-   * The local store's own version of the dormant case above: paused, no
-   * measured time, nothing attached. Unlike the server flavour this is NOT
-   * hidden from the rest of the screen — the transport controls still offer
-   * Resume/Stop on it, which is honest and costs the user nothing. It exists
-   * purely so the schedule-linked default below isn't suppressed by a session
-   * that holds nothing, whichever of the two stores happens to be holding it.
-   */
+  // See isDormantLocalSession in timer-attribution.ts. Unlike the server
+  // flavour, this is shown on screen — transport controls still offer
+  // Resume/Stop on it.
   const localDormant = isDormantLocalSession({
     status,
     pausedElapsedMs,
@@ -390,10 +353,8 @@ export default function TimerScreen() {
     );
     if (!scheduled) return;
 
-    // Re-check live state right before mutating, same race this file's
-    // auto-select-on-open effect below guards against (see its own comment
-    // for the full "why", including the confirmed-live incident that
-    // motivated it) — this effect can just as easily see a stale "idle".
+    // Re-check live state right before mutating, same race the
+    // auto-select-on-open effect below guards against.
     if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
 
     autoStartFired.current = true;
@@ -447,61 +408,28 @@ export default function TimerScreen() {
   const userSelectedRef = useRef(false);
 
   /**
-   * FEATURE: auto-select-on-open — mirrors dw-time-web's absence of this
-   * (there is no equivalent there), matching what `app/(app)/index.tsx`'s
-   * "FOCUS NOW" card already does with the same helper: default the tracker
-   * to whatever schedule block is live right now, so starting a session
-   * during a planned block doesn't require picking it by hand every time.
+   * FEATURE: auto-select-on-open — defaults the tracker to whatever schedule
+   * block is live right now, matching `app/(app)/index.tsx`'s "FOCUS NOW"
+   * card.
    *
    * Guarded four ways, all required:
-   *   - `autostart` set at all (any of "1"/"active"/"spoken") — one of the
-   *     three deep-link effects above names its own target (explicit,
-   *     schedule-resolved, or voice-resolved) and is about to call
-   *     `start()` (or already has, earlier in this same effect flush — see
-   *     below). Deferring to them entirely, rather than only skipping once
-   *     one has visibly fired, closes a real race: both effects close over
-   *     the SAME render's `effectiveStatus` ("idle"), since a deep-link
-   *     effect's `start()` mutates the zustand store synchronously but
-   *     doesn't force a re-render before this effect also runs in the same
-   *     flush. Without this guard, this effect could still see "idle",
-   *     resolve a *different* schedule block, and call `retarget()` right
-   *     after — which is no longer the no-op it looks like, because by the
-   *     time `retarget()` itself reads `get().status` the deep-link's
-   *     `start()` has already flipped it to "running", silently
-   *     overwriting the goal (or spoken target) the deep link was asked to
-   *     start.
+   *   - `autostart` unset — otherwise one of the three deep-link effects
+   *     above is about to call `start()` itself, and since a deep-link's
+   *     `start()` mutates the store synchronously without forcing a
+   *     re-render first, this effect could still see a stale "idle" in the
+   *     same flush and call `retarget()` right after, overwriting the
+   *     deep-link's target.
    *   - not idle AND not dormant — never re-point a session that's genuinely
-   *     running or paused with something in it, whether local or server-side
-   *     (see this file's header on `effectiveStatus`): a live session's
-   *     attribution is the user's to change, not this effect's. A DORMANT
-   *     session is the deliberate exception on both sides — paused, zero
-   *     elapsed, nothing attached (see isDormantServerSession /
-   *     isDormantLocalSession). `effectiveStatus` already reads "idle" for
-   *     the server flavour because `dormantServerSession` is excluded from
-   *     `serverSession` entirely; `localDormant` is the same judgement for
-   *     the local store. Such a session is indistinguishable on screen from
-   *     "nothing is happening", and letting it suppress this default is
-   *     exactly what left the Timer screen with a permanently blank goal
-   *     during a scheduled block, with nothing on screen to explain why.
-   *     Note the local case is not merely a display default: `retarget`
-   *     applies to a paused session for real, which is right — it only ever
-   *     writes attribution, never the clock.
+   *     running or paused with something in it (local or server-side); a
+   *     dormant session (isDormantServerSession / isDormantLocalSession) is
+   *     the deliberate exception on both sides.
    *   - `userSelectedRef` — never override a pick the user already made this
    *     visit, including a deliberate "Just track time".
    *   - `selectedTask`/`selectedGoal` already set — covers a fast remount
-   *     mid-session without needing to know why. This is also what makes a
-   *     one-shot "has it ever fired" latch both unnecessary AND actively
-   *     wrong to add back: once this effect *does* auto-select something,
-   *     that same check stops it from running again on its own. A latch
-   *     otherwise permanently locks the effect out the first time it ever
-   *     sees a *reason* to skip — including the ordinary "a session is
-   *     already running" case — so returning to an idle, unattributed
-   *     screen later (a different block now live, after that earlier
-   *     session ended) would silently never auto-select again for the rest
-   *     of this screen's mounted lifetime. Re-running on every dependency
-   *     change is what makes that later block get picked up correctly, and
-   *     it's cheap: `resolveActiveBlock` is a plain array scan, not a
-   *     fetch.
+   *     mid-session, and also means this effect naturally stops re-firing
+   *     once it has picked something, without needing a separate one-shot
+   *     latch (a latch would wrongly lock it out of picking up a *later*
+   *     block after an earlier session ends).
    */
   useEffect(() => {
     if (
@@ -526,28 +454,12 @@ export default function TimerScreen() {
     );
     if (!scheduled) return;
 
-    // Re-checks LIVE state right before mutating anything — closes a real
-    // race, not a theoretical one: `effectiveStatus` above is the value
-    // this effect closed over at render time, which can be a beat stale in
-    // two different ways — either source of truth can flip between that
-    // render and this effect actually running. The local store (zustand
-    // `persist`) rehydrates from AsyncStorage asynchronously on cold start;
-    // `hasServerSession` similarly starts `false` until `serverSessionQuery`
-    // resolves its first fetch. If a session was already active — local or
-    // server-side — before this screen ever mounted, this effect could
-    // still see a stale "idle" here, resolve some other block entirely, and
-    // call `retarget()` on what is — by the time `retarget()` itself reads
-    // `get().status` — now a genuinely live session, silently re-pointing
-    // it out from under the user. (Confirmed live, not hypothetical, for
-    // the local-store half of this: a 10:51am session survived several
-    // reinstalls correctly, then had its label swapped to an unrelated
-    // goal with no restart, elapsed time unbroken — this is what did
-    // that.) `retarget()`'s own idle check protects the *opposite*
-    // direction (a truly idle store), so it can't catch this — the whole
-    // failure mode IS a store that stopped being idle in between.
-    //
-    // Re-derived from the store's own live state rather than trusting the
-    // `localDormant` this effect closed over, for exactly the same reason.
+    // Re-checks LIVE state right before mutating, not the `effectiveStatus`
+    // closed over at render time: the local store rehydrates from
+    // AsyncStorage asynchronously, and `hasServerSession` starts false until
+    // the first query resolves, so a session already active before mount can
+    // still read as stale "idle" here. `retarget()`'s own idle check can't
+    // catch this — it protects the opposite direction (a truly idle store).
     const liveState = useTimerStore.getState();
     if ((liveState.status !== "idle" && !isDormantLocalSession(liveState)) || hasServerSession) return;
 
@@ -1134,18 +1046,9 @@ export default function TimerScreen() {
       setSelectedGoal(null);
     };
 
-    // Minted ONCE for this stopped session, then reused by every attempt to
-    // persist it: the first `submit()` below, each Retry from the failure
-    // alerts, and the outbox replay if it ends up queued. That shared
-    // identity is the entire mechanism — this endpoint is slow enough (cold
-    // start plus several sequential round-trips) to blow the client's 20s
-    // timeout while still committing the row, and a timeout is
-    // indistinguishable from "never sent" to the `hasResponse` check below.
-    // Carrying one key across all of them lets the server recognise the retry
-    // and the replay as the SAME create and answer with the original
-    // response, instead of inserting the session again. Regenerating it per
-    // attempt — which is what the queued entry used to do — is precisely what
-    // produced the duplicate "Untitled session" rows in Timer history.
+    // Minted ONCE and reused by every attempt to persist this session (the
+    // first `submit()`, each Retry, and the outbox replay), so the server
+    // recognises them as the same create rather than inserting it again.
     const idempotencyKey = genId();
 
     const submit = async () => {
@@ -1233,10 +1136,7 @@ export default function TimerScreen() {
           id: genId(),
           kind: "time-entry-create",
           payload,
-          // The SAME key the live attempt above already sent — not a fresh
-          // one. If that attempt reached the server before timing out, this
-          // replay is answered with its stored response instead of creating
-          // a second entry.
+          // The SAME key the live attempt above already sent, not a fresh one.
           idempotencyKey,
           createdAt: Date.now(),
           retries: 0,

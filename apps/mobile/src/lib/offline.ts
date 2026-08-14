@@ -247,13 +247,7 @@ operationRegistry.registerOperation<ScheduleBlockUpdatePayload, ScheduleBlock>("
   invalidateKeys: [scheduleQueries.scheduleQueries.root()],
 });
 
-// Registered even though no call site currently routes through it —
-// schedule.tsx's handleDeleteBlock (app/(app)/schedule.tsx:226-268) is the
-// one remaining unqueued delete path and is out of scope for this change
-// (that file is owned by concurrent work); see the handover notes for the
-// exact call-site change it needs once it's free to land. Registering the
-// operation now means that follow-up is a call-site change only, not also a
-// registry change.
+// No call site uses this operation yet.
 operationRegistry.registerOperation<EntityIdPayload, void>("schedule-block-delete", {
   execute: async (payload) => {
     await apiClient.schedule.delete(payload.id);
@@ -263,41 +257,21 @@ operationRegistry.registerOperation<EntityIdPayload, void>("schedule-block-delet
 
 // --- Journal + note edits ---------------------------------------------------
 //
-// Journal is one entry per day and the DATE is its identity, all the way down
-// to the database: the row carries a `[userId, date]` composite unique and
-// `POST /coach/journal/entries` is a Prisma upsert against it. So ONE
-// operation covers a first save and every later edit alike, and the queue
-// carries no create-vs-update bookkeeping at all.
-//
-// There used to be two kinds here. "journal-update" replayed
-// `PUT /coach/journal/entries/:id` — a route that does not exist. The real
-// one is `PUT /:date/content`, and every by-date route pins its param to
-// `\d{4}-\d{2}-\d{2}`, which a cuid cannot match, so each queued journal edit
-// drained straight into a 404 and was reported to the user as "1 offline
-// change could not be synced". That kind is deleted rather than repaired:
-// with the upsert below there is nothing left for a by-id write to do, and
-// its `{ id, data }` payload could not have been rewritten into a valid
-// request anyway — an id is not recoverable to a date on this side. Entries
-// of that kind still sitting in an installed build's outbox now hit sync.ts's
-// unregistered-kind branch and are discarded one drain tick earlier, without
-// the pointless round trip they used to make first.
+// Journal is one entry per day, keyed by date. One operation ("journal-save")
+// covers both create and update via upsert.
 //
 // NOTE for whoever owns app/(app)/voice.tsx: its `appendToJournal` still
-// enqueues "journal-update", and still calls `apiClient.journal.update` with
-// an entry id, on this same wrong assumption. Pointing that branch at
-// `apiClient.journal.upsert` / "journal-save" is the entire fix — the merged
-// content it already computes IS an upsert body.
+// enqueues "journal-update" against `apiClient.journal.update`, which doesn't
+// exist as a route. Pointing it at `apiClient.journal.upsert` / "journal-save"
+// is the fix.
 operationRegistry.registerOperation<UpsertJournalEntryInput, JournalEntry>("journal-save", {
   execute: async (payload) => (await apiClient.journal.upsert(payload)).data,
   invalidateKeys: [journalQueries.journalQueries.all],
 });
 
-// The same operation under its former name, kept registered rather than
-// renamed away. The outbox is persisted in AsyncStorage, so a save queued by
-// an already-installed build — and every save voice.tsx queues today — still
-// arrives under this kind, and an unregistered kind is silently discarded on
-// the next drain (sync.ts). POST was always the right call here, which is why
-// a FIRST save for a day was the one journal write that already worked.
+// Kept registered under its former name so an already-queued outbox entry
+// (persisted in AsyncStorage) still resolves instead of silently discarding
+// as an unregistered kind.
 operationRegistry.registerOperation<UpsertJournalEntryInput, JournalEntry>("journal-create", {
   execute: async (payload) => (await apiClient.journal.upsert(payload)).data,
   invalidateKeys: [journalQueries.journalQueries.all],
@@ -411,26 +385,10 @@ operationRegistry.registerOperation<NoteFavoritePayload, Note>("note-favorite", 
 // patch a cache entry synchronously with the throw; this one has no cache
 // entry to patch, so it uses the engine's generic hook instead.
 //
-// The `idempotencyKey` the sync engine hands `execute` is forwarded to the
-// API as the `idempotency-key` header, and that is load-bearing rather than
-// tidy: it is the only thing keeping a replay from logging the session a
-// SECOND time. This registration used to drop that argument on the floor,
-// which produced the three-identical-rows bug — a slow create (cold start
-// plus this endpoint's several sequential round-trips) blows the client's 20s
-// timeout AFTER the server has committed the row; the timeout carries no
-// `.response`, so the `hasResponse` check above reads it as "never sent" and
-// banks the identical payload here; every drain then replayed it into a fresh
-// row, and the only thing that ever stopped the bleeding was the FREE plan's
-// 3-entries-per-day cap finally answering with a real 403, which is what got
-// the entry dropped. With the key threaded, the first replay is recognised by
-// the server's IdempotencyInterceptor and answered with the ORIGINAL create's
-// response, so the entry syncs cleanly and leaves the outbox with no second
-// row behind it.
-//
-// This is also why a replay that times out AGAIN is now harmless, and why the
-// sync engine is right to leave such an entry queued without counting it as a
-// retry: repeated replays of the same key converge on one row rather than
-// accumulating.
+// The `idempotencyKey` the sync engine hands `execute` must be forwarded to
+// the API and reused across every replay — otherwise a slow create that
+// times out client-side but still commits server-side gets duplicated on
+// retry, since the server can't recognise the replay as the same request.
 operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry-create", {
   execute: async (payload, idempotencyKey) =>
     (await apiClient.timeEntries.create(payload, { idempotencyKey })).data,

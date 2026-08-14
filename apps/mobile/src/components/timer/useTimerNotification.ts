@@ -1,37 +1,17 @@
 // Keeps a persistent "GoalSlot is timing this session" entry in the OS
 // notification shade for as long as the timer is running or paused.
 //
-// WHY this exists: the timer's only visible surface used to be the Time
-// Tracker screen itself, so a session left running while the user was
-// somewhere else in the app (or out of it entirely) was invisible — you
-// couldn't tell a running timer from a stopped one without navigating back.
-//
-// WHY it doesn't go through `NotificationCapability` end-to-end: that port
-// (packages/shared/src/capabilities/index.ts) models exactly one thing —
-// "schedule a notification to fire at `fireAtUtc`, and cancel it if it
-// hasn't fired yet". An ongoing notification is the opposite shape: it is
-// presented immediately, must be flagged `sticky`/non-auto-dismissing, needs
-// a dedicated low-importance Android channel so re-presenting it on
-// pause/resume doesn't re-alert, and is removed with
-// `dismissNotificationAsync` (which clears an *already delivered*
-// notification) rather than `cancelScheduledNotificationAsync` (which only
-// drops a *pending* one — calling it here would leave the shade entry
-// stranded forever). None of that is expressible through the current port,
-// and this branch doesn't own packages/shared or src/lib/notifications.ts.
-// So: the permission ASK — the one part the port does model — still goes
-// through `useCapabilities().notifications.requestPermission()`, and only
-// the present/dismiss calls reach for expo-notifications directly. The
-// clean follow-up is to add a `presentOngoing`/`dismissOngoing` pair to
-// NotificationCapability and move the two calls below behind it.
+// Permission checks route through `useCapabilities().notifications`, but the
+// present/dismiss calls reach for expo-notifications directly — the shared
+// NotificationCapability port only models scheduling a future notification,
+// not presenting/dismissing an ongoing one.
 //
 // KNOWN LIMITATION: this is a plain notification, not an Android foreground
-// service, so it does not keep the process alive. If the OS kills the app
-// the notification can linger until the app is next opened (the effect
-// below reconciles it on mount). Elapsed time is deliberately never baked
-// into the running notification's text — it would go stale the moment the
-// app is backgrounded and there's no periodic-update hook to refresh it —
-// so the body shows the fixed wall-clock start time instead, which stays
-// true no matter how long the shade entry sits there.
+// service, so it does not keep the process alive; a killed app can leave it
+// lingering until next opened (the effect below reconciles it on mount).
+// Elapsed time is deliberately never baked into the running notification's
+// text since it would go stale while backgrounded, so the body shows the
+// fixed wall-clock start time instead.
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Platform } from "react-native";
@@ -173,13 +153,10 @@ export function useTimerNotification(args: TimerNotificationArgs): void {
 
   // The timer store persists through AsyncStorage, which is a bridge call, so
   // it reports `status: "idle"` for the first few frames of a cold start no
-  // matter what was actually running. Acting on that pre-hydration idle meant
-  // relaunching the app while a session was live *dismissed its own ongoing
-  // notification* and then re-presented it a moment later — a visible blink
-  // in the shade, and on Android a re-post that can lose the entry's place in
-  // the ordering. Waiting for hydration costs nothing: the reconciliation
-  // this hook exists to do (clear a shade entry stranded by a process kill)
-  // is still performed, just once the status is actually known.
+  // matter what was actually running. Acting on that pre-hydration idle would
+  // spuriously dismiss then re-present a live session's notification.
+  // Waiting for hydration costs nothing: the reconciliation this hook exists
+  // to do is still performed, just once the status is actually known.
   const hydrated = useSyncExternalStore(
     useTimerStore.persist.onFinishHydration,
     useTimerStore.persist.hasHydrated,

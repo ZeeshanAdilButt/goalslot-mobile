@@ -1,33 +1,11 @@
 // The pure half of "what is this session tracked against?" — extracted out of
-// app/(app)/timer.tsx so the three rules below can be unit-tested without
-// rendering a screen (same split tracking-search.ts made for the picker's
-// matching rules).
+// app/(app)/timer.tsx so it can be unit-tested without rendering a screen.
 //
-// All three exist because of the same confirmed-live failure: the Timer screen
-// showed a "Paused" 00:00:00 session whose attribution row was completely
-// blank, with no way to select a goal or a task from what was on screen.
-//
-//   1. `cleanLabel` — every name that reaches this screen crosses the network
-//      with no runtime validation (`ActiveTimerSession.taskName` is typed
-//      `string | null` but arrives as `""` from at least one writer, and as
-//      `undefined` when the field is absent entirely). Anything that isn't a
-//      non-blank string is *absent*, not a name. Without this, an empty string
-//      is not `null`, so it takes the "we have a title" branch everywhere and
-//      renders as an empty row.
-//   2. `isDormantServerSession` — a cross-device session that is paused, has
-//      measured no time and carries no attribution of any kind represents
-//      nothing at all. It is indistinguishable to the user from "nothing is
-//      happening", but every guard on the screen used to treat it as a live
-//      session: it suppressed the schedule-linked default, put the screen in a
-//      permanent "Paused" state, and routed attribution edits through
-//      PATCH /timer/session (which, for exactly this shape of session, is the
-//      request that hung — see packages/shared/src/api/client.ts's timeout
-//      note). Naming the shape is what lets the screen ignore it.
-//   3. `resolveScheduledTarget` — the "default to the goal for the schedule
-//      block that's live right now" rule, in one place instead of three
-//      hand-rolled copies inside effects (auto-select-on-open, the
-//      `autostart=active` deep link, and now the one-tap suggestion shown in
-//      an empty attribution row).
+//   1. `cleanLabel` — normalizes a name to a non-blank string or null.
+//   2. `isDormantServerSession` / `isDormantLocalSession` — detect a session
+//      with nothing attached to it.
+//   3. `resolveScheduledTarget` — resolves the schedule block live right now
+//      into its Goal/Task.
 
 import {
   resolveActiveBlock,
@@ -70,16 +48,9 @@ function firstFinite(...values: unknown[]): number | null {
  * True for a server session that carries nothing: paused, no measured time,
  * no goal, task, schedule block, name or notes.
  *
- * Stopping such a session would write a TimeEntry for zero minutes under a
- * placeholder name; discarding it loses nothing that exists. Treating it as
- * live, which is what the screen used to do, is what left the user staring at
- * a paused 00:00:00 timer they could neither attribute nor escape.
- *
- * Every check is deliberately conservative — ANY sign of content (a name, a
- * note, an id, a measurable elapsed time) disqualifies it, and an elapsed time
- * that can't be read as a number at all (the confirmed `accumulatedMs: null`
- * case that once rendered "NaN:NaN:NaN") counts as unknown rather than zero,
- * so a session whose duration we can't establish is never called empty.
+ * ANY sign of content disqualifies it, and an elapsed time that can't be read
+ * as a number counts as unknown rather than zero — a session whose duration
+ * we can't establish is never called empty.
  */
 export function isDormantServerSession(session: ActiveTimerSession | null | undefined): boolean {
   if (!session) return false;
@@ -101,15 +72,9 @@ export interface LocalTimerSnapshot {
 
 /**
  * The local-store equivalent of `isDormantServerSession`: paused, no measured
- * time, nothing attached.
- *
- * The same dead end reachable through the other source of truth — a session
- * started and paused inside a second with nothing attached, then left there,
- * looks exactly like "nothing is happening" and yet blocks the
- * schedule-linked default from ever being offered. Deliberately excludes
- * "running": a running session is a decision the user is currently living
- * with, however little time it has measured, and its attribution is theirs to
- * set rather than something to default out from under them.
+ * time, nothing attached. Deliberately excludes "running" — a running session
+ * stays visible in the UI (Resume/Stop still work) rather than being treated
+ * as dormant.
  */
 export function isDormantLocalSession(state: LocalTimerSnapshot): boolean {
   if (state.status !== "paused") return false;

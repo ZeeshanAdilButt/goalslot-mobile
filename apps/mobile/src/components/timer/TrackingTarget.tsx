@@ -1,41 +1,17 @@
 // "What am I timing?" — the block directly under the ring.
 //
-// TWO SLOTS, NOT ONE. This used to be a single row showing one resolved title
-// (a task's, or a goal's, whichever existed) with the other rendered as a
-// sublabel at best. That made the goal and the task look like one indivisible
-// choice: there was no way to see that a goal was set but a task wasn't, and
-// no way to add a task to a session that already had a goal without going back
-// through a picker that read as "replace what you chose". The reported symptom
-// was exactly that — "no option to select goal and task both". So the goal and
-// the task are now separate, independently tappable rows, each showing its own
-// state and each opening the picker scoped to itself. A task is still optional
-// and says so on its face.
+// Goal and task are two independent, always-tappable slots rather than one
+// resolved title, so either can be set without the other.
 //
-// EVERY ROW IS ALWAYS PRESSABLE, including mid-session. Attribution used to
-// lock the moment a session began, on the reasoning that the store's
-// taskId/goalId was fixed for the life of a run. That inverted when starting
-// stopped requiring a target: attaching a goal *while the clock runs* is now
-// the ordinary way a session gets attributed. The store's `retarget` action is
-// what makes it safe — re-pointing never touches startedAt or pausedElapsedMs,
-// so the clock is undisturbed.
+// Attribution is editable mid-session: the store's `retarget` action
+// re-points goalId/taskId without touching startedAt or pausedElapsedMs.
 //
-// A BLANK ROW IS NOT A STATE. Titles arrive from the network unvalidated, and
-// a session whose name came back as `""` used to take the "we have a title"
-// branch and render a row with no text in it at all — a box with a "Change"
-// affordance and nothing else, which is what the user actually saw. Both slots
-// route every title through `cleanLabel` (src/lib/timer-attribution.ts), so a
-// blank string is treated as no title rather than as an empty one.
+// Every title routes through `cleanLabel` (src/lib/timer-attribution.ts) so a
+// blank string renders as no title rather than an empty row.
 //
-// THREE STATES PER SLOT, NOT TWO. "Nothing is attached" and "something is
-// attached but we can't tell what yet" look identical on screen if you let
-// them, and they need opposite copy: the first is a fine end state the user
-// chose, the second is a transient cold-start gap where an id exists but the
-// goal/task lists haven't loaded. The `*Unresolved` props separate them.
-//
-// THE SUGGESTION ROW is the way out of an unattributed session during a
-// planned block: the schedule-linked goal, offered as one tap, right where the
-// missing attribution is. It only appears when the goal slot is empty, so it
-// can never compete with a choice the user already made.
+// The `*Unresolved` props distinguish "nothing attached" from "an id is set
+// but the goal/task lists haven't loaded yet" — the two look identical on
+// screen otherwise but need opposite copy.
 
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -93,9 +69,7 @@ export function TrackingTarget({
   onPressTask,
   onApplySuggestion,
 }: TrackingTargetProps) {
-  // Defensive even though the screen already normalises these: this component
-  // is the last thing between an unvalidated network string and a row with
-  // nothing in it, and that is the bug this file exists to make impossible.
+  // Defensive: cleanLabel is re-applied here even though callers already normalise.
   const goalTitle = cleanLabel(goalLabel);
   const taskTitle = cleanLabel(taskLabel);
   const goalCategory = cleanLabel(goalSublabel);

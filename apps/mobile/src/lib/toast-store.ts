@@ -1,15 +1,5 @@
-// Lightweight in-app toast queue. This is the "somewhere for it to land"
-// api-client.ts's `notify()` didn't have — until now it was `console.warn`
-// only (see that file's header comment), so the shared sync engine's
-// success/drop messages (packages/shared/src/offline/sync.ts:108-113) and
-// the dropped-time-entry hook (src/lib/offline.ts) never reached a real
-// user, only a dev console.
-//
-// No toast/snackbar dependency exists in apps/mobile/package.json, and this
-// app has exactly a handful of call sites for one today (sync summaries, a
-// dropped-entry notice, quick-add's "queued" confirmation) — not enough to
-// justify pulling one in. A zustand queue + <ToastHost/>
-// (src/components/ToastHost.tsx) is the whole implementation.
+// Lightweight in-app toast queue: a zustand store backing <ToastHost/>
+// (src/components/ToastHost.tsx).
 //
 // zustand rather than React context: `showToast` below needs to be callable
 // from plain (non-component) code — api-client.ts's `notify()` export and
