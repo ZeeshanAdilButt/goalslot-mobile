@@ -32,14 +32,17 @@ import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
 import { genId, getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
+import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
+import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
 import { queueOfflineEdit } from "@/lib/offline";
@@ -48,7 +51,7 @@ import { queryClient } from "@/lib/query-client";
 import { useJournalReminderSync } from "@/lib/useJournalReminders";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
-import { colors, controlHeight, minTouchTarget, radii, shadows, spacing, typography } from "@/theme";
+import { colors, controlHeight, minTouchTarget, motion, radii, shadows, spacing, typography } from "@/theme";
 
 // How long the "Saved" confirmation stays up. Saving used to give no visible
 // feedback at all: this screen is a per-day editor, so the text intentionally
@@ -170,6 +173,12 @@ function RecentDayBadge({ dateKey, active }: { dateKey: string; active: boolean 
 export default function JournalScreen() {
   const analytics = useAnalytics();
   const { voice } = useCapabilities();
+  // Single flag gating every Reanimated effect this screen drives (the save
+  // checkmark's entrance, the day-switch cross-fade) — same discipline as
+  // PressableScale/Reveal/PulsingDot elsewhere in the app: check once, skip
+  // the `withSpring`/`withTiming` call entirely and jump straight to the
+  // resting value when Reduce Motion is on.
+  const reduceMotion = useReduceMotion();
 
   // Reconciles the "you haven't journaled today" nudge every time this
   // screen is focused — the other mount point is the Journal reminder
@@ -434,6 +443,27 @@ export default function JournalScreen() {
     setIsDirty(false);
   }, [selectedDate]);
 
+  // A quiet cross-fade on the editor surface whenever the visible day
+  // changes (arrows, "Jump to today", tapping a recent-entries row) — the
+  // draft-reset effect above already blanks `draft` synchronously, so a true
+  // fade-out-old/fade-in-new would need to hold onto stale text past the
+  // point it's already gone; fading the container back in instead gives the
+  // same "the page turned" read without that extra state. Doubles as a
+  // gentle first-paint entrance, since mount fires this effect too.
+  const editorTransition = useSharedValue(0);
+  useEffect(() => {
+    if (reduceMotion) {
+      editorTransition.value = 1;
+      return;
+    }
+    editorTransition.value = 0;
+    editorTransition.value = withTiming(1, {
+      duration: motion.duration.base,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [selectedDate, reduceMotion, editorTransition]);
+  const editorTransitionStyle = useAnimatedStyle(() => ({ opacity: editorTransition.value }));
+
   useEffect(() => {
     if (entryQuery.data !== undefined) {
       setDraft(entryQuery.data?.content ?? "");
@@ -543,6 +573,25 @@ export default function JournalScreen() {
     [selectedDate],
   );
 
+  // The "Saved"/"Queued" checkmark used to just appear — a plain conditional
+  // render with no transition of its own, which made the icon feel bolted
+  // on next to the haptic tick and the text swap already confirming the
+  // save. A small spring pop (matching PressableScale's own spring, not a
+  // bouncier one — this is a confirmation, not a celebration) is enough to
+  // make the icon read as arriving rather than just materializing.
+  const saveIconProgress = useSharedValue(0);
+  useEffect(() => {
+    if (!justSaved) {
+      saveIconProgress.value = 0;
+      return;
+    }
+    saveIconProgress.value = reduceMotion ? 1 : withSpring(1, motion.spring);
+  }, [justSaved, reduceMotion, saveIconProgress]);
+  const saveIconStyle = useAnimatedStyle(() => ({
+    opacity: saveIconProgress.value,
+    transform: [{ scale: saveIconProgress.value }],
+  }));
+
   // Whether the currently-shown entry reflects a save that's still only
   // queued to the offline outbox — drives the Save button's "Queued" vs
   // "Saved" treatment below.
@@ -627,15 +676,25 @@ export default function JournalScreen() {
       />
     );
   } else {
+    // A single fade-and-rise for the whole card, not a per-row stagger down
+    // the FlashList — Reveal's own header comment already explains why it's
+    // hand-rolled rather than `entering={...}`: it must play exactly once
+    // per mount. A recycled FlashList cell is not a stable mount the way a
+    // Reports card is, so animating individual rows risks replaying the
+    // entrance mid-scroll as cells get recycled. One Reveal around the
+    // whole list sidesteps that entirely and still gives the section its
+    // own quiet arrival right after the editor above it settles (`delay`
+    // staggers it just past the editor's own cross-fade, not simultaneous
+    // with it).
     recentContent = (
-      <View style={styles.recentListCard}>
+      <Reveal delay={60} style={styles.recentListCard}>
         <FlashList
           data={recentEntries}
           keyExtractor={(item) => item.id}
           renderItem={renderRecentItem}
           contentContainerStyle={styles.recentListContent}
         />
-      </View>
+      </Reveal>
     );
   }
 
@@ -844,7 +903,7 @@ export default function JournalScreen() {
         </View>
       ) : null}
 
-      <View style={styles.editorArea}>
+      <Animated.View style={[styles.editorArea, editorTransitionStyle]}>
         {editorContent}
         {/* A small, quiet craft touch — the kind of ambient feedback a real
             writing surface gives (Notes, Day One) that a plain form field
@@ -853,7 +912,7 @@ export default function JournalScreen() {
         {showWordCount ? (
           <Text style={styles.wordCount}>{wordCount === 1 ? "1 word" : `${wordCount} words`}</Text>
         ) : null}
-      </View>
+      </Animated.View>
 
       <Pressable
         style={({ pressed }) => [
@@ -872,11 +931,13 @@ export default function JournalScreen() {
             "Saved" (confirmed) — the two used to look identical, which made
             an offline save indistinguishable from a genuinely-lost one. */}
         {justSaved ? (
-          <Icon
-            name={isPendingSync ? "refresh" : "check"}
-            size={16}
-            color={isPendingSync ? colors.warning : colors.success}
-          />
+          <Animated.View style={saveIconStyle}>
+            <Icon
+              name={isPendingSync ? "refresh" : "check"}
+              size={16}
+              color={isPendingSync ? colors.warning : colors.success}
+            />
+          </Animated.View>
         ) : null}
         <Text
           style={[
