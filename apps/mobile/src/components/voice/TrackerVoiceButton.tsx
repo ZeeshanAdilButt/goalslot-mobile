@@ -431,7 +431,7 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
         <Text
           style={[styles.statusLine, blocked && styles.statusLineBlocked]}
           accessibilityLiveRegion="polite"
-          numberOfLines={2}
+          numberOfLines={3}
         >
           {statusLine}
         </Text>
@@ -488,7 +488,15 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
     textAlign: "center",
     flexShrink: 1,
-    maxWidth: "78%",
+    // Sized for short live-status words ("Listening…", "One moment…") —
+    // but a "failed" outcome's message ("A session is already running —
+    // open the Time Tracker to control it.") is a full sentence, and at
+    // the old 78%/2-line cap it could clip before saying where to go to
+    // fix it, at exactly the moment that instruction matters most. 92%/3
+    // lines still reads as the same compact annotation for short text
+    // (it only grows if the text itself is longer) while giving a real
+    // sentence room to actually finish.
+    maxWidth: "92%",
   },
   statusLineBlocked: {
     color: colors.destructive,
