@@ -23,6 +23,7 @@
 import { hasResponse } from "@goalslot/shared";
 
 import type { IconName } from "@/components/ui/Icon";
+import { getErrorMessage } from "@/lib/get-error-message";
 
 export interface QueryErrorContent {
   /** Omitted for a genuine server error — ErrorState's own "Something went wrong" default already fits. */
@@ -43,7 +44,12 @@ const DEFAULT_OFFLINE_MESSAGE = "Check your connection and try again.";
  */
 export function describeQueryError(error: unknown, message: string, offlineMessage?: string): QueryErrorContent {
   if (hasResponse(error)) {
-    return { message };
+    // The server answered, so its own reason (when it sent one) is more
+    // useful than the caller's generic "Couldn't load X." — same
+    // server-message-first rule as get-error-message.ts, applied to query
+    // loads instead of mutations. `message` stays the fallback for a
+    // response with no body (e.g. a bare 500) rather than a hardcoded string.
+    return { message: getErrorMessage(error, message) };
   }
   return {
     title: "You're offline",

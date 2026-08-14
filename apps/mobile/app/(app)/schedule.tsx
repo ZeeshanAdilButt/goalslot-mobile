@@ -17,7 +17,7 @@
 // selection, and the minute ticker that keeps "now" honest.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +46,7 @@ import {
 } from "@/components/schedule";
 import { Icon } from "@/components/ui/Icon";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticLight } from "@/lib/haptics";
 import { queueOfflineEdit } from "@/lib/offline";
 import { scheduleQueries } from "@/lib/queries";
@@ -288,6 +289,7 @@ export default function ScheduleScreen() {
 
     let queuedAny = false;
     let rejected = false;
+    let lastError: unknown = null;
     for (const block of blocks) {
       const payload = toCreateInput(block);
       try {
@@ -302,6 +304,7 @@ export default function ScheduleScreen() {
           queuedAny = true;
         } else {
           rejected = true;
+          lastError = err;
           break;
         }
       }
@@ -313,7 +316,11 @@ export default function ScheduleScreen() {
     void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
 
     if (rejected) {
-      Alert.alert("Couldn't undo", "Those time slots weren't restored — please add them again.");
+      console.error(lastError);
+      notify(
+        getErrorMessage(lastError, "Those time slots weren't restored — please add them again."),
+        "error",
+      );
       return;
     }
     if (queuedAny) {
@@ -364,6 +371,7 @@ export default function ScheduleScreen() {
       // parallel offline mechanism.
       let rejected = false;
       let queuedAny = false;
+      let lastError: unknown = null;
       for (const target of targets) {
         try {
           await apiClient.schedule.delete(target.id);
@@ -374,6 +382,7 @@ export default function ScheduleScreen() {
             queuedAny = true;
           } else {
             rejected = true;
+            lastError = err;
             break;
           }
         }
@@ -387,7 +396,8 @@ export default function ScheduleScreen() {
         // actually survived rather than leaving a cache that's confidently
         // wrong.
         void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
-        Alert.alert("Couldn't delete", "That time slot is still there — please try again.");
+        console.error(lastError);
+        notify(getErrorMessage(lastError, "That time slot is still there — please try again."), "error");
         return;
       }
 

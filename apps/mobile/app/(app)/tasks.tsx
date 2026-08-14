@@ -54,7 +54,7 @@
 //     at the bottom of each card.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
@@ -101,6 +101,7 @@ import {
 } from "@/components/tasks";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
 import { offlineSync, outbox, queueOfflineEdit } from "@/lib/offline";
 import { taskQueries } from "@/lib/queries";
@@ -335,7 +336,8 @@ export default function TasksScreen() {
           notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
-          Alert.alert("Couldn't complete task", "Please try again.");
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't complete that task. Please try again."), "error");
         }
       }
     },
@@ -422,7 +424,8 @@ export default function TasksScreen() {
           notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
-          Alert.alert("Couldn't reschedule task", "Please try again.");
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't reschedule that task. Please try again."), "error");
         }
       }
     },
@@ -501,7 +504,8 @@ export default function TasksScreen() {
             notify("Queued — will sync when online", "offline");
           } else {
             restoreSnapshot(previous);
-            Alert.alert("Couldn't move task", "Please try again.");
+            console.error(err);
+            notify(getErrorMessage(err, "Couldn't move that task. Please try again."), "error");
           }
         } else {
           // Either the plain (!wasDone) path, or restore already succeeded
@@ -513,7 +517,8 @@ export default function TasksScreen() {
             notify("Queued — will sync when online", "offline");
           } else {
             restoreSnapshot(previous);
-            Alert.alert("Couldn't move task", "Please try again.");
+            console.error(err);
+            notify(getErrorMessage(err, "Couldn't move that task. Please try again."), "error");
           }
         }
       }
@@ -650,7 +655,7 @@ export default function TasksScreen() {
         </View>
       );
   } else if (isError && !tasks) {
-    content = <ErrorState message={error instanceof Error ? error.message : "Couldn't load tasks."} onRetry={refetch} />;
+    content = <ErrorState message={getErrorMessage(error, "Couldn't load tasks.")} onRetry={refetch} />;
   } else if ((tasks?.length ?? 0) === 0) {
     // Emptiness is a property of the DATA, not of the list view's grouped
     // rows: the board renders four columns from the same tasks, so testing

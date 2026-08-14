@@ -18,6 +18,13 @@ describe("describeQueryError", () => {
     });
   });
 
+  it("prefers the server's own message over the caller's generic fallback", () => {
+    const err = { response: { status: 403, data: { message: "This goal has been archived." } } };
+    expect(describeQueryError(err, "Couldn't load goals.")).toEqual({
+      message: "This goal has been archived.",
+    });
+  });
+
   it("treats an error with no response at all as offline", () => {
     const err = new Error("Network Error");
     expect(describeQueryError(err, "Couldn't load goals.")).toEqual({

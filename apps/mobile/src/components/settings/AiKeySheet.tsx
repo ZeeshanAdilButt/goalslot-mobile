@@ -33,7 +33,7 @@
 // a rare thing to do from a phone, and Remove-then-Add already does it.
 
 import { useCallback, useEffect, useState } from "react";
-import { AccessibilityInfo, Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -48,6 +48,7 @@ import {
 } from "@goalslot/shared";
 
 import { Button, TextField } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { apiClient } from "@/lib/api-client";
@@ -82,6 +83,7 @@ export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
   const [budgetInput, setBudgetInput] = useState("");
   const [busy, setBusy] = useState<null | "save" | "remove" | "budget" | "model">(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState(false);
 
   // Follow the server's provider once a key is active, so the console link
   // and the prefix check below describe the key the user actually has.
@@ -95,6 +97,7 @@ export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
       setBudgetInput("");
       setError(null);
       setBusy(null);
+      setPendingRemove(false);
     }
   }, [visible]);
 
@@ -135,38 +138,30 @@ export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
     }
   }, [applyState, fail, meta.label, provider, rawKey]);
 
-  const handleRemoveKey = useCallback(() => {
-    Alert.alert(
-      "Remove this key?",
-      "The coach will fall back to the shared key, which is limited to a few messages a day.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              setBusy("remove");
-              setError(null);
-              try {
-                await apiClient.coachSettings.deleteByokKey();
-                // Invalidating the whole `['coach']` root, not just the key:
-                // removing the key changes which model answers a chat, so the
-                // cached chat history is now describing a different setup.
-                await queryClient.invalidateQueries({
-                  queryKey: coachSettingsQueries.coachSettingsQueries.all,
-                });
-                AccessibilityInfo.announceForAccessibility("Key removed.");
-              } catch (err) {
-                fail(err, "Couldn't remove that key.");
-              } finally {
-                setBusy(null);
-              }
-            })();
-          },
-        },
-      ],
-    );
+  const handleRemoveKey = useCallback(() => setPendingRemove(true), []);
+
+  // Left open (dialog stays visible) on failure, with `error` populated in
+  // its inline slot, so the user can see what went wrong and hit Remove
+  // again without reopening — closed on success instead.
+  const doRemoveKey = useCallback(async () => {
+    setBusy("remove");
+    setError(null);
+    try {
+      await apiClient.coachSettings.deleteByokKey();
+      // Invalidating the whole `['coach']` root, not just the key: removing
+      // the key changes which model answers a chat, so the cached chat
+      // history is now describing a different setup.
+      await queryClient.invalidateQueries({
+        queryKey: coachSettingsQueries.coachSettingsQueries.all,
+      });
+      AccessibilityInfo.announceForAccessibility("Key removed.");
+      setPendingRemove(false);
+    } catch (err) {
+      console.error(err);
+      fail(err, "Couldn't remove that key.");
+    } finally {
+      setBusy(null);
+    }
   }, [fail]);
 
   const handleSaveBudget = useCallback(async () => {
@@ -396,6 +391,18 @@ export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
           ) : null}
         </>
       )}
+
+      <ConfirmDialog
+        visible={pendingRemove}
+        title="Remove this key?"
+        description="The coach will fall back to the shared key, which is limited to a few messages a day."
+        confirmLabel="Remove"
+        destructive
+        busy={busy === "remove"}
+        error={error}
+        onConfirm={() => void doRemoveKey()}
+        onCancel={() => setPendingRemove(false)}
+      />
     </SettingsSheet>
   );
 }

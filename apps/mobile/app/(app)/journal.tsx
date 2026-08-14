@@ -33,7 +33,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -70,6 +69,7 @@ import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
 import { htmlToPlainText } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
@@ -576,7 +576,8 @@ export default function JournalScreen() {
         notify("Queued — will sync when online", "offline");
       } else {
         queryClient.setQueryData(entryKey, previous);
-        Alert.alert("Couldn't save entry", "Please try again.");
+        console.error(err);
+        notify(getErrorMessage(err, "Couldn't save that entry. Please try again."), "error");
       }
     } finally {
       setIsSaving(false);

@@ -37,7 +37,7 @@
 // than letting the user believe a label change synced when it can't.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import {
   BottomSheetBackdrop,
@@ -57,6 +57,7 @@ import {
 } from "@goalslot/shared";
 
 import { apiClient, notify } from "../lib/api-client";
+import { getErrorMessage } from "../lib/get-error-message";
 import { queueOfflineEdit } from "../lib/offline";
 import { goalQueries, labelQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
@@ -308,8 +309,9 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         );
         sheetRef.current?.dismiss();
       } else {
+        console.error(err);
         queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't save goal", "Please try again.");
+        setError(getErrorMessage(err, "Couldn't save that goal. Please try again."));
       }
     } finally {
       setIsSubmitting(false);

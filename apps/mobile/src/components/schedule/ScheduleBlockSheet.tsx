@@ -55,7 +55,7 @@
 // series).
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BottomSheetBackdrop,
@@ -83,6 +83,7 @@ import {
 } from "@goalslot/shared";
 
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
 import { offlineSync, outbox } from "@/lib/offline";
 import { categoryQueries, goalQueries, scheduleQueries } from "@/lib/queries";
@@ -442,7 +443,8 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
         // with whatever the server actually ended up with, rather than
         // silently hiding a partially-created series.
         void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
-        Alert.alert("Couldn't save", "Please try again.");
+        console.error(rejectionErr);
+        notify(getErrorMessage(rejectionErr, "Couldn't create this time slot. Please try again."), "error");
         return;
       }
 
@@ -582,7 +584,8 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
         if (fanOutClientSide) {
           void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
         }
-        Alert.alert("Couldn't save", "Please try again.");
+        console.error(rejectionErr);
+        notify(getErrorMessage(rejectionErr, "Couldn't save your changes. Please try again."), "error");
         return;
       }
 

@@ -36,7 +36,7 @@
 // auth provider was built and nothing called it until this screen shipped.
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Linking, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 
@@ -52,6 +52,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "@/components/settings";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
@@ -93,6 +94,7 @@ export default function SettingsScreen() {
 
   const [openSheet, setOpenSheet] = useState<SheetName | null>(null);
   const [permission, setPermission] = useState<NotificationPermissionStatus | null>(null);
+  const [pendingLogout, setPendingLogout] = useState(false);
 
   const closeSheet = useCallback(() => setOpenSheet(null), []);
 
@@ -155,16 +157,11 @@ export default function SettingsScreen() {
     setPermission(granted ? "granted" : await notifications.getPermissionStatus());
   }, [notifications, permission, router]);
 
-  const confirmLogout = useCallback(() => {
-    // Destructive from the user's point of view — they land back on the login
-    // screen — so it needs a confirm step rather than firing on one stray tap.
-    // No analytics event: "loggedOut" isn't in the v1 AnalyticsEventMap
-    // (packages/shared/src/growth/index.ts).
-    Alert.alert("Log out?", "You'll need to sign in again to access your schedule.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Log out", style: "destructive", onPress: () => void logout() },
-    ]);
-  }, [logout]);
+  // Destructive from the user's point of view — they land back on the login
+  // screen — so it needs a confirm step rather than firing on one stray tap.
+  // No analytics event: "loggedOut" isn't in the v1 AnalyticsEventMap
+  // (packages/shared/src/growth/index.ts).
+  const confirmLogout = useCallback(() => setPendingLogout(true), []);
 
   const isSso = user?.userType === "SSO";
   const plan = user?.plan ?? "FREE";
@@ -339,6 +336,19 @@ export default function SettingsScreen() {
       <CoachProfileSheet visible={openSheet === "coach-profile"} onClose={closeSheet} />
       <AiKeySheet visible={openSheet === "ai-key"} onClose={closeSheet} />
       <DeleteAccountSheet visible={openSheet === "delete-account"} onClose={closeSheet} />
+
+      <ConfirmDialog
+        visible={pendingLogout}
+        title="Log out?"
+        description="You'll need to sign in again to access your schedule."
+        confirmLabel="Log out"
+        destructive
+        onConfirm={() => {
+          setPendingLogout(false);
+          void logout();
+        }}
+        onCancel={() => setPendingLogout(false)}
+      />
     </SafeAreaView>
   );
 }

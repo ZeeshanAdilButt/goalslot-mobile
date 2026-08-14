@@ -25,7 +25,7 @@
 //     src/components/goals/GoalCard.tsx.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -44,6 +44,7 @@ import {
 import { ErrorState, Skeleton, SkeletonCard } from "@/components";
 import { EditGoalSheet, type EditGoalSheetRef } from "@/components/EditGoalSheet";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { GoalCard, GoalsSummary, summariseGoals, SUMMARY_HEIGHT } from "@/components/goals";
 import {
@@ -55,6 +56,7 @@ import {
   type SegmentOption,
 } from "@/components/lists";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
 import { queueOfflineEdit } from "@/lib/offline";
 import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
@@ -240,7 +242,8 @@ export default function GoalsScreen() {
           notify("Queued — will sync when online", "offline");
         } else {
           queryClient.setQueryData(listKey, previous);
-          Alert.alert("Couldn't complete goal", "Please try again.");
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't complete that goal. Please try again."), "error");
         }
       }
     },
@@ -267,22 +270,27 @@ export default function GoalsScreen() {
           notify("Queued — will sync when online", "offline");
         } else {
           queryClient.setQueryData(listKey, previous);
-          Alert.alert("Couldn't delete goal", "Please try again.");
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't delete that goal. Please try again."), "error");
         }
       }
     },
     [analytics, listKey, removeFromCurrentList],
   );
 
-  const confirmDelete = useCallback(
-    (goal: Goal) => {
-      Alert.alert("Delete goal?", `"${goal.title}" will be permanently removed.`, [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => void deleteGoal(goal) },
-      ]);
-    },
-    [deleteGoal],
-  );
+  const [pendingDelete, setPendingDelete] = useState<Goal | null>(null);
+
+  // Mirrors the old Alert.alert's own behaviour: tapping "Delete" dismissed
+  // the native alert immediately and let deleteGoal run (and optimistically
+  // remove the row) in the background — deleteGoal's own catch already
+  // reports a failure via `notify`, so this dialog has nothing left to stay
+  // open for.
+  const confirmDeleteGoal = useCallback(() => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    setPendingDelete(null);
+    void deleteGoal(target);
+  }, [deleteGoal, pendingDelete]);
 
   const openEdit = useCallback((goal: Goal) => {
     editGoalRef.current?.present(goal);
@@ -299,11 +307,11 @@ export default function GoalsScreen() {
         index={index}
         todayKey={todayKey}
         onComplete={handleComplete}
-        onDelete={confirmDelete}
+        onDelete={setPendingDelete}
         onEdit={openEdit}
       />
     ),
-    [confirmDelete, handleComplete, openEdit, todayKey],
+    [handleComplete, openEdit, todayKey],
   );
 
   const goals = data ?? [];
@@ -436,6 +444,17 @@ export default function GoalsScreen() {
 
       <QuickAddSheet ref={quickAddRef} kind="goal" />
       <EditGoalSheet ref={editGoalRef} />
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete goal?"
+        description={pendingDelete ? `"${pendingDelete.title}" will be permanently removed.` : undefined}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDeleteGoal}
+        onCancel={() => setPendingDelete(null)}
+      />
     </SafeAreaView>
   );
 }

@@ -19,7 +19,7 @@
 // exact local-only flow this screen always had.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AppState, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { AppState, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -53,11 +53,13 @@ import { TimerControls } from "@/components/timer/TimerControls";
 import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { buildTrackingCandidates } from "@/components/voice/tracking-commands";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { outbox } from "@/lib/offline";
 import { isPlanLimitError, hasReachedDailyEntryCap } from "@/lib/plan-limit";
@@ -207,6 +209,43 @@ export default function TimerScreen() {
   // instead — this only matters pre-start.
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
+
+  // The daily-cap warning shown on Start once today's tracked-session count
+  // is already at the plan limit — see handleStart. Just the callback: the
+  // copy is fixed, only whether it's showing (and what "Start Anyway" does)
+  // varies.
+  const [dailyCapWarning, setDailyCapWarning] = useState<{
+    maxTasksPerDay: number | undefined;
+    todaysEntryCount: number;
+    onStartAnyway: () => void;
+  } | null>(null);
+
+  // The server-side stop failure dialog (handleStop's hasServerSession
+  // branch). Unlike the local-stop failure below, there is nothing to
+  // discard here — ActiveTimerService#stop is transactional, so a failed
+  // request has left the session exactly as it was on the server. Only
+  // Keep Tracking / Retry make sense.
+  const [serverStopFailure, setServerStopFailure] = useState(false);
+  const [serverStopBusy, setServerStopBusy] = useState(false);
+  const [serverStopError, setServerStopError] = useState<string | null>(null);
+  // The specific `submitServerStop` closure from the handleStop call that
+  // just failed — a ref, not state, because it's a function: retrying means
+  // re-running that exact request, not a fresh one built from whatever props
+  // this render happens to have.
+  const serverStopRetryRef = useRef<(() => Promise<void>) | null>(null);
+
+  // The local-stop save-failure dialog (handleStop's purely-local branch).
+  // Genuinely 3-way — Keep Tracking / Discard / Retry — because unlike the
+  // server-stop case above, the elapsed time is sitting in this app's memory
+  // only until one of those three actually resolves it.
+  const [saveFailureDialog, setSaveFailureDialog] = useState<{
+    title: string;
+    description: string;
+    onRetry: () => void;
+    onDiscard: () => void;
+  } | null>(null);
+  const [saveFailureBusy, setSaveFailureBusy] = useState(false);
+  const [saveFailureError, setSaveFailureError] = useState<string | null>(null);
 
   const tasksQuery = useQuery(taskQueries.list());
   const goalsQuery = useQuery(goalQueries.list());
@@ -647,11 +686,11 @@ export default function TimerScreen() {
         void queryClient.invalidateQueries({
           queryKey: goalQueries.goalQueries.all,
         });
-      } catch {
-        Alert.alert(
-          "Couldn't attach that",
-          "Your logged time is safe. Please try again.",
-        );
+      } catch (err) {
+        console.error(err);
+        notify(getErrorMessage(err, "Couldn't attach that. Your logged time is safe."), "error", {
+          action: { label: "Retry", onPress: () => void attachToEntry(entry, patch) },
+        });
       } finally {
         setAttachingEntryId(null);
       }
@@ -683,8 +722,11 @@ export default function TimerScreen() {
           .then(() => {
             void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
           })
-          .catch(() => {
-            Alert.alert("Couldn't attach that", "Please try again.");
+          .catch((err) => {
+            console.error(err);
+            notify(getErrorMessage(err, "Couldn't attach that task. Your timer is still running."), "error", {
+              action: { label: "Retry", onPress: () => handlePickTask(task) },
+            });
           });
         return;
       }
@@ -735,8 +777,11 @@ export default function TimerScreen() {
           .then(() => {
             void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
           })
-          .catch(() => {
-            Alert.alert("Couldn't attach that", "Please try again.");
+          .catch((err) => {
+            console.error(err);
+            notify(getErrorMessage(err, "Couldn't attach that goal. Your timer is still running."), "error", {
+              action: { label: "Retry", onPress: () => handlePickGoal(goal) },
+            });
           });
         return;
       }
@@ -766,8 +811,11 @@ export default function TimerScreen() {
         .then(() => {
           void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
         })
-        .catch(() => {
-          Alert.alert("Couldn't clear that", "Please try again.");
+        .catch((err) => {
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't clear that task. Your timer is still running."), "error", {
+            action: { label: "Retry", onPress: () => handleClearTask() },
+          });
         });
       return;
     }
@@ -794,8 +842,11 @@ export default function TimerScreen() {
         .then(() => {
           void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
         })
-        .catch(() => {
-          Alert.alert("Couldn't clear that", "Please try again.");
+        .catch((err) => {
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't clear that attribution. Your timer is still running."), "error", {
+            action: { label: "Retry", onPress: () => handlePickNone() },
+          });
         });
       return;
     }
@@ -852,14 +903,11 @@ export default function TimerScreen() {
     // dismissed, or simply doesn't apply — e.g. another device or the Coach
     // pushes them over the cap mid-session).
     if (hasReachedDailyEntryCap(todaysEntryCount, maxTasksPerDay)) {
-      Alert.alert(
-        "You're at today's tracking limit",
-        `Your plan saves up to ${maxTasksPerDay} tracked sessions a day, and you've already logged ${todaysEntryCount}. You can still start this timer, but stopping it won't save until you upgrade or a new day begins.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Start Anyway", onPress: beginSession },
-        ],
-      );
+      setDailyCapWarning({
+        maxTasksPerDay,
+        todaysEntryCount,
+        onStartAnyway: beginSession,
+      });
       return;
     }
 
@@ -875,8 +923,11 @@ export default function TimerScreen() {
           analytics.track({ name: "timerPaused", payload: { taskId: serverSession?.taskId ?? undefined } });
           void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
         })
-        .catch(() => {
-          Alert.alert("Couldn't pause", "Please check your connection and try again.");
+        .catch((err) => {
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't pause. Please check your connection and try again."), "error", {
+            action: { label: "Retry", onPress: () => handlePause() },
+          });
         });
       return;
     }
@@ -893,8 +944,11 @@ export default function TimerScreen() {
           hapticLight();
           void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
         })
-        .catch(() => {
-          Alert.alert("Couldn't resume", "Please check your connection and try again.");
+        .catch((err) => {
+          console.error(err);
+          notify(getErrorMessage(err, "Couldn't resume. Please check your connection and try again."), "error", {
+            action: { label: "Retry", onPress: () => handleResume() },
+          });
         });
       return;
     }
@@ -937,32 +991,16 @@ export default function TimerScreen() {
 
       try {
         await submitServerStop();
-      } catch {
+      } catch (err) {
         // ActiveTimerService#stop deletes the session row and writes the
         // TimeEntry inside one transaction (dw-time-api's active-timer.service.ts)
         // — a request that fails here, for any reason, has left the session
         // exactly as it was. There is nothing local to protect and nothing
         // destructive about a plain retry, unlike the local-store path below.
-        Alert.alert(
-          "Couldn't save that session",
-          "It's still safe — the session is still active on the server. Check your connection and try again.",
-          [
-            { text: "OK", style: "cancel" },
-            {
-              text: "Retry",
-              onPress: () => {
-                stopping.current = true;
-                void submitServerStop()
-                  .catch(() => {
-                    Alert.alert("Still couldn't save", "The session is still active on the server — try again shortly.");
-                  })
-                  .finally(() => {
-                    stopping.current = false;
-                  });
-              },
-            },
-          ],
-        );
+        console.error(err);
+        serverStopRetryRef.current = submitServerStop;
+        setServerStopError(null);
+        setServerStopFailure(true);
       } finally {
         stopping.current = false;
       }
@@ -1027,11 +1065,12 @@ export default function TimerScreen() {
         // session stopped from Paused sends nothing, same as on web.
         startedAt: stoppedStartedAt !== null ? new Date(stoppedStartedAt).toISOString() : undefined,
       });
-    } catch {
+    } catch (err) {
+      console.error(err);
       stopping.current = false;
-      Alert.alert(
-        "Couldn't save time entry",
+      notify(
         `${formatDuration(durationMinutes)} was tracked but couldn't be prepared for saving. Please add it manually.`,
+        "error",
       );
       return;
     }
@@ -1068,60 +1107,59 @@ export default function TimerScreen() {
       }
     };
 
-    // Shared by the first attempt and every Retry: re-derives which alert to
+    // Shared by the first attempt and every Retry: re-derives which dialog to
     // show from whatever error just came back, rather than assuming a retry
-    // fails the same way the first attempt did. Discard is now the only path
-    // that actually clears the store — before this rewrite the store had
-    // already been reset by the time any of these alerts appeared, so
-    // "Discard" was really just "dismiss".
-    const presentSaveFailureAlert = (err: unknown) => {
+    // fails the same way the first attempt did. Discard is the only path that
+    // actually clears the store — the store isn't reset until the entry is
+    // confirmed saved, durably queued, or explicitly discarded (see
+    // `finalizeLocalStop` above), so "Discard" here really does throw the
+    // tracked time away rather than just dismissing a dialog.
+    const presentSaveFailureDialog = (err: unknown) => {
+      console.error(err);
       const runningWord = status === "paused" ? "paused" : "running";
+
+      const retry = () => {
+        setSaveFailureBusy(true);
+        setSaveFailureError(null);
+        stopping.current = true;
+        void submit()
+          .then(() => setSaveFailureDialog(null))
+          .catch((retryErr) => {
+            console.error(retryErr);
+            setSaveFailureError(getErrorMessage(retryErr, "Still couldn't save. Please try again."));
+          })
+          .finally(() => {
+            stopping.current = false;
+            setSaveFailureBusy(false);
+          });
+      };
+
+      const discard = () => {
+        finalizeLocalStop();
+        setSaveFailureDialog(null);
+      };
 
       if (isPlanLimitError(err)) {
         const capWord = Number.isFinite(user?.limits?.maxTasksPerDay)
           ? `today's free-plan limit of ${user?.limits?.maxTasksPerDay} tracked sessions`
           : "today's plan limit for tracked sessions";
-        Alert.alert(
-          "Can't save this session yet",
-          `You've reached ${capWord}. ${formatDuration(durationMinutes)} against "${label}" is still safe — your timer is still ${runningWord}, nothing is lost. Upgrade to save it now, or it'll be available to save after midnight.`,
-          [
-            { text: "Keep Tracking", style: "cancel" },
-            { text: "Discard", style: "destructive", onPress: finalizeLocalStop },
-            {
-              text: "Retry",
-              onPress: () => {
-                stopping.current = true;
-                void submit()
-                  .catch(presentSaveFailureAlert)
-                  .finally(() => {
-                    stopping.current = false;
-                  });
-              },
-            },
-          ],
-        );
+        setSaveFailureError(null);
+        setSaveFailureDialog({
+          title: "Can't save this session yet",
+          description: `You've reached ${capWord}. ${formatDuration(durationMinutes)} against "${label}" is still safe — your timer is still ${runningWord}, nothing is lost. Upgrade to save it now, or it'll be available to save after midnight.`,
+          onRetry: retry,
+          onDiscard: discard,
+        });
         return;
       }
 
-      Alert.alert(
-        "Couldn't save time entry",
-        `Your timer is still ${runningWord}. ${formatDuration(durationMinutes)} against "${label}" hasn't been saved yet.`,
-        [
-          { text: "Keep Tracking", style: "cancel" },
-          { text: "Discard", style: "destructive", onPress: finalizeLocalStop },
-          {
-            text: "Retry",
-            onPress: () => {
-              stopping.current = true;
-              void submit()
-                .catch(presentSaveFailureAlert)
-                .finally(() => {
-                  stopping.current = false;
-                });
-            },
-          },
-        ],
-      );
+      setSaveFailureError(null);
+      setSaveFailureDialog({
+        title: "Couldn't save time entry",
+        description: `Your timer is still ${runningWord}. ${formatDuration(durationMinutes)} against "${label}" hasn't been saved yet.`,
+        onRetry: retry,
+        onDiscard: discard,
+      });
     };
 
     try {
@@ -1162,7 +1200,7 @@ export default function TimerScreen() {
       // The server responded and refused. Replaying a payload it has already
       // rejected won't always help, but the store stays intact either way so
       // there's always something real to retry against.
-      presentSaveFailureAlert(err);
+      presentSaveFailureDialog(err);
     } finally {
       stopping.current = false;
     }
@@ -1396,6 +1434,67 @@ export default function TimerScreen() {
         onPickNone={handlePickNone}
         onClearTask={handleClearTask}
         onClose={() => setPickerTarget(null)}
+      />
+
+      <ConfirmDialog
+        visible={dailyCapWarning !== null}
+        title="You're at today's tracking limit"
+        description={
+          dailyCapWarning
+            ? `Your plan saves up to ${dailyCapWarning.maxTasksPerDay} tracked sessions a day, and you've already logged ${dailyCapWarning.todaysEntryCount}. You can still start this timer, but stopping it won't save until you upgrade or a new day begins.`
+            : undefined
+        }
+        confirmLabel="Start Anyway"
+        cancelLabel="Cancel"
+        onConfirm={() => {
+          dailyCapWarning?.onStartAnyway();
+          setDailyCapWarning(null);
+        }}
+        onCancel={() => setDailyCapWarning(null)}
+      />
+
+      <ConfirmDialog
+        visible={serverStopFailure}
+        title="Couldn't save that session"
+        description="It's still safe — the session is still active on the server. Check your connection and try again."
+        confirmLabel="Retry"
+        cancelLabel="Keep Tracking"
+        busy={serverStopBusy}
+        error={serverStopError}
+        onConfirm={() => {
+          const retry = serverStopRetryRef.current;
+          if (!retry) return;
+          setServerStopBusy(true);
+          setServerStopError(null);
+          stopping.current = true;
+          void retry()
+            .then(() => setServerStopFailure(false))
+            .catch((err) => {
+              console.error(err);
+              setServerStopError(
+                getErrorMessage(err, "Still couldn't save. The session is still active on the server — try again shortly."),
+              );
+            })
+            .finally(() => {
+              stopping.current = false;
+              setServerStopBusy(false);
+            });
+        }}
+        onCancel={() => setServerStopFailure(false)}
+      />
+
+      <ConfirmDialog
+        visible={saveFailureDialog !== null}
+        title={saveFailureDialog?.title ?? ""}
+        description={saveFailureDialog?.description}
+        confirmLabel="Retry"
+        cancelLabel="Keep Tracking"
+        tertiaryLabel="Discard"
+        busy={saveFailureBusy}
+        error={saveFailureError}
+        onConfirm={() => saveFailureDialog?.onRetry()}
+        onCancel={() => setSaveFailureDialog(null)}
+        onTertiary={() => saveFailureDialog?.onDiscard()}
       />
     </SafeAreaView>
   );

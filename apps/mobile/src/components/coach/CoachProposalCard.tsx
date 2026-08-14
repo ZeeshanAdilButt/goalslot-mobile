@@ -10,10 +10,10 @@
 // confirmation.
 //
 // CONFIRMATION IS THE POINT. Nothing here applies on render, on mount, or on
-// a swipe. A batch that contains a delete asks a second time through the
-// platform's own alert, naming what will go, because a misheard word must
-// never be able to remove a goal someone has been working toward for
-// months.
+// a swipe. A batch that contains a delete asks a second time through this
+// app's own themed ConfirmDialog, naming what will go, because a misheard
+// word must never be able to remove a goal someone has been working toward
+// for months.
 //
 // LAYOUT RULE, and the reason this file was rebuilt: the Apply/Not now pair
 // must stay reachable no matter how much the model emitted. A batch like
@@ -26,7 +26,7 @@
 // distance below the header regardless of batch size.
 
 import { memo, useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { todayKey } from "@goalslot/shared";
@@ -41,6 +41,7 @@ import type {
   WeekSchedule,
 } from "@goalslot/shared";
 
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -398,6 +399,7 @@ function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps)
 export const CoachProposalCard = memo(function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCardProps) {
   const [state, setState] = useState<CardState>({ phase: "idle" });
   const [expanded, setExpanded] = useState(false);
+  const [pendingApply, setPendingApply] = useState(false);
   const destructive = useMemo(() => isDestructiveProposal(block), [block]);
   // Rebuilt fresh each render (not memoized against `block`) — it's a cheap
   // scan over whatever's already in cache, and staleness here would mean
@@ -424,14 +426,11 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
       void run();
       return;
     }
-    // Second gate, and the platform's own alert rather than an in-card
-    // confirm: a delete should look like every other delete in the OS, and
-    // the destructive button style is what a user reads before the words.
-    Alert.alert("Apply this change?", describeDeletions(block, lookups), [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => void run() },
-    ]);
-  }, [block, destructive, lookups, run]);
+    // Second gate before a delete: named in a themed confirm dialog rather
+    // than applying on the first tap, because a misheard word must never be
+    // able to remove a goal someone has been working toward for months.
+    setPendingApply(true);
+  }, [destructive, run]);
 
   const applying = state.phase === "applying";
   const applied = state.phase === "applied";
@@ -444,6 +443,7 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
   }`;
 
   return (
+    <>
     <View style={[styles.card, applied && styles.cardApplied]}>
       <View
         style={[styles.header, applied && styles.headerApplied]}
@@ -594,6 +594,19 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
         </View>
       )}
     </View>
+    <ConfirmDialog
+      visible={pendingApply}
+      title="Apply this change?"
+      description={describeDeletions(block, lookups)}
+      confirmLabel="Delete"
+      destructive
+      onConfirm={() => {
+        setPendingApply(false);
+        void run();
+      }}
+      onCancel={() => setPendingApply(false)}
+    />
+    </>
   );
 });
 

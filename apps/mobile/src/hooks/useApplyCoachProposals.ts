@@ -24,6 +24,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { CoachProposalAction, CoachProposalResult } from "@goalslot/shared";
 
 import { apiClient } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 
@@ -113,10 +114,7 @@ export function useApplyCoachProposals(): UseApplyCoachProposalsResult {
         }
         return summary.message;
       } catch (err) {
-        const message =
-          err instanceof Error && err.message.length > 0
-            ? err.message
-            : "Couldn't apply that change. Please try again.";
+        const message = getErrorMessage(err, "Couldn't apply that change. Please try again.");
         setError(message);
         throw new Error(message);
       }

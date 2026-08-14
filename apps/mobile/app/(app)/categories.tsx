@@ -43,7 +43,6 @@
 
 import { useCallback, useState } from "react";
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -84,7 +83,8 @@ import {
   StatusPill,
   withAlpha,
 } from "@/components/lists";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
@@ -99,19 +99,6 @@ const SKELETON_ROWS = 3;
  * rule two setters have to remember.
  */
 type FormState<T> = { mode: "create" } | { mode: "edit"; entity: T };
-
-/**
- * Pulls a server-side error message out of an axios-shaped error (the API
- * is NestJS; validation/conflict failures respond with `{ message: string |
- * string[] }`). Mirrors `hasResponse` in src/hooks/useQuickAdd.ts — avoids
- * importing axios's types directly since this app doesn't depend on axios
- * itself (only @goalslot/shared does).
- */
-function extractErrorMessage(err: unknown, fallback: string): string {
-  const data = (err as { response?: { data?: { message?: string | string[] } } } | undefined)?.response?.data;
-  if (!data?.message) return fallback;
-  return Array.isArray(data.message) ? data.message.join(", ") : data.message;
-}
 
 export default function CategoriesScreen() {
   const analytics = useAnalytics();
@@ -241,7 +228,8 @@ function CategoriesSection() {
         closeForm();
       } catch (err) {
         queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't add category", extractErrorMessage(err, "Please try again."));
+        console.error(err);
+        notify(getErrorMessage(err, "Couldn't add category. Please try again."), "error");
       } finally {
         setIsSaving(false);
       }
@@ -264,7 +252,8 @@ function CategoriesSection() {
       closeForm();
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't save category", extractErrorMessage(err, "Please try again."));
+      console.error(err);
+      notify(getErrorMessage(err, "Couldn't save category. Please try again."), "error");
     } finally {
       setIsSaving(false);
     }
@@ -299,7 +288,8 @@ function CategoriesSection() {
       setPendingDelete(null);
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      setDeleteError(extractErrorMessage(err, "Please try again."));
+      console.error(err);
+      setDeleteError(getErrorMessage(err, "Please try again."));
     } finally {
       setDeleteBusy(false);
     }
@@ -469,7 +459,8 @@ function LabelsSection() {
         closeForm();
       } catch (err) {
         queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't add label", extractErrorMessage(err, "Please try again."));
+        console.error(err);
+        notify(getErrorMessage(err, "Couldn't add label. Please try again."), "error");
       } finally {
         setIsSaving(false);
       }
@@ -488,7 +479,8 @@ function LabelsSection() {
       closeForm();
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't save label", extractErrorMessage(err, "Please try again."));
+      console.error(err);
+      notify(getErrorMessage(err, "Couldn't save label. Please try again."), "error");
     } finally {
       setIsSaving(false);
     }
@@ -519,7 +511,8 @@ function LabelsSection() {
       setPendingDelete(null);
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      setDeleteError(extractErrorMessage(err, "Please try again."));
+      console.error(err);
+      setDeleteError(getErrorMessage(err, "Please try again."));
     } finally {
       setDeleteBusy(false);
     }

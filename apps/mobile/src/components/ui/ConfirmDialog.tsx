@@ -18,6 +18,15 @@
 // `Alert.alert(...); Alert.alert("Couldn't start a new chat", ...)` pairing
 // did — the error renders inline and the primary button goes back to idle
 // so the user can just try again without re-opening anything.
+//
+// `tertiaryLabel`/`onTertiary` cover the genuinely 3-way case (timer.tsx's
+// local-stop save failure: Keep Tracking / Discard / Retry) — a real third
+// option, not two decisions crammed into one dialog. Rendered as a full-width
+// `ghost` button under the primary pair rather than a third slot in that row:
+// three `flex: 1` buttons side by side get too narrow for their labels on a
+// standard phone width, and the visual demotion (no border, no fill) also
+// reads correctly here — it's the option a user reaches for less often than
+// either "confirm" or "cancel".
 
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -39,6 +48,9 @@ export interface ConfirmDialogProps {
   busy?: boolean;
   /** Rendered inline, inside the same dialog, so a failed attempt can be retried without a second popup stacking on the first. */
   error?: string | null;
+  /** A genuine third option, rendered as a full-width ghost button below Cancel/Confirm — omit for the ordinary two-button dialog. */
+  tertiaryLabel?: string;
+  onTertiary?: () => void;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -53,6 +65,8 @@ export function ConfirmDialog({
   destructive = false,
   busy = false,
   error = null,
+  tertiaryLabel,
+  onTertiary,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -99,6 +113,16 @@ export function ConfirmDialog({
               style={styles.actionButton}
             />
           </View>
+
+          {tertiaryLabel && onTertiary ? (
+            <Button
+              label={tertiaryLabel}
+              variant="ghost"
+              onPress={onTertiary}
+              disabled={busy}
+              style={styles.tertiaryButton}
+            />
+          ) : null}
         </Pressable>
       </Pressable>
     </Modal>
@@ -162,5 +186,8 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flex: 1,
+  },
+  tertiaryButton: {
+    marginTop: -spacing.xxs,
   },
 });

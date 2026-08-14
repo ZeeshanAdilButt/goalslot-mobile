@@ -19,14 +19,13 @@
 // exactly once, on drop, from the JS thread.
 //
 // Mutations follow the tasks.tsx snapshot-rollback shape: optimistic cache
-// patch -> live call -> invalidate on success / restore snapshot + Alert on
+// patch -> live call -> invalidate on success / restore snapshot + toast on
 // failure.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
-  Alert,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -68,6 +67,7 @@ import {
 } from "@goalslot/shared";
 
 import { ErrorState, SkeletonListItem } from "@/components";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { ListEmptyState, ScreenHeader } from "@/components/lists";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -77,6 +77,7 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 // two; see the header comment in foundation.ts for why the split exists.
 import { shadows } from "@/theme";
 import { apiClient, notify } from "@/lib/api-client";
+import { getErrorMessage } from "@/lib/get-error-message";
 import {
   hapticCompletion,
   hapticDepthTick,
@@ -98,17 +99,18 @@ import { useAuth } from "@/providers/auth-provider";
  * highest-risk gap — typed content lost outright). `hasResponse` (the same
  * duck-type check `queueOfflineEdit` uses) still does the "was this a
  * genuine rejection or did the request never reach the server" split for the
- * alert shown on an actual rejection — the two used to read identically as a
+ * toast shown on an actual rejection — the two used to read identically as a
  * generic "please try again", which told an offline user their own
  * connection might be the fixable part when it wasn't going to
  * retry-and-succeed at all.
  */
-function offlineAwareAlert(err: unknown, title: string, rejectionMessage: string): void {
+function offlineAwareNotify(err: unknown, rejectionMessage: string): void {
+  console.error(err);
   if (!hasResponse(err)) {
-    Alert.alert(title, "You're offline — reconnect and try again.");
+    notify("You're offline — reconnect and try again.", "offline");
     return;
   }
-  Alert.alert(title, rejectionMessage);
+  notify(getErrorMessage(err, rejectionMessage), "error");
 }
 
 /** Fixed row height — every drag/drop position is index * ROW_H. */
@@ -445,7 +447,7 @@ export default function NotesScreen() {
           return true;
         }
         restoreSnapshot(previous);
-        offlineAwareAlert(err, "Couldn't move page", "Please try again.");
+        offlineAwareNotify(err, "Couldn't move page. Please try again.");
         return false;
       }
     },
@@ -581,7 +583,7 @@ export default function NotesScreen() {
           router.push(`/note/${optimisticId}`);
         } else {
           queryClient.setQueryData<Note[]>(listKey, (existing) => (existing ?? []).filter((n) => n.id !== optimisticId));
-          offlineAwareAlert(err, "Couldn't create page", "Please try again.");
+          offlineAwareNotify(err, "Couldn't create page. Please try again.");
         }
       } finally {
         setIsCreating(false);
@@ -649,7 +651,7 @@ export default function NotesScreen() {
           const reorderQueued = await queueOfflineEdit("note-reorder", reparent, err);
           if (!reorderQueued) {
             restoreSnapshot(previous);
-            offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
+            offlineAwareNotify(err, "Couldn't delete page. Please try again.");
             return;
           }
           // The reparented survivors carry an un-synced parentId/order —
@@ -665,26 +667,26 @@ export default function NotesScreen() {
           notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
-          offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
+          offlineAwareNotify(err, "Couldn't delete page. Please try again.");
         }
       }
     },
     [analytics, announce, nodeMap, restoreSnapshot],
   );
 
-  const confirmDelete = useCallback(
-    (note: FlatNote) => {
-      const subpageNote =
-        note.descendantCount > 0
-          ? ` Its ${note.descendantCount === 1 ? "subpage" : `${note.descendantCount} subpages`} will move up a level.`
-          : "";
-      Alert.alert("Delete page?", `"${note.title}" will be permanently removed.${subpageNote}`, [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => void deleteNote(note) },
-      ]);
-    },
-    [deleteNote],
-  );
+  const [pendingDelete, setPendingDelete] = useState<FlatNote | null>(null);
+
+  // Same close-then-fire shape as the old Alert.alert: tapping "Delete"
+  // dismissed the native alert immediately and let deleteNote run (and
+  // optimistically remove the row) in the background — deleteNote's own
+  // catch already reports a failure via `offlineAwareNotify`, so this dialog
+  // has nothing left to stay open for.
+  const confirmDeleteNote = useCallback(() => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    setPendingDelete(null);
+    void deleteNote(target);
+  }, [deleteNote, pendingDelete]);
 
   const toggleFavorite = useCallback(
     async (note: FlatNote) => {
@@ -712,7 +714,7 @@ export default function NotesScreen() {
           return;
         }
         restoreSnapshot(previous);
-        offlineAwareAlert(err, "Couldn't update favorite", "Please try again.");
+        offlineAwareNotify(err, "Couldn't update favorite. Please try again.");
       }
     },
     [restoreSnapshot],
@@ -925,7 +927,7 @@ export default function NotesScreen() {
             onCancelDrag={endDrag}
             onPress={openNote}
             onToggleCollapse={toggleCollapse}
-            onDelete={confirmDelete}
+            onDelete={setPendingDelete}
             onNewSubpage={(note) => void createNote(note.id)}
             onToggleFavorite={(note) => void toggleFavorite(note)}
             onAccessibilityAction={handleAccessibilityAction}
@@ -969,8 +971,28 @@ export default function NotesScreen() {
         }
       />
       <View style={styles.listArea}>{body}</View>
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete page?"
+        description={pendingDelete ? deleteNoteDescription(pendingDelete) : undefined}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDeleteNote}
+        onCancel={() => setPendingDelete(null)}
+      />
     </SafeAreaView>
   );
+}
+
+/** Same copy the old Alert.alert built — a note's subpages move up a level rather than being deleted with it. */
+function deleteNoteDescription(note: FlatNote): string {
+  const subpageNote =
+    note.descendantCount > 0
+      ? ` Its ${note.descendantCount === 1 ? "subpage" : `${note.descendantCount} subpages`} will move up a level.`
+      : "";
+  return `"${note.title}" will be permanently removed.${subpageNote}`;
 }
 
 // -----------------------------------------------------------------------

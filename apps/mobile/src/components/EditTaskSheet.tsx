@@ -52,7 +52,7 @@
 // auto-expanded so the value isn't hidden behind a collapsed row.
 
 import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
-import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -64,6 +64,7 @@ import {
 import { getLocalDateString, updateTaskSchema, type Task, type UpdateTaskInput } from "@goalslot/shared";
 
 import { apiClient, notify } from "../lib/api-client";
+import { getErrorMessage } from "../lib/get-error-message";
 import { queueOfflineEdit } from "../lib/offline";
 import { taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
@@ -218,8 +219,9 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
         notify("Queued — will sync when online", "offline");
         sheetRef.current?.dismiss();
       } else {
+        console.error(err);
         queryClient.setQueryData(listKey, previous);
-        Alert.alert("Couldn't save task", "Please try again.");
+        setError(getErrorMessage(err, "Couldn't save that task. Please try again."));
       }
     } finally {
       setIsSubmitting(false);

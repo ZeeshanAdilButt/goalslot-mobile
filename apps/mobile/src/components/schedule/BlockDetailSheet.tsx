@@ -4,9 +4,9 @@
 // components/schedule-block-detail-dialog.tsx and follows its content order
 // exactly: a full-width color bar, then Day / Time / Category / Linked Goal /
 // Tasks as small uppercase labels over semibold values, with Delete behind a
-// confirmation (the web uses ConfirmDialog; RN's Alert is the native
-// equivalent). Duration is the one addition — it's free from the two times
-// and it's the number you actually want when reading a plan.
+// confirmation (this app's own themed ConfirmDialog, same as the web's).
+// Duration is the one addition — it's free from the two times and it's the
+// number you actually want when reading a plan.
 //
 // WHY this replaces the old swipe-to-delete row action: the redesigned screen
 // positions blocks on a time axis, where a 15-minute block is ~30px tall and a
@@ -15,8 +15,8 @@
 // write, same `scheduleBlockDeleted` analytics event — it just hangs off a
 // detail surface now, which is also where the web puts it.
 
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BottomSheetBackdrop,
@@ -34,6 +34,7 @@ import {
   type ScheduleDeleteScope,
 } from "@goalslot/shared";
 
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { SheetHandle } from "@/components/ui/SheetHandle";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
@@ -108,6 +109,8 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
   // that got this right.
   const insets = useSafeAreaInsets();
 
+  const [pendingDelete, setPendingDelete] = useState(false);
+
   const snapPoints = useMemo(() => [EXPANDED_SNAP_POINT], []);
 
   const renderBackdrop = useCallback(
@@ -117,43 +120,27 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
     [],
   );
 
-  const handleDelete = useCallback(() => {
-    if (!block) return;
-
-    const remove = (scope: ScheduleDeleteScope) => {
+  const remove = useCallback(
+    (scope: ScheduleDeleteScope) => {
+      if (!block) return;
       sheetRef.current?.dismiss();
       onDelete(block, scope);
-    };
+    },
+    [block, onDelete],
+  );
 
-    // A solo block keeps the web's exact ConfirmDialog copy.
-    if (!isSeries) {
-      Alert.alert("Delete time slot", "This can't be undone.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => remove("single") },
-      ]);
-      return;
-    }
-
-    // The standard calendar prompt, and the reason it is a prompt rather than
-    // a default: "Reading" on five weekdays is five rows, and guessing wrong
-    // in either direction is bad. Silently deleting the series destroys four
-    // days the user never mentioned; silently deleting one leaves them doing
-    // it five times, which is the complaint that started this. So ask, and
-    // make the destructive-to-many option say how many.
-    Alert.alert(
-      "Delete time slot",
-      `"${block.title}" repeats on ${seriesSize} days. This can't be undone.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "This day only", style: "destructive", onPress: () => remove("single") },
-        {
-          text: `All ${seriesSize} days`,
-          style: "destructive",
-          onPress: () => remove("series"),
-        },
-      ],
-    );
-  }, [block, isSeries, onDelete, seriesSize]);
+  // A solo block gets a plain two-way confirm; a series gets a genuine
+  // three-way choice (Cancel / this day only / all N days) — see the
+  // ConfirmDialog rendered below for both shapes. The reason it is a prompt
+  // rather than a default: "Reading" on five weekdays is five rows, and
+  // guessing wrong in either direction is bad. Silently deleting the series
+  // destroys four days the user never mentioned; silently deleting one
+  // leaves them doing it five times, which is the complaint that started
+  // this. So ask, and make the destructive-to-many option say how many.
+  const handleDelete = useCallback(() => {
+    if (!block) return;
+    setPendingDelete(true);
+  }, [block]);
 
   const duration = useMemo(() => {
     if (!block) return "";
@@ -167,6 +154,7 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
   }, [block, onEdit]);
 
   return (
+    <>
     <BottomSheetModal
       ref={sheetRef}
       onDismiss={onDismiss}
@@ -292,6 +280,36 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
         ) : null}
       </BottomSheetScrollView>
     </BottomSheetModal>
+
+    {/* One dialog handling both shapes, gated on `isSeries`: a solo block
+        gets a plain Cancel/Delete pair, a series gets a genuine third option
+        ("All N days") rendered via ConfirmDialog's tertiary slot. */}
+    <ConfirmDialog
+      visible={pendingDelete && block !== null}
+      title="Delete time slot"
+      description={
+        isSeries && block
+          ? `"${block.title}" repeats on ${seriesSize} days. This can't be undone.`
+          : "This can't be undone."
+      }
+      confirmLabel={isSeries ? "This day only" : "Delete"}
+      destructive
+      onConfirm={() => {
+        setPendingDelete(false);
+        remove("single");
+      }}
+      onCancel={() => setPendingDelete(false)}
+      tertiaryLabel={isSeries ? `All ${seriesSize} days` : undefined}
+      onTertiary={
+        isSeries
+          ? () => {
+              setPendingDelete(false);
+              remove("series");
+            }
+          : undefined
+      }
+    />
+    </>
   );
 });
 

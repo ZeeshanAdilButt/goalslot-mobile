@@ -35,8 +35,8 @@
 // I" needs to survive a glance, and a fill alone doesn't carry that at arm's
 // length the way a coloured edge does.
 
-import { useCallback } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
@@ -48,6 +48,7 @@ import { messagingEnabled } from "@/lib/messaging-config";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { Icon, type IconName } from "@/components/ui/Icon";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 // Closed set of real app routes, exactly mirroring the literal-union pattern
 // `MORE_LINKS` already uses in app/(app)/settings.tsx — deliberately not the
@@ -185,15 +186,11 @@ export interface DrawerContentProps {
 export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerContentProps) {
   const { user, logout } = useAuth();
   const unreadMessages = useUnreadMessagesCount(user?.id);
+  const [pendingLogout, setPendingLogout] = useState(false);
 
   // Same confirm-before-logout UX as Settings (destructive + irreversible
   // from the user's point of view — they land back on the login screen).
-  const confirmLogout = useCallback(() => {
-    Alert.alert("Log out?", "You'll need to sign in again to access your schedule.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Log out", style: "destructive", onPress: () => void logout() },
-    ]);
-  }, [logout]);
+  const confirmLogout = useCallback(() => setPendingLogout(true), []);
 
   const displayName = user?.name?.trim() || user?.email || "Signed in";
   const avatarInitial = (user?.name || user?.email || "?").charAt(0).toUpperCase();
@@ -306,6 +303,19 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
           <Text style={styles.logoutButtonText}>Log out</Text>
         </Pressable>
       </View>
+
+      <ConfirmDialog
+        visible={pendingLogout}
+        title="Log out?"
+        description="You'll need to sign in again to access your schedule."
+        confirmLabel="Log out"
+        destructive
+        onConfirm={() => {
+          setPendingLogout(false);
+          void logout();
+        }}
+        onCancel={() => setPendingLogout(false)}
+      />
     </SafeAreaView>
   );
 }
