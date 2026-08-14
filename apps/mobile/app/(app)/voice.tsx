@@ -1189,6 +1189,12 @@ export default function VoiceScreen() {
 
                 {parsed.pending ? <Text style={styles.pendingText}>Preparing a change…</Text> : null}
 
+                {!parsed.pending && parsed.unrenderable ? (
+                  <Text style={styles.unrenderableText} accessibilityRole="alert">
+                    Something went wrong preparing that change. Try asking again.
+                  </Text>
+                ) : null}
+
                 {visibleProposals.length > 0 ? (
                   <View style={styles.proposals}>
                     {visibleProposals.length > 1 ? (
@@ -1590,6 +1596,16 @@ const styles = StyleSheet.create({
   pendingText: {
     ...typography.bodySmall,
     color: colors.mutedForeground,
+  },
+  // Shown when a ```coach-proposal block closed but produced nothing
+  // renderable (malformed JSON, or every action's type unrecognized — e.g.
+  // a journal-entry request, which has no proposal action type at all).
+  // Without this, the reply text could claim a change was prepared while no
+  // card ever appeared and nothing on screen said why.
+  unrenderableText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.destructive,
   },
   dock: {
     alignItems: "center",

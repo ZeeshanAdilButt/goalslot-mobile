@@ -169,6 +169,22 @@ export interface ExtractedCoachProposals {
   proposals: CoachProposalBlock[]
   /** True while a coach-proposal block is still being streamed in (not yet closed by a trailing ```). */
   pending: boolean
+  /**
+   * True when a fully-closed ```coach-proposal block was present but produced
+   * zero renderable proposals: malformed/non-JSON content, no `actions`
+   * array, an empty one, or every action's `type` failing to normalize to a
+   * known CoachProposalActionType (e.g. the model hallucinating a type like
+   * "CREATE_JOURNAL_ENTRY" that has no client- or server-side handling).
+   *
+   * Without this flag that case is indistinguishable from "no proposal was
+   * ever intended" — the block is stripped from `cleaned` either way, so the
+   * assistant's prose can say "I've prepared a proposal" while nothing
+   * renders for the user to review or apply. A real user hit exactly this
+   * (asking the Coach to add a journal entry, a proposal action type that
+   * doesn't exist). Callers should surface this as a visible inline notice
+   * instead of the previous silent no-op.
+   */
+  unrenderable: boolean
 }
 
 /**
@@ -181,9 +197,13 @@ export interface ExtractedCoachProposals {
  *  - opening fence partially typed (e.g. "```coach")   trimmed off the tail so the user never sees raw fence/JSON
  */
 export function extractCoachProposals(raw: string): ExtractedCoachProposals {
-  if (!raw) return { cleaned: raw, proposals: [], pending: false }
+  if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: false }
 
   const proposals: CoachProposalBlock[] = []
+  // Set when a closed block existed but yielded nothing renderable — see the
+  // `unrenderable` field doc on ExtractedCoachProposals for why this is
+  // tracked separately from "no block was ever present".
+  let unrenderable = false
 
   // 1. Pull out any fully-closed blocks.
   const closed = /```coach-proposal\s*\n([\s\S]*?)```/g
@@ -212,10 +232,20 @@ export function extractCoachProposals(raw: string): ExtractedCoachProposals {
             summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
             actions,
           })
+        } else {
+          // Every action in the block failed to normalize (e.g. all of them
+          // were an unknown type like "CREATE_JOURNAL_ENTRY"). The model
+          // believed it emitted a real proposal; the user must be told
+          // nothing came of it rather than seeing silence.
+          unrenderable = true
         }
+      } else {
+        // Valid JSON, but no actions array or an empty one.
+        unrenderable = true
       }
     } catch {
-      /* malformed, drop silently */
+      // Malformed/non-JSON content inside the fence.
+      unrenderable = true
     }
     return ''
   })
@@ -240,5 +270,5 @@ export function extractCoachProposals(raw: string): ExtractedCoachProposals {
     }
   }
 
-  return { cleaned: cleaned.trim(), proposals, pending }
+  return { cleaned: cleaned.trim(), proposals, pending, unrenderable }
 }

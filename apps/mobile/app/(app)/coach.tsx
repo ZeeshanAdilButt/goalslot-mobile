@@ -190,7 +190,12 @@ function ChatBubble({
     );
   }
 
-  const { cleaned, proposals, pending: proposalPending } = extractCoachProposals(message.content || "");
+  const {
+    cleaned,
+    proposals,
+    pending: proposalPending,
+    unrenderable: proposalUnrenderable,
+  } = extractCoachProposals(message.content || "");
   const showTypingOnly = message.pending && !cleaned && !proposalPending && proposals.length === 0;
 
   return (
@@ -228,6 +233,17 @@ function ChatBubble({
       {proposalPending ? (
         <View style={styles.proposalPending} accessibilityLabel="Coach is preparing a proposed change">
           <Text style={styles.proposalPendingText}>Preparing a proposed change…</Text>
+        </View>
+      ) : null}
+      {!message.pending && !proposalPending && proposalUnrenderable ? (
+        <View
+          style={styles.proposalUnrenderable}
+          accessibilityRole="alert"
+          accessibilityLabel="Coach couldn't prepare that change"
+        >
+          <Text style={styles.proposalUnrenderableText}>
+            Something went wrong preparing that change. Try asking again.
+          </Text>
         </View>
       ) : null}
       {proposals.map((block, idx) => (
@@ -1007,6 +1023,26 @@ const styles = StyleSheet.create({
   proposalPendingText: {
     ...typography.bodySmall,
     color: colors.foreground,
+  },
+  // Shown instead of a proposal card when the assistant's text claims it
+  // prepared a change but `extractCoachProposals` couldn't turn the
+  // ```coach-proposal block into anything renderable (malformed JSON, or
+  // every action's type unrecognized — e.g. a journal-entry request, which
+  // has no proposal action type at all). Without this, that failure was
+  // silent: the block vanished and the user was left with prose claiming
+  // something happened and no card to show for it.
+  proposalUnrenderable: {
+    marginTop: spacing.xs,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.destructive,
+    backgroundColor: colors.destructiveMuted,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+  },
+  proposalUnrenderableText: {
+    ...typography.bodySmall,
+    color: colors.destructive,
   },
   // The proposal card itself now lives in
   // src/components/coach/CoachProposalCard.tsx so the voice assistant renders

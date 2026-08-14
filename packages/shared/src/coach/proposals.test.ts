@@ -46,7 +46,12 @@ describe('normalizeCoachActionType', () => {
 describe('extractCoachProposals', () => {
   it('returns the raw text untouched when there is no proposal block', () => {
     const result = extractCoachProposals('Just a normal reply.')
-    expect(result).toEqual({ cleaned: 'Just a normal reply.', proposals: [], pending: false })
+    expect(result).toEqual({
+      cleaned: 'Just a normal reply.',
+      proposals: [],
+      pending: false,
+      unrenderable: false,
+    })
   })
 
   it('parses a closed coach-proposal block and strips it from the text', () => {
@@ -58,8 +63,9 @@ describe('extractCoachProposals', () => {
       'Let me know what you think.',
     ].join('\n')
 
-    const { cleaned, proposals, pending } = extractCoachProposals(raw)
+    const { cleaned, proposals, pending, unrenderable } = extractCoachProposals(raw)
     expect(pending).toBe(false)
+    expect(unrenderable).toBe(false)
     expect(cleaned).toBe('Here is a plan.\n\nLet me know what you think.')
     expect(proposals).toEqual([
       {
@@ -100,15 +106,35 @@ describe('extractCoachProposals', () => {
     expect(proposals[0]?.actions).toEqual([{ type: 'STOP_TIMER', payload: {} }])
   })
 
-  it('drops an unmappable action but keeps the rest of the batch', () => {
+  it('drops an unmappable action but keeps the rest of the batch, and is not flagged unrenderable', () => {
     const raw = [
       '```coach-proposal',
       '{"actions":[{"type":"NONSENSE_TYPE"},{"type":"CREATE_TASK","payload":{"title":"Ship it"}}]}',
       '```',
     ].join('\n')
 
-    const { proposals } = extractCoachProposals(raw)
+    const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(proposals[0]?.actions).toEqual([{ type: 'CREATE_TASK', payload: { title: 'Ship it' } }])
+    expect(unrenderable).toBe(false)
+  })
+
+  it('flags unrenderable when every action in the block is an unknown type (the journal-entry bug)', () => {
+    // This is the shape of the real bug: the model claims it prepared a
+    // proposal for something with no corresponding action type (journal
+    // entries aren't a coach-proposal action at all), so every action in the
+    // block fails to normalize and the block would otherwise vanish with no
+    // trace, leaving the assistant's "I've prepared a proposal" text as the
+    // only thing on screen.
+    const raw = [
+      '```coach-proposal',
+      '{"summary":"Add journal entry","actions":[{"type":"CREATE_JOURNAL_ENTRY","payload":{"content":"Great workout"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals, unrenderable, cleaned } = extractCoachProposals(raw)
+    expect(proposals).toEqual([])
+    expect(unrenderable).toBe(true)
+    expect(cleaned).toBe('')
   })
 
   it('tolerates trailing commas and // comments in the JSON block', () => {
@@ -154,17 +180,38 @@ describe('extractCoachProposals', () => {
     expect(cleaned).toBe('Here is a plan.')
   })
 
-  it('drops a proposal block whose actions array is empty', () => {
+  it('drops a proposal block whose actions array is empty, flagged unrenderable', () => {
     const raw = ['```coach-proposal', '{"actions":[]}', '```'].join('\n')
-    const { proposals, cleaned } = extractCoachProposals(raw)
+    const { proposals, cleaned, unrenderable } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
     expect(cleaned).toBe('')
+    expect(unrenderable).toBe(true)
   })
 
-  it('drops a malformed block instead of throwing', () => {
+  it('drops a malformed block instead of throwing, flagged unrenderable', () => {
     const raw = ['Some text', '```coach-proposal', '{not json at all', '```', 'more text'].join('\n')
     expect(() => extractCoachProposals(raw)).not.toThrow()
-    const { proposals } = extractCoachProposals(raw)
+    const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
+    expect(unrenderable).toBe(true)
+  })
+
+  it('flags unrenderable when the block has no actions field at all', () => {
+    const raw = ['```coach-proposal', '{"summary":"oops"}', '```'].join('\n')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(proposals).toEqual([])
+    expect(unrenderable).toBe(true)
+  })
+
+  it('does not flag unrenderable when no coach-proposal block is present at all', () => {
+    const { unrenderable } = extractCoachProposals('Just a normal reply with no block.')
+    expect(unrenderable).toBe(false)
+  })
+
+  it('does not flag unrenderable while a block is still streaming in, unclosed', () => {
+    const raw = 'Here is a plan.\n```coach-proposal\n{"actions":[{"type":"CREATE_GOAL"'
+    const { unrenderable, pending } = extractCoachProposals(raw)
+    expect(pending).toBe(true)
+    expect(unrenderable).toBe(false)
   })
 })
