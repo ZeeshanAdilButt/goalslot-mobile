@@ -1,6 +1,6 @@
-// New: no web equivalent to port (journal's features/journal/ directory is
-// gone from this checkout — see api/journal.ts for the full context). Built
-// against ./goals.ts's exact factory pattern: a `createXApi(api)` group
+// No web equivalent to port (journal's features/journal/ directory is gone
+// from this checkout — see api/journal.ts for the verified server contract).
+// Built against ./goals.ts's exact factory pattern: a `createXApi(api)` group
 // wraps a plain namespaced query-key builder plus queryOptions() helpers, so
 // screens and tests both depend on this factory rather than a module-level
 // singleton.
@@ -31,10 +31,13 @@ export function createJournalQueries(journalApi: JournalApi) {
     return res.data
   }
 
-  // A day with no entry yet is a normal, expected state (not an error) — the
-  // API is assumed to 404 for it (see api/journal.ts), which this resolves
-  // to `null` so screens can render an empty editor instead of an error
-  // state on every date that hasn't been written yet.
+  // A day with no entry yet is a normal, expected state, and the API agrees:
+  // `getOne` returns `row ?? null` and the controller hands that back as a
+  // 200 with a `null` body, so the happy path below already resolves to
+  // `null` and screens render an empty editor rather than an error state.
+  // The 404 branch is kept as defence in depth — a proxy or a future handler
+  // change could still produce one, and the caller's contract shouldn't
+  // depend on which of the two shapes arrives.
   const fetchEntryByDate = async (date: string): Promise<JournalEntry | null> => {
     try {
       const res = await journalApi.getByDate(date)

@@ -14,20 +14,42 @@
 // then either invalidate (success) or restore the snapshot (failure). On a
 // failure that looks like "no server response" (offline/timeout), the patch
 // stays applied (tagged `pendingSync: true`) and queues to the offline
-// outbox instead — see the "journal-create"/"journal-update" operations
+// outbox instead — see the "journal-save"/"journal-delete" operations
 // registered in src/lib/offline.ts. Only a genuine rejection (the server
 // answered and said no) restores the pre-save snapshot.
 //
-// Journal is "one entry per day, upsert-shaped": the first save for a date
-// is a create (no id yet), every save after is an update against the id the
-// first save returned. `entryQuery`'s cached entry doubles as that
-// bookkeeping — its `pendingSync` flag is how a second offline save on the
-// same still-unsynced day knows to queue another "journal-create" rather
-// than a "journal-update" against an id the server has never actually seen.
+// THE DATE IS THE IDENTITY. One entry per day is a database rule rather than
+// a UI convention (a `[userId, date]` composite unique), and every write the
+// API exposes is keyed on that date and not on an entry id — POST is a real
+// upsert, DELETE takes a date. So Save makes exactly one call whether the day
+// is blank or has been edited twenty times, and this screen keeps no
+// create-vs-update bookkeeping at all. It used to: it tracked whether the
+// cached entry carried a real server id and PUT to
+// `/coach/journal/entries/:id` when it did — a route the API does not have,
+// so every save of an already-saved entry failed outright. See
+// packages/shared/src/api/journal.ts for the verified contract.
+//
+// The recent-entries rows below are also where an entry gets DELETED,
+// following the convention this app already uses for a destructive row
+// action (tasks.tsx, notes.tsx, components/timer/SessionHistory.tsx): swipe
+// left for a themed ConfirmDialog, never `Alert.alert`, with the same action
+// exposed to screen readers as a custom `accessibilityActions` entry so it is
+// reachable without the gesture.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AccessibilityInfo,
+  Alert,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type AccessibilityActionEvent,
+  type AccessibilityActionInfo,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Swipeable } from "react-native-gesture-handler";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -37,15 +59,23 @@ import Animated, { Easing, useAnimatedStyle, useSharedValue, withSpring, withTim
 import { genId, getLocalDateString, hasResponse, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
+import {
+  countJournalWords,
+  describeJournalDelete,
+  describeRecentEntry,
+  journalEntryPreview,
+  removeJournalEntry,
+} from "@/components/journal/recent-entries";
 import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
-import { htmlToPlainText } from "@/lib/note-content";
+import { hapticCompletion } from "@/lib/haptics";
 import { queueOfflineEdit } from "@/lib/offline";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -62,6 +92,19 @@ const SAVED_CONFIRMATION_MS = 2000;
 
 const RECENT_WINDOW_DAYS = 14;
 const RECENT_SKELETON_ROWS = 4;
+
+/** Same width tasks.tsx and SessionHistory.tsx give their swipe actions, so every list's panel matches. */
+const SWIPE_ACTION_WIDTH = 92;
+
+/**
+ * Delete as a custom accessibility action rather than one of the built-in
+ * names, because it is genuinely app-specific — and declared once at module
+ * scope so every memoised row shares one array identity. Plain activation
+ * (a double-tap under VoiceOver/TalkBack) stays the row's own `onPress`,
+ * which opens that day in the editor: the non-destructive of the two, and so
+ * the right thing to leave on the default gesture.
+ */
+const ROW_ACCESSIBILITY_ACTIONS: AccessibilityActionInfo[] = [{ name: "delete", label: "Delete entry" }];
 
 // --- "Talk about my day" voice capture -------------------------------------
 //
@@ -487,26 +530,32 @@ export default function JournalScreen() {
   );
 
   const handleSave = useCallback(async () => {
-    const trimmedContent = draft;
+    const content = draft;
     const previous = queryClient.getQueryData<JournalEntry | null>(entryKey);
-    // A `pendingSync` previous entry means an earlier save this same day
-    // already queued a create that hasn't synced yet — its id is only
-    // local, so this save is still a create, not an update against it.
-    const isCreate = !previous?.id || previous.pendingSync === true;
-    const optimisticId = isCreate ? (previous?.pendingSync ? previous.id : genId()) : previous!.id;
 
+    // ONE call, whether this day has ever been saved or not.
+    //
+    // `POST /coach/journal/entries` is a Prisma upsert on the `[userId, date]`
+    // composite unique (see packages/shared/src/api/journal.ts), so there is
+    // no create-vs-update decision for this screen to make. It used to make
+    // one anyway — tracking whether the cached entry had a real server id and
+    // sending `PUT /coach/journal/entries/:id` when it did — and that route
+    // does not exist on the API, which pins its by-entry routes to a date
+    // regex a cuid can never match. Every save after the first one 404'd,
+    // rolled back, and showed "Couldn't save entry".
     const optimisticEntry: JournalEntry = {
-      id: optimisticId,
+      // Display bookkeeping only — the list's `keyExtractor` needs something
+      // stable. The server addresses this row by date and never sees this id,
+      // so a day that has not synced yet can carry a purely local one.
+      id: previous?.id ?? genId(),
       date: selectedDate,
-      content: trimmedContent,
+      content,
     };
     queryClient.setQueryData(entryKey, optimisticEntry);
     setIsSaving(true);
 
     try {
-      const response = isCreate
-        ? await apiClient.journal.create({ date: selectedDate, content: trimmedContent })
-        : await apiClient.journal.update(previous!.id, { content: trimmedContent });
+      const response = await apiClient.journal.upsert({ date: selectedDate, content });
 
       queryClient.setQueryData(entryKey, response.data);
       void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
@@ -521,11 +570,11 @@ export default function JournalScreen() {
       savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_CONFIRMATION_MS);
       analytics.track({ name: "journalEntrySaved", payload: { date: selectedDate } });
     } catch (err) {
-      const kind = isCreate ? "journal-create" : "journal-update";
-      const payload = isCreate
-        ? { date: selectedDate, content: trimmedContent }
-        : { id: previous!.id, data: { content: trimmedContent } };
-      const queued = await queueOfflineEdit(kind, payload, err);
+      // Same single operation offline: an upsert is idempotent, so a queued
+      // save replays correctly whether or not the day exists server-side by
+      // the time the outbox drains — and two saves for the same day queued in
+      // one offline session converge instead of racing.
+      const queued = await queueOfflineEdit("journal-save", { date: selectedDate, content }, err);
       if (queued) {
         queryClient.setQueryData<JournalEntry>(entryKey, { ...optimisticEntry, pendingSync: true });
         setIsDirty(false);
@@ -548,41 +597,112 @@ export default function JournalScreen() {
   const canGoForward = selectedDate < today;
   const isToday = selectedDate === today;
 
+  // --- Deleting an entry ----------------------------------------------------
+  //
+  // Held as the whole entry rather than a date, for the same reason
+  // SessionHistory.tsx holds the whole TimeEntry: the optimistic cache write
+  // below removes the row while the dialog is still on screen (busy, and
+  // possibly about to show an error), so a bare key would leave the dialog
+  // with nothing to render its own copy from.
+  const [pendingDelete, setPendingDelete] = useState<JournalEntry | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const requestDelete = useCallback((entry: JournalEntry) => {
+    setDeleteError(null);
+    setPendingDelete(entry);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
+
+  /**
+   * Snapshot -> optimistic removal -> live DELETE -> invalidate on success:
+   * the shape every destructive action in this app uses (tasks.tsx's
+   * handleDelete, notes.tsx's deleteNote, SessionHistory's confirmDelete).
+   *
+   * Two caches move, not one. The recent-entries list loses the row, and that
+   * day's own `byDate` entry becomes `null` — the second matters because the
+   * editor above may well be looking at the very day being deleted, and
+   * leaving its cache alone would keep prose on screen that no longer exists
+   * anywhere. Blanking it is enough on its own: the existing
+   * `entryQuery.data` effect resets `draft` whenever that query's value
+   * changes, so it clears the editor on delete and restores the text on a
+   * rollback without this function touching `draft` at all.
+   *
+   * A network-looking failure queues to the outbox and the row stays gone —
+   * there is no "pending" version of gone to render, so unlike an optimistic
+   * edit this gets no `pendingSync` tag. Only a genuine server rejection
+   * rolls back, and it reports inline in the dialog that is already open
+   * rather than stacking a second popup on top of it.
+   */
+  const confirmDelete = useCallback(async () => {
+    const entry = pendingDelete;
+    if (!entry || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    const listKey = journalQueries.journalQueries.list(recentRange);
+    const dayKey = journalQueries.journalQueries.byDate(entry.date);
+    const previousList = queryClient.getQueryData<JournalEntry[]>(listKey);
+    const previousDay = queryClient.getQueryData<JournalEntry | null>(dayKey);
+
+    queryClient.setQueryData<JournalEntry[]>(listKey, (existing) =>
+      removeJournalEntry(existing ?? [], entry.date),
+    );
+    queryClient.setQueryData<JournalEntry | null>(dayKey, null);
+
+    const dateLabel = formatDisplayDate(entry.date);
+    const announceRemoved = (suffix = "") => {
+      AccessibilityInfo.announceForAccessibility(`Deleted journal entry for ${dateLabel}${suffix}`);
+    };
+
+    try {
+      await apiClient.journal.delete(entry.date);
+      hapticCompletion();
+      void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
+      announceRemoved();
+      setPendingDelete(null);
+    } catch (err) {
+      const queued = await queueOfflineEdit("journal-delete", { date: entry.date }, err);
+      if (queued) {
+        announceRemoved(" — will sync when online");
+        notify("Queued — will sync when online", "offline");
+        setPendingDelete(null);
+      } else {
+        queryClient.setQueryData(listKey, previousList);
+        // `setQueryData(key, undefined)` is a no-op in TanStack, so a day that
+        // had never been fetched (deleted straight from the list without ever
+        // opening it) would keep the `null` written above and then render as
+        // blank if the user navigated to it. Dropping the cache entry
+        // outright is the real "put it back how it was".
+        if (previousDay === undefined) queryClient.removeQueries({ queryKey: dayKey });
+        else queryClient.setQueryData(dayKey, previousDay);
+        setDeleteError("Couldn't delete that entry. Please try again.");
+      }
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteBusy, pendingDelete, recentRange]);
+
+  const deleteCopy = pendingDelete
+    ? describeJournalDelete(pendingDelete, formatDisplayDate(pendingDelete.date))
+    : null;
+
   const renderRecentItem = useCallback(
-    ({ item }: { item: JournalEntry }) => {
-      const isActive = item.date === selectedDate;
-      // Entries authored in the web app's TipTap editor are stored as HTML, so
-      // the preview reads the flattened text — showing `item.content` directly
-      // put the literal `<blockquote><p><em>` on screen (and into the label a
-      // screen reader speaks). Emptiness has to be judged on that text too: a
-      // structurally non-empty but wordless document like `<p></p>` counts as
-      // content by length alone and would render as a blank-looking row
-      // instead of the "No content" placeholder.
-      const preview = htmlToPlainText(item.content);
-      const hasContent = preview.length > 0;
-      return (
-        <PressableScale
-          style={[styles.recentRow, isActive && styles.recentRowActive]}
-          onPress={() => setSelectedDate(item.date)}
-          accessibilityRole="button"
-          accessibilityLabel={`${formatDisplayDate(item.date)}${hasContent ? `, ${preview.slice(0, 80)}` : ", no content"}`}
-        >
-          <RecentDayBadge dateKey={item.date} active={isActive} />
-          <View style={styles.recentRowBody}>
-            <Text
-              style={[styles.recentRowPreview, !hasContent && styles.recentRowPreviewEmpty]}
-              numberOfLines={1}
-            >
-              {hasContent ? preview : "No content"}
-            </Text>
-            <Text style={styles.recentRowDate} numberOfLines={1}>
-              {formatDisplayDate(item.date)}
-            </Text>
-          </View>
-        </PressableScale>
-      );
-    },
-    [selectedDate],
+    ({ item }: { item: JournalEntry }) => (
+      <RecentEntryRow
+        entry={item}
+        active={item.date === selectedDate}
+        onOpen={setSelectedDate}
+        onDelete={requestDelete}
+      />
+    ),
+    [requestDelete, selectedDate],
   );
 
   // The "Saved"/"Queued" checkmark used to just appear — a plain conditional
@@ -629,10 +749,10 @@ export default function JournalScreen() {
   // loading skeleton or the hard-error branch) — gates the word count below
   // it, which has nothing meaningful to report in either of those states.
   const isEditorReady = !entryQuery.isPending && !isHardEntryError;
-  const wordCount = useMemo(() => {
-    const trimmed = draft.trim();
-    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
-  }, [draft]);
+  // Same counter the delete confirmation quotes back (recent-entries.ts), so
+  // "132 words" in the editor and "132 words will be removed" in the dialog
+  // can never be two different numbers for the same text.
+  const wordCount = useMemo(() => countJournalWords(draft), [draft]);
   const showWordCount = isEditorReady && wordCount > 0;
 
   let editorContent: React.ReactNode;
@@ -740,7 +860,11 @@ export default function JournalScreen() {
       <Reveal delay={60} style={styles.recentListCard}>
         <FlashList
           data={recentEntries}
-          keyExtractor={(item) => item.id}
+          // Keyed by date, not id: the date is the row's real identity (one
+          // entry per day), and it is the one field that survives a save
+          // unchanged — an entry saved offline carries a local id that the
+          // server replaces on sync, which would otherwise remount the row.
+          keyExtractor={(item) => item.date}
           renderItem={renderRecentItem}
           contentContainerStyle={styles.recentListContent}
         />
@@ -1003,9 +1127,98 @@ export default function JournalScreen() {
         <Text style={styles.recentHeading}>Recent entries</Text>
         <View style={styles.recentListArea}>{recentContent}</View>
       </View>
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title={deleteCopy?.title ?? "Delete this entry?"}
+        description={deleteCopy?.description}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
     </SafeAreaView>
   );
 }
+
+// Memoised for the same reason SessionHistory's row is: `recentEntries` only
+// changes reference on an actual refetch, but the FlashList's `renderItem`
+// closure is rebuilt on every JournalScreen render — and this screen
+// re-renders on every keystroke in the editor above the list. Without this,
+// each character typed re-rendered every visible row.
+const RecentEntryRow = memo(function RecentEntryRow({
+  entry,
+  active,
+  onOpen,
+  onDelete,
+}: {
+  entry: JournalEntry;
+  active: boolean;
+  onOpen: (date: string) => void;
+  onDelete: (entry: JournalEntry) => void;
+}) {
+  const swipeableRef = useRef<Swipeable>(null);
+  const dateLabel = formatDisplayDate(entry.date);
+  const preview = journalEntryPreview(entry.content);
+  const hasContent = preview.length > 0;
+
+  const renderRightActions = useCallback(
+    () => (
+      <Pressable
+        style={[styles.swipeAction, styles.deleteAction]}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete(entry);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete journal entry for ${dateLabel}`}
+      >
+        <Icon name="trash" size={18} color={colors.destructiveForeground} />
+        <Text style={styles.swipeActionText}>Delete</Text>
+      </Pressable>
+    ),
+    [dateLabel, entry, onDelete],
+  );
+
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === "delete") onDelete(entry);
+    },
+    [entry, onDelete],
+  );
+
+  return (
+    // `overflow: hidden` on the wrapper clips the revealed delete panel to the
+    // row's own bounds — without it a square red block bleeds past the
+    // rounded card this list sits inside.
+    <View style={styles.recentRowWrap}>
+      <Swipeable ref={swipeableRef} renderRightActions={renderRightActions} overshootRight={false}>
+        <PressableScale
+          style={[styles.recentRow, active && styles.recentRowActive]}
+          onPress={() => onOpen(entry.date)}
+          accessibilityRole="button"
+          accessibilityLabel={describeRecentEntry(entry, dateLabel)}
+          accessibilityHint="Opens this day in the editor above"
+          accessibilityActions={ROW_ACCESSIBILITY_ACTIONS}
+          onAccessibilityAction={handleAccessibilityAction}
+        >
+          <RecentDayBadge dateKey={entry.date} active={active} />
+          <View style={styles.recentRowBody}>
+            <Text style={[styles.recentRowPreview, !hasContent && styles.recentRowPreviewEmpty]} numberOfLines={1}>
+              {hasContent ? preview : "No content"}
+            </Text>
+            <Text style={styles.recentRowDate} numberOfLines={1}>
+              {dateLabel}
+            </Text>
+          </View>
+        </PressableScale>
+      </Swipeable>
+    </View>
+  );
+});
 
 // Shared chrome for the small floating status panels this screen shows above
 // the editor while dictation is priming/listening/paused/blocked. Previously
@@ -1358,6 +1571,12 @@ const styles = StyleSheet.create({
   recentListContent: {
     paddingVertical: 4,
   },
+  // Wrapper exists purely to clip the swipe-revealed delete panel to the row
+  // (see the note at its render site). The row keeps its own separator, so
+  // rows still butt up against each other inside the card exactly as before.
+  recentRowWrap: {
+    overflow: "hidden",
+  },
   recentRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1366,6 +1585,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+    // The row is the swipe surface now, so it needs an opaque background of
+    // its own — the delete panel sits directly behind it and would otherwise
+    // show through the transparent row as it slides.
+    backgroundColor: colors.card,
+    // A swipe target has to be comfortably grabbable even on a one-line row.
+    minHeight: minTouchTarget,
   },
   // Brand-tinted rather than the flat neutral `colors.muted` this used to be
   // — the same "brand-accented container" convention `voiceIdleRow` already
@@ -1431,5 +1656,21 @@ const styles = StyleSheet.create({
   },
   dayBadgeNumActive: {
     color: colors.primaryText,
+  },
+  swipeAction: {
+    width: SWIPE_ACTION_WIDTH,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  deleteAction: {
+    backgroundColor: colors.destructive,
+  },
+  swipeActionText: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.bold,
+    color: colors.destructiveForeground,
+    textAlign: "center",
   },
 });

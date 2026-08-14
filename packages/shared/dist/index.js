@@ -88,13 +88,16 @@ var updateTimeEntrySchema = createTimeEntrySchema.partial();
 
 // src/validation/journal.ts
 import { z as z5 } from "zod";
-var createJournalEntrySchema = z5.object({
-  date: z5.string().min(1, "Date is required"),
-  content: z5.string()
+var MAX_JOURNAL_CONTENT_LENGTH = 65535;
+var YYYY_MM_DD = /^\d{4}-\d{2}-\d{2}$/;
+var upsertJournalEntrySchema = z5.object({
+  date: z5.string().regex(YYYY_MM_DD, "Date must be YYYY-MM-DD"),
+  content: z5.string().max(MAX_JOURNAL_CONTENT_LENGTH, "Entry is too long to save")
 });
 var updateJournalEntrySchema = z5.object({
-  content: z5.string()
+  content: z5.string().max(MAX_JOURNAL_CONTENT_LENGTH, "Entry is too long to save")
 });
+var createJournalEntrySchema = upsertJournalEntrySchema;
 
 // src/scheduling/time.ts
 function timeToMinutes(time) {
@@ -1097,10 +1100,48 @@ function createGoalsApi(api) {
 function createJournalApi(api) {
   return {
     list: (params) => api.get("/coach/journal/entries", { params }),
+    // Resolves to `null`, not a 404, on a day with no entry: the service
+    // returns `row ?? null` and the controller hands that straight back as a
+    // 200. queries/journal.ts still catches a 404 defensively, but it is the
+    // null body that actually does the work.
     getByDate: (date) => api.get(`/coach/journal/entries/${date}`),
+    /**
+     * Create-or-update a day's entry. The only write a journal client needs.
+     *
+     * Safe to replay, which is what makes it the right thing to sit in the
+     * offline outbox: re-POSTing the same `{ date, content }` converges on the
+     * same single row rather than stacking duplicates, and a queued save no
+     * longer has to be ordered against whether that day's row exists yet.
+     */
+    upsert: (data) => api.post("/coach/journal/entries", data),
+    /**
+     * @deprecated Alias of `upsert` — the name is a leftover from when this
+     * client believed create and update were different endpoints. It happens
+     * to have always pointed at the right route, which is why a FIRST save
+     * for a day was the one journal write that worked.
+     *
+     * Kept only because app/(app)/voice.tsx still calls it. Prefer `upsert`.
+     */
     create: (data) => api.post("/coach/journal/entries", data),
-    update: (id, data) => api.put(`/coach/journal/entries/${id}`, data),
-    delete: (id) => api.delete(`/coach/journal/entries/${id}`)
+    /**
+     * Set one day's content, keyed by DATE — never by id. The API has no
+     * by-id write of any kind; an entry's id is a read-only artifact.
+     *
+     * Redundant with `upsert` for every current caller (it upserts too, and
+     * takes the date in the body instead of the path), and kept only because
+     * app/(app)/voice.tsx still calls it. THAT CALL SITE IS STILL WRONG: it
+     * passes `existing.id`, a cuid, which the `\d{4}-\d{2}-\d{2}` route
+     * constraint rejects. Fixing it is a one-argument change (pass the date
+     * it already has in scope) — or better, switch it to `upsert`, which is
+     * what its sibling create branch already does.
+     */
+    update: (date, data) => api.put(`/coach/journal/entries/${date}/content`, data),
+    /**
+     * Remove a whole day's entry, by date. Idempotent server-side (the
+     * service uses `deleteMany`, which never throws on a missing row), so a
+     * replayed or duplicated delete is harmless.
+     */
+    delete: (date) => api.delete(`/coach/journal/entries/${date}`)
   };
 }
 
@@ -3440,6 +3481,7 @@ export {
   GOAL_STATUS_OPTIONS,
   IDEMPOTENCY_KEY_HEADER,
   INDENTATION_WIDTH,
+  MAX_JOURNAL_CONTENT_LENGTH,
   MAX_MESSAGE_LENGTH,
   MessagingError,
   NO_TARGET,
@@ -3574,6 +3616,7 @@ export {
   updateScheduleBlockSchema,
   updateTaskSchema,
   updateTimeEntrySchema,
+  upsertJournalEntrySchema,
   upsertLiveConversationEntry,
   upsertMessage,
   validateCoachByokKey

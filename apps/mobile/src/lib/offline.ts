@@ -11,7 +11,6 @@ import {
   toMessagingError,
   type CompleteTaskInput,
   type CreateGoalInput,
-  type CreateJournalEntryInput,
   type CreateNoteDto,
   type CreateScheduleBlockInput,
   type CreateTaskInput,
@@ -27,10 +26,10 @@ import {
   type Task,
   type TimeEntry,
   type UpdateGoalInput,
-  type UpdateJournalEntryInput,
   type UpdateNoteDto,
   type UpdateScheduleBlockInput,
   type UpdateTaskInput,
+  type UpsertJournalEntryInput,
 } from "@goalslot/shared";
 
 import { apiClient, notify } from "./api-client";
@@ -264,25 +263,63 @@ operationRegistry.registerOperation<EntityIdPayload, void>("schedule-block-delet
 
 // --- Journal + note edits ---------------------------------------------------
 //
-// Journal is "one entry per day, upsert-shaped": the first save for a date
-// is a create, every save after that is an update against the id the first
-// save returned. journal.tsx tracks which case it's in itself (the cached
-// entry's `pendingSync` flag tells it a create is still only local), so
-// there are two `kind`s rather than one — a queued update needs a real
-// server id to replay against, which a same-day queued create doesn't have
-// yet.
-operationRegistry.registerOperation<CreateJournalEntryInput, JournalEntry>("journal-create", {
-  execute: async (payload) => (await apiClient.journal.create(payload)).data,
+// Journal is one entry per day and the DATE is its identity, all the way down
+// to the database: the row carries a `[userId, date]` composite unique and
+// `POST /coach/journal/entries` is a Prisma upsert against it. So ONE
+// operation covers a first save and every later edit alike, and the queue
+// carries no create-vs-update bookkeeping at all.
+//
+// There used to be two kinds here. "journal-update" replayed
+// `PUT /coach/journal/entries/:id` — a route that does not exist. The real
+// one is `PUT /:date/content`, and every by-date route pins its param to
+// `\d{4}-\d{2}-\d{2}`, which a cuid cannot match, so each queued journal edit
+// drained straight into a 404 and was reported to the user as "1 offline
+// change could not be synced". That kind is deleted rather than repaired:
+// with the upsert below there is nothing left for a by-id write to do, and
+// its `{ id, data }` payload could not have been rewritten into a valid
+// request anyway — an id is not recoverable to a date on this side. Entries
+// of that kind still sitting in an installed build's outbox now hit sync.ts's
+// unregistered-kind branch and are discarded one drain tick earlier, without
+// the pointless round trip they used to make first.
+//
+// NOTE for whoever owns app/(app)/voice.tsx: its `appendToJournal` still
+// enqueues "journal-update", and still calls `apiClient.journal.update` with
+// an entry id, on this same wrong assumption. Pointing that branch at
+// `apiClient.journal.upsert` / "journal-save" is the entire fix — the merged
+// content it already computes IS an upsert body.
+operationRegistry.registerOperation<UpsertJournalEntryInput, JournalEntry>("journal-save", {
+  execute: async (payload) => (await apiClient.journal.upsert(payload)).data,
   invalidateKeys: [journalQueries.journalQueries.all],
 });
 
-export interface JournalUpdatePayload {
-  id: string;
-  data: UpdateJournalEntryInput;
+// The same operation under its former name, kept registered rather than
+// renamed away. The outbox is persisted in AsyncStorage, so a save queued by
+// an already-installed build — and every save voice.tsx queues today — still
+// arrives under this kind, and an unregistered kind is silently discarded on
+// the next drain (sync.ts). POST was always the right call here, which is why
+// a FIRST save for a day was the one journal write that already worked.
+operationRegistry.registerOperation<UpsertJournalEntryInput, JournalEntry>("journal-create", {
+  execute: async (payload) => (await apiClient.journal.upsert(payload)).data,
+  invalidateKeys: [journalQueries.journalQueries.all],
+});
+
+/** Journal rows are addressed by date, so this is the by-date counterpart to `EntityIdPayload`. */
+export interface JournalDeletePayload {
+  date: string;
 }
 
-operationRegistry.registerOperation<JournalUpdatePayload, JournalEntry>("journal-update", {
-  execute: async (payload) => (await apiClient.journal.update(payload.id, payload.data)).data,
+// Removing a whole day's entry (the Journal screen's "Recent entries" rows —
+// see app/(app)/journal.tsx). Queued like every other delete in this app: the
+// row is already gone from the list and there is no "pending" version of gone
+// to render, so unlike the save above this tags nothing `pendingSync`.
+//
+// Idempotent server-side — the service deletes with `deleteMany`, which never
+// throws on a missing row — so a replay that races another device deleting
+// the same day still succeeds instead of draining into a drop.
+operationRegistry.registerOperation<JournalDeletePayload, void>("journal-delete", {
+  execute: async (payload) => {
+    await apiClient.journal.delete(payload.date);
+  },
   invalidateKeys: [journalQueries.journalQueries.all],
 });
 

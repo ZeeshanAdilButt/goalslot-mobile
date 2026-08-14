@@ -445,9 +445,11 @@ interface UpdateLabelForm {
 /**
  * One journal entry, keyed to a single calendar day (YYYY-MM-DD, local
  * device time — see scheduling/time.ts's getLocalDateString/todayKey).
- * One-entry-per-day is a product rule, not just a UI convention: the API is
- * assumed to enforce it (POST for a date that already has an entry should
- * behave like an upsert or reject — see api/journal.ts).
+ *
+ * One-entry-per-day is enforced by the database, not just by the UI: the row
+ * carries a `[userId, date]` composite unique, and `POST /coach/journal/
+ * entries` is a Prisma upsert against it. That is why `date` — not `id` — is
+ * the key every write and delete in api/journal.ts addresses an entry by.
  */
 interface JournalEntry {
     id: string;
@@ -865,7 +867,9 @@ declare const updateTimeEntrySchema: z.ZodObject<{
 type CreateTimeEntryInput = z.infer<typeof createTimeEntrySchema>;
 type UpdateTimeEntryInput = z.infer<typeof updateTimeEntrySchema>;
 
-declare const createJournalEntrySchema: z.ZodObject<{
+/** `@MaxLength(65535)` on both DTOs' `content` — "TipTap HTML can be large; allow up to ~64KB". */
+declare const MAX_JOURNAL_CONTENT_LENGTH = 65535;
+declare const upsertJournalEntrySchema: z.ZodObject<{
     date: z.ZodString;
     content: z.ZodString;
 }, "strip", z.ZodTypeAny, {
@@ -882,7 +886,20 @@ declare const updateJournalEntrySchema: z.ZodObject<{
 }, {
     content: string;
 }>;
-type CreateJournalEntryInput = z.infer<typeof createJournalEntrySchema>;
+/** @deprecated Alias of `upsertJournalEntrySchema` — POST is a create-or-update, not a create. */
+declare const createJournalEntrySchema: z.ZodObject<{
+    date: z.ZodString;
+    content: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    date: string;
+    content: string;
+}, {
+    date: string;
+    content: string;
+}>;
+type UpsertJournalEntryInput = z.infer<typeof upsertJournalEntrySchema>;
+/** @deprecated Alias of `UpsertJournalEntryInput`. */
+type CreateJournalEntryInput = UpsertJournalEntryInput;
 type UpdateJournalEntryInput = z.infer<typeof updateJournalEntrySchema>;
 
 declare function timeToMinutes(time: string): number;
@@ -1995,10 +2012,13 @@ declare function createApiClient(config: ApiClientConfig): {
             from?: string;
             to?: string;
         }) => Promise<axios.AxiosResponse<JournalEntry[], any, {}, any>>;
-        getByDate: (date: string) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
+        getByDate: (date: string) => Promise<axios.AxiosResponse<JournalEntry | null, any, {}, any>>;
+        upsert: (data: UpsertJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
         create: (data: CreateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
-        update: (id: string, data: UpdateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
-        delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
+        update: (date: string, data: UpdateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
+        delete: (date: string) => Promise<axios.AxiosResponse<{
+            success: true;
+        }, any, {}, any>>;
     };
     messaging: {
         issueToken: () => Promise<axios.AxiosResponse<MessagingTokenResponse, any, {}, any>>;
@@ -2203,10 +2223,46 @@ declare function createJournalApi(api: AxiosInstance): {
         from?: string;
         to?: string;
     }) => Promise<axios.AxiosResponse<JournalEntry[], any, {}, any>>;
-    getByDate: (date: string) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
+    getByDate: (date: string) => Promise<axios.AxiosResponse<JournalEntry | null, any, {}, any>>;
+    /**
+     * Create-or-update a day's entry. The only write a journal client needs.
+     *
+     * Safe to replay, which is what makes it the right thing to sit in the
+     * offline outbox: re-POSTing the same `{ date, content }` converges on the
+     * same single row rather than stacking duplicates, and a queued save no
+     * longer has to be ordered against whether that day's row exists yet.
+     */
+    upsert: (data: UpsertJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
+    /**
+     * @deprecated Alias of `upsert` — the name is a leftover from when this
+     * client believed create and update were different endpoints. It happens
+     * to have always pointed at the right route, which is why a FIRST save
+     * for a day was the one journal write that worked.
+     *
+     * Kept only because app/(app)/voice.tsx still calls it. Prefer `upsert`.
+     */
     create: (data: CreateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
-    update: (id: string, data: UpdateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
-    delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
+    /**
+     * Set one day's content, keyed by DATE — never by id. The API has no
+     * by-id write of any kind; an entry's id is a read-only artifact.
+     *
+     * Redundant with `upsert` for every current caller (it upserts too, and
+     * takes the date in the body instead of the path), and kept only because
+     * app/(app)/voice.tsx still calls it. THAT CALL SITE IS STILL WRONG: it
+     * passes `existing.id`, a cuid, which the `\d{4}-\d{2}-\d{2}` route
+     * constraint rejects. Fixing it is a one-argument change (pass the date
+     * it already has in scope) — or better, switch it to `upsert`, which is
+     * what its sibling create branch already does.
+     */
+    update: (date: string, data: UpdateJournalEntryInput) => Promise<axios.AxiosResponse<JournalEntry, any, {}, any>>;
+    /**
+     * Remove a whole day's entry, by date. Idempotent server-side (the
+     * service uses `deleteMany`, which never throws on a missing row), so a
+     * replayed or duplicated delete is harmless.
+     */
+    delete: (date: string) => Promise<axios.AxiosResponse<{
+        success: true;
+    }, any, {}, any>>;
 };
 type JournalApi = ReturnType<typeof createJournalApi>;
 
@@ -3458,4 +3514,4 @@ declare function resolveSpokenTarget(target: NamedTarget, candidates: readonly T
 
 declare const SHARED_PACKAGE_NAME = "@goalslot/shared";
 
-export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClientConfig, type AppendNoteIntent, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachReligiousContext, type CoachSettingsApi, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskInput, type CreateTimeEntryInput, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, IDEMPOTENCY_KEY_HEADER, INDENTATION_WIDTH, type IdempotentRequestOptions, type IncomingShare, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type Label, type LabelInput, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_MESSAGE_LENGTH, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type PushSubscriptionKind, type PushSubscriptionResponse, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryScheduleBlockSummary, type TimerSessionApi, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type User, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createPushSubscriptionsApi, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, hasResponse, idempotentConfig, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };
+export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClientConfig, type AppendNoteIntent, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachReligiousContext, type CoachSettingsApi, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskInput, type CreateTimeEntryInput, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, IDEMPOTENCY_KEY_HEADER, INDENTATION_WIDTH, type IdempotentRequestOptions, type IncomingShare, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type Label, type LabelInput, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_JOURNAL_CONTENT_LENGTH, MAX_MESSAGE_LENGTH, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type PushSubscriptionKind, type PushSubscriptionResponse, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryScheduleBlockSummary, type TimerSessionApi, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type UpsertJournalEntryInput, type User, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createPushSubscriptionsApi, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, hasResponse, idempotentConfig, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertJournalEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };
