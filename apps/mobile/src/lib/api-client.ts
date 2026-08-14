@@ -14,7 +14,7 @@ import { fetch as expoFetch } from "expo/fetch";
 import { createApiClient } from "@goalslot/shared";
 
 import { secureTokenStorage } from "./secure-token-storage";
-import { showToast, type ToastKind } from "./toast-store";
+import { showToast, type ShowToastOptions, type ToastKind } from "./toast-store";
 
 const DEFAULT_API_BASE_URL = "https://api.goalslot.io";
 
@@ -52,8 +52,13 @@ export function setSessionExpiredHandler(handler: SessionExpiredHandler): void {
 // `(message: string) => void` shape createApiClient's config expects
 // (packages/shared/src/api/types.ts) for the session-expired call above,
 // while offline.ts's richer callers pass it explicitly.
-export function notify(message: string, kind: ToastKind = "success"): void {
-  showToast(message, kind);
+//
+// `options` is likewise optional and passes straight through to the queue —
+// it carries the toast's action slot (`{ action: { label, onPress } }`), so a
+// screen that has just deleted something it still holds in memory can offer
+// "Undo" without importing the store directly or growing its own banner.
+export function notify(message: string, kind: ToastKind = "success", options?: ShowToastOptions): void {
+  showToast(message, kind, options);
 }
 
 export const apiClient = createApiClient({

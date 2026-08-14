@@ -15,6 +15,13 @@
 // tinted icon chip (the same "colored icon container on a neutral card" shape
 // as stat-card.tsx's accent rings) so success/offline/error are legible at a
 // glance from the icon alone, not just from reading the copy.
+//
+// A toast carrying a `ToastAction` (toast-store.ts) renders that action as a
+// trailing pill — the app's only undo affordance. Two things about that row
+// are deliberate and easy to "simplify" back into bugs: the card itself stops
+// being tap-to-dismiss when an action is present, and the press routes
+// through the store's `runAction` rather than calling the handler here. Both
+// are explained at their call sites below.
 
 import { useEffect, useRef } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -23,10 +30,9 @@ import Animated, { FadeInDown, FadeOutDown, LinearTransition } from "react-nativ
 
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { hapticLight } from "@/lib/haptics";
 import { useToastStore, type ToastEntry, type ToastKind } from "@/lib/toast-store";
 import { colors, motion, radii, shadows, spacing, typography } from "@/theme/tokens";
-
-const AUTO_DISMISS_MS = 4000;
 
 // One row per ToastKind: which glyph reads as "this kind" at a glance, and
 // the tint pairing for its icon chip. Colors reuse the app's existing
@@ -65,17 +71,78 @@ export function ToastHost() {
 
 function ToastRow({ toast }: { toast: ToastEntry }) {
   const dismiss = useToastStore((state) => state.dismiss);
+  const runAction = useToastStore((state) => state.runAction);
   const reduceMotion = useReduceMotion();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // How long this toast lives is the store's call, not this component's —
+  // an actionable toast gets a longer one (toast-store.ts's
+  // TOAST_ACTION_DURATION_MS), because the user has to reach the button and
+  // not merely read the text.
   useEffect(() => {
-    timerRef.current = setTimeout(() => dismiss(toast.id), AUTO_DISMISS_MS);
+    timerRef.current = setTimeout(() => dismiss(toast.id), toast.durationMs);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [dismiss, toast.id]);
+  }, [dismiss, toast.id, toast.durationMs]);
 
   const { icon, iconColor, iconBg } = KIND_STYLE[toast.kind];
+  const { action } = toast;
+
+  const body = (
+    <>
+      <View style={[styles.iconChip, { backgroundColor: iconBg }]}>
+        <Icon name={icon} size={16} color={iconColor} />
+      </View>
+      <Text style={styles.text} numberOfLines={2}>
+        {toast.message}
+      </Text>
+      {action ? (
+        <Pressable
+          style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+          onPress={() => {
+            hapticLight();
+            // Via the store, not `action.onPress()` directly: it retires the
+            // toast before running the handler, so a double-tap on a button
+            // that is already fading out can't fire a second undo.
+            runAction(toast.id);
+          }}
+          // The pill reads best at its text size, so the 44pt target is
+          // bought back with hitSlop — the same trade schedule.tsx's bell
+          // and _layout.tsx's hamburger make.
+          hitSlop={spacing.sm}
+          accessibilityRole="button"
+          accessibilityLabel={action.label}
+          accessibilityHint={toast.message}
+        >
+          <Text style={styles.actionLabel}>{action.label}</Text>
+        </Pressable>
+      ) : null}
+    </>
+  );
+
+  // An actionable toast is NOT tap-to-dismiss. The two gestures are a
+  // millimetre apart on a card this small, and the cost of confusing them is
+  // asymmetric: a mis-tap that dismisses destroys the only chance to undo a
+  // delete, whereas a mis-tap that does nothing costs a second of waiting for
+  // the auto-dismiss. So the whole card is inert except the button, and the
+  // timer above is what clears it.
+  const card = action ? (
+    <View style={styles.toast} accessibilityRole="alert" accessibilityLiveRegion="polite">
+      {body}
+    </View>
+  ) : (
+    <Pressable
+      style={styles.toast}
+      onPress={() => dismiss(toast.id)}
+      accessibilityRole="alert"
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={toast.message}
+      accessibilityHint="Tap to dismiss"
+    >
+      {body}
+    </Pressable>
+  );
 
   return (
     <Animated.View
@@ -105,21 +172,7 @@ function ToastRow({ toast }: { toast: ToastEntry }) {
           : LinearTransition.damping(motion.spring.damping).stiffness(motion.spring.stiffness)
       }
     >
-      <Pressable
-        style={styles.toast}
-        onPress={() => dismiss(toast.id)}
-        accessibilityRole="alert"
-        accessibilityLiveRegion="polite"
-        accessibilityLabel={toast.message}
-        accessibilityHint="Tap to dismiss"
-      >
-        <View style={[styles.iconChip, { backgroundColor: iconBg }]}>
-          <Icon name={icon} size={16} color={iconColor} />
-        </View>
-        <Text style={styles.text} numberOfLines={2}>
-          {toast.message}
-        </Text>
-      </Pressable>
+      {card}
     </Animated.View>
   );
 }
@@ -160,5 +213,30 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     fontWeight: "600",
     color: colors.foreground,
+  },
+  // The app's existing brand-accent chip vocabulary (foundation.ts's
+  // primaryMuted/primaryBorder/primaryText trio, documented there as the
+  // readable brand-colored TEXT pairing — raw #F2CC0D fails contrast on a
+  // light surface), not a solid yellow button. A filled brand button inside
+  // a toast would out-shout the message it belongs to, and this is the same
+  // shape stat-card.tsx's accent rings already use elsewhere in the app.
+  action: {
+    paddingHorizontal: spacing.md,
+    // sm, not xs: with the hitSlop above this is what clears the 44pt
+    // minimum touch target (foundation.ts's `minTouchTarget`) — ~30pt of
+    // pill plus 2×8 of slop.
+    paddingVertical: spacing.sm,
+    borderRadius: radii.full,
+    backgroundColor: colors.primaryMuted,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.primaryBorder,
+  },
+  actionPressed: {
+    opacity: 0.7,
+  },
+  actionLabel: {
+    ...typography.bodySmall,
+    fontWeight: "700",
+    color: colors.primaryText,
   },
 });

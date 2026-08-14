@@ -26,6 +26,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import {
   DAYS_OF_WEEK_FULL,
   formatDuration,
+  type CreateScheduleBlockInput,
   type ScheduleBlock,
   type ScheduleDeleteScope,
   type WeekSchedule,
@@ -73,6 +74,36 @@ const NOW_SCROLL_HEADROOM = 140;
 const BLOCK_SCROLL_HEADROOM = 24;
 /** Same value index.tsx uses to keep header content clear of the floating hamburger (_layout.tsx). */
 const HAMBURGER_CLEARANCE = 64;
+
+/**
+ * A deleted block reduced back to the payload that would create it again.
+ *
+ * There is no undelete endpoint — `DELETE /schedule/:id` is final — so undo
+ * is a re-create, and this is the whole reason it's cheap enough to offer:
+ * the screen already holds the complete blocks it just removed, so nothing
+ * has to be re-fetched or reconstructed from a diff.
+ *
+ * `seriesId` is carried over deliberately rather than left for the server to
+ * mint fresh. The reminders store keys a series' alarm tier by seriesId
+ * (src/lib/schedule-reminders-store.ts), so restoring under the original id
+ * brings the series' alarm setting back with the blocks. A tier set on one
+ * individual block does NOT survive: the server assigns new row ids, and
+ * nothing on the client can map the old id onto the new row.
+ */
+function toCreateInput(block: ScheduleBlock): CreateScheduleBlockInput {
+  return {
+    title: block.title,
+    startTime: block.startTime,
+    endTime: block.endTime,
+    dayOfWeek: block.dayOfWeek,
+    category: block.category,
+    color: block.color,
+    isRecurring: block.isRecurring,
+    isPrivate: block.isPrivate,
+    goalId: block.goalId,
+    seriesId: block.seriesId,
+  };
+}
 
 export default function ScheduleScreen() {
   const analytics = useAnalytics();
@@ -230,6 +261,68 @@ export default function ScheduleScreen() {
     // the window actually changes, and reads the current minute at that point.
   }, [selectedDay, showSkeleton, entries, dayWindow]);
 
+  // The "Undo" behind the delete toast. Puts the blocks back in the cache
+  // immediately — the tap has to be answered on screen, not after a round
+  // trip — then re-creates each one, then invalidates so the restored rows
+  // pick up the ids the server actually assigned (they are new rows; only
+  // their contents are the old ones).
+  //
+  // Reminders re-arm themselves without any help here: ScheduleRemindersSync
+  // reconciles OS notifications from the block list app-wide, so the refetch
+  // below is what re-queues the alarms this delete cancelled.
+  //
+  // Deliberately un-tracked, unlike every other create path in the app: an
+  // undone delete is a correction, not a block the user set out to make, and
+  // counting it as `scheduleBlockCreated` would inflate creation numbers with
+  // rows that already existed a moment earlier.
+  const restoreBlocks = useCallback(async (blocks: ScheduleBlock[]) => {
+    const weeklyKey = scheduleQueries.scheduleQueries.weeklyKey();
+
+    queryClient.setQueryData<WeekSchedule>(weeklyKey, (existing) => {
+      const week = { ...(existing ?? {}) };
+      for (const block of blocks) {
+        week[block.dayOfWeek] = [...(week[block.dayOfWeek] ?? []), block];
+      }
+      return week;
+    });
+
+    let queuedAny = false;
+    let rejected = false;
+    for (const block of blocks) {
+      const payload = toCreateInput(block);
+      try {
+        await apiClient.schedule.create(payload);
+      } catch (err) {
+        // Same offline treatment the delete itself gets: connectivity can
+        // drop in the seconds between deleting and undoing, and "your undo
+        // silently failed" is the worst possible outcome for a control whose
+        // entire job is rescuing a mistake.
+        const queued = await queueOfflineEdit("schedule-block-create", payload, err);
+        if (queued) {
+          queuedAny = true;
+        } else {
+          rejected = true;
+          break;
+        }
+      }
+    }
+
+    // Unconditional, and after the loop rather than in a success branch: a
+    // partially-restored series (some created, one rejected) leaves the cache
+    // holding blocks that don't all exist, and only the server knows which.
+    void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
+
+    if (rejected) {
+      Alert.alert("Couldn't undo", "Those time slots weren't restored — please add them again.");
+      return;
+    }
+    if (queuedAny) {
+      notify("Queued — will sync when online", "offline");
+      return;
+    }
+    notify(blocks.length === 1 ? "Time slot restored" : `${blocks.length} time slots restored`, "success");
+  }, []);
+
   // Deleting is the one series operation the API has no scope for: PUT
   // /schedule/:id honours `updateScope: 'series'` server-side, but DELETE
   // /schedule/:id deletes exactly one row and takes no scope. So a series
@@ -304,10 +397,29 @@ export default function ScheduleScreen() {
       // does: the row is already gone from the list, and there is no
       // "pending" version of gone to show.
       if (queuedAny) {
+        // No undo offered on this path on purpose. The delete is sitting in
+        // the outbox unsent, so "undo" would mean enqueueing a create for a
+        // row the server still has and a delete for it in front — two
+        // opposing writes racing to replay, ending in whichever order the
+        // drain happens to pick. Deleting again once online is honest;
+        // an undo that might not stick is not.
         notify("Queued — will sync when online", "offline");
+        return;
       }
+
+      // The block is gone from a timeline the user is looking at, with the
+      // detail sheet closing over the top of it — the least verifiable kind
+      // of change this screen makes, and previously a completely silent one.
+      // The toast both confirms it happened and is the only place the undo
+      // can live: `targets` holds the full blocks, so the offer costs nothing
+      // but the closure.
+      notify(
+        targets.length === 1 ? "Time slot deleted" : `${targets.length} time slots deleted`,
+        "success",
+        { action: { label: "Undo", onPress: () => void restoreBlocks(targets) } },
+      );
     },
-    [allBlocks, analytics, notifications],
+    [allBlocks, analytics, notifications, restoreBlocks],
   );
 
   // Every "+" affordance on this screen (FAB, an empty hour row, the

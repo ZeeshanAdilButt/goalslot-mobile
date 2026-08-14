@@ -35,9 +35,11 @@
 //      the optimistic patch back and rethrow — replaying an invalid payload
 //      later wouldn't succeed either, so this is not queued.
 //
-// A completion haptic + the domain's "created" analytics event fire only
-// once the live create actually succeeds — a queued-for-later offline add
-// doesn't count as confirmed yet, so it doesn't get the celebratory haptic.
+// A completion haptic, a confirmation toast ("Task added") and the domain's
+// "created" analytics event all fire only once the live create actually
+// succeeds — a queued-for-later offline add doesn't count as confirmed yet,
+// so it doesn't get the celebratory haptic, and it says "Queued — will sync
+// when online" instead of claiming the thing exists.
 
 import { useCallback, useState } from "react";
 import type { QueryKey } from "@tanstack/react-query";
@@ -141,6 +143,16 @@ interface RunQuickAddArgs<TInput, TCreated> {
   rollbackOptimistic: () => void;
   /** Tags the still-showing optimistic entry `pendingSync: true` once its create has queued. */
   markPendingSync: () => void;
+  /**
+   * Confirmation toast for a live (not queued) create — "Goal added" and
+   * friends. Quick-add is the one create flow whose result is routinely
+   * invisible: the sheet dismisses the instant it resolves, and the screen
+   * behind it is very often not the one showing what was just made (a task
+   * added from Today lands on the Tasks screen). Without this the offline
+   * path was the ONLY one that said anything, which read as "queued works,
+   * online does nothing".
+   */
+  successMessage: string;
   onSuccess: (created: TCreated) => void;
 }
 
@@ -152,6 +164,7 @@ async function runQuickAdd<TInput, TCreated>({
   applyOptimistic,
   rollbackOptimistic,
   markPendingSync,
+  successMessage,
   onSuccess,
 }: RunQuickAddArgs<TInput, TCreated>): Promise<void> {
   applyOptimistic();
@@ -159,6 +172,7 @@ async function runQuickAdd<TInput, TCreated>({
   try {
     const created = await create(payload);
     void queryClient.invalidateQueries({ queryKey: invalidateKey });
+    notify(successMessage, "success");
     onSuccess(created);
   } catch (err) {
     if (!hasResponse(err)) {
@@ -239,6 +253,7 @@ async function submitGoal(input: QuickAddGoalInput, analytics: AnalyticsCapabili
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Goal>(listKey, optimisticId),
     markPendingSync: () => markPendingInListCache<Goal>(listKey, optimisticId),
+    successMessage: "Goal added",
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "goalCreated", payload: { goalId: created.id } });
@@ -265,6 +280,7 @@ async function submitTask(input: QuickAddTaskInput, analytics: AnalyticsCapabili
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Task>(listKey, optimisticId),
     markPendingSync: () => markPendingInListCache<Task>(listKey, optimisticId),
+    successMessage: "Task added",
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "taskCreated", payload: { taskId: created.id } });
@@ -317,6 +333,7 @@ async function submitSlot(input: QuickAddSlotInput, analytics: AnalyticsCapabili
     rollbackOptimistic: () => patchDay((blocks) => blocks.filter((block) => block.id !== optimisticId)),
     markPendingSync: () =>
       patchDay((blocks) => blocks.map((block) => (block.id === optimisticId ? { ...block, pendingSync: true } : block))),
+    successMessage: "Time slot added",
     onSuccess: (created) => {
       hapticCompletion();
       analytics.track({ name: "scheduleBlockCreated", payload: { scheduleBlockId: created.id } });
