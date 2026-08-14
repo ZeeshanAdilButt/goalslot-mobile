@@ -37,7 +37,7 @@ export function cleanLabel(value: string | null | undefined): string | null {
 export const DORMANT_ELAPSED_TOLERANCE_MS = 1000;
 
 /** First argument that is an actual finite number, or null if none is. */
-function firstFinite(...values: unknown[]): number | null {
+export function firstFinite(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }

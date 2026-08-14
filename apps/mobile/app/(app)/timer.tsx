@@ -67,6 +67,7 @@ import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useSettingsStore } from "@/lib/settings-store";
 import {
   cleanLabel,
+  firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
   resolveScheduledTarget,
@@ -924,7 +925,7 @@ export default function TimerScreen() {
           name: "timerStopped",
           payload: {
             taskId: serverSession.taskId ?? undefined,
-            durationSeconds: Math.round(res.data.elapsedMs / 1000),
+            durationSeconds: Math.round((firstFinite(res.data.elapsedMs) ?? 0) / 1000),
           },
         });
         void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });

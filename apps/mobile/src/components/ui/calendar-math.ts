@@ -13,6 +13,15 @@ export function parseDateKey(key: string): { year: number; month: number; day: n
   return { year: y ?? 1970, month: (m ?? 1) - 1, day: d ?? 1 };
 }
 
+/** "YYYY-MM-DD" -> "Aug 30". Goes through `parseDateKey` + a local
+ *  `Date(y, m, d)` rather than `new Date(dateString)` directly — the latter
+ *  parses "YYYY-MM-DD" as UTC midnight, which `toLocaleDateString` can then
+ *  render as the previous day in negative-UTC-offset timezones. */
+export function formatDateKey(key: string): string {
+  const { year, month, day } = parseDateKey(key);
+  return new Date(year, month, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export function toDateKey(year: number, month: number, day: number): string {
   const mm = (month + 1).toString().padStart(2, "0");
   const dd = day.toString().padStart(2, "0");

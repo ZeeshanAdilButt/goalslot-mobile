@@ -507,12 +507,19 @@ export default function JournalScreen() {
   // same HTML back unchanged, which is what made Save look like a no-op.
   // Entries never opened on mobile are untouched: this only runs on read,
   // so nothing is migrated until the day it's actually loaded here.
+  // Guarded by `isDirty`: this query is also invalidated by actions that have
+  // nothing to do with the day currently open (e.g. deleting a different day
+  // from the recent-entries list broadly invalidates `journalQueries.all`).
+  // Without the guard, that refetch landing mid-edit would silently overwrite
+  // whatever the user is still typing with the last-saved server content.
+  // `confirmDelete` clears `isDirty` itself when it deletes the day currently
+  // open, so this still resets the editor for that case.
   useEffect(() => {
-    if (entryQuery.data !== undefined) {
+    if (entryQuery.data !== undefined && !isDirty) {
       setDraft(entryQuery.data ? htmlToPlainText(entryQuery.data.content) : "");
       setIsDirty(false);
     }
-  }, [entryQuery.data]);
+  }, [entryQuery.data, isDirty]);
 
   const recentRange = useMemo(
     () => ({ from: addDays(today, -(RECENT_WINDOW_DAYS - 1)), to: today }),
@@ -576,9 +583,32 @@ export default function JournalScreen() {
     }
   }, [analytics, draft, entryKey, selectedDate]);
 
-  const goToPreviousDay = useCallback(() => setSelectedDate((date) => addDays(date, -1)), []);
-  const goToNextDay = useCallback(() => setSelectedDate((date) => addDays(date, 1)), []);
-  const goToToday = useCallback(() => setSelectedDate(today), [today]);
+  // Every way of leaving the currently-open day (arrows, "Jump to today", a
+  // recent-entries row) funnels through this instead of `setSelectedDate`
+  // directly, so an unsaved draft gets a confirmation instead of the silent
+  // discard `selectedDate`'s own reset effect (above) would otherwise do.
+  const [pendingNavDate, setPendingNavDate] = useState<string | null>(null);
+  const navigateToDate = useCallback(
+    (date: string) => {
+      if (date === selectedDate) return;
+      if (isDirty) {
+        setPendingNavDate(date);
+        return;
+      }
+      setSelectedDate(date);
+    },
+    [isDirty, selectedDate],
+  );
+  const confirmNavAway = useCallback(() => {
+    if (pendingNavDate === null) return;
+    setSelectedDate(pendingNavDate);
+    setPendingNavDate(null);
+  }, [pendingNavDate]);
+  const cancelNavAway = useCallback(() => setPendingNavDate(null), []);
+
+  const goToPreviousDay = useCallback(() => navigateToDate(addDays(selectedDate, -1)), [navigateToDate, selectedDate]);
+  const goToNextDay = useCallback(() => navigateToDate(addDays(selectedDate, 1)), [navigateToDate, selectedDate]);
+  const goToToday = useCallback(() => navigateToDate(today), [navigateToDate, today]);
   const canGoForward = selectedDate < today;
   const isToday = selectedDate === today;
 
@@ -640,6 +670,11 @@ export default function JournalScreen() {
       removeJournalEntry(existing ?? [], entry.date),
     );
     queryClient.setQueryData<JournalEntry | null>(dayKey, null);
+    // Deleting the day that's open in the editor is itself the user's intent
+    // to discard whatever's there — clear `isDirty` so the `entryQuery.data`
+    // effect's guard (see above) doesn't mistake this for a stale background
+    // refetch and leave the just-deleted text on screen.
+    if (entry.date === selectedDate) setIsDirty(false);
 
     const dateLabel = formatDisplayDate(entry.date);
     const announceRemoved = (suffix = "") => {
@@ -672,7 +707,7 @@ export default function JournalScreen() {
     } finally {
       setDeleteBusy(false);
     }
-  }, [deleteBusy, pendingDelete, recentRange]);
+  }, [deleteBusy, pendingDelete, recentRange, selectedDate]);
 
   const deleteCopy = pendingDelete
     ? describeJournalDelete(pendingDelete, formatDisplayDate(pendingDelete.date))
@@ -683,11 +718,11 @@ export default function JournalScreen() {
       <RecentEntryRow
         entry={item}
         active={item.date === selectedDate}
-        onOpen={setSelectedDate}
+        onOpen={navigateToDate}
         onDelete={requestDelete}
       />
     ),
-    [requestDelete, selectedDate],
+    [navigateToDate, requestDelete, selectedDate],
   );
 
   // The "Saved"/"Queued" checkmark used to just appear — a plain conditional
@@ -1146,6 +1181,17 @@ export default function JournalScreen() {
         error={deleteError}
         onConfirm={() => void confirmDelete()}
         onCancel={cancelDelete}
+      />
+
+      <ConfirmDialog
+        visible={pendingNavDate !== null}
+        title="Discard unsaved changes?"
+        description="This entry hasn't been saved. Leaving now will lose what you've written."
+        icon="alert"
+        confirmLabel="Discard"
+        destructive
+        onConfirm={confirmNavAway}
+        onCancel={cancelNavAway}
       />
     </SafeAreaView>
   );

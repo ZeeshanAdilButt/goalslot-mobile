@@ -64,6 +64,19 @@ function isAuthFailureStatus(status: number | undefined): boolean {
   return status === 401 || status === 403
 }
 
+// Shared by both interceptors below: these endpoints must never carry a
+// (possibly stale) bearer token, since they authenticate with credentials
+// of their own and a leftover token from a previous session shouldn't ride
+// along.
+function isPublicAuthEndpoint(url: string): boolean {
+  return (
+    url.includes('/auth/refresh') ||
+    url.includes('/auth/login') ||
+    url.includes('/auth/register') ||
+    url.includes('/auth/sso')
+  )
+}
+
 export function createApiClient(config: ApiClientConfig) {
   const { baseUrl, storage, onSessionExpired, notify, fetchImpl = fetch } = config
 
@@ -98,8 +111,12 @@ export function createApiClient(config: ApiClientConfig) {
     onSessionExpired()
   }
 
-  // Attach the access token to every outgoing request.
+  // Attach the access token to every outgoing request, except the public
+  // auth endpoints.
   api.interceptors.request.use(async (requestConfig) => {
+    if (isPublicAuthEndpoint(requestConfig.url || '')) {
+      return requestConfig
+    }
     const token = await storage.getAccessToken()
     if (token) {
       requestConfig.headers.set('Authorization', `Bearer ${token}`)
@@ -117,14 +134,8 @@ export function createApiClient(config: ApiClientConfig) {
         return Promise.reject(error)
       }
 
-      const requestUrl = originalRequest.url || ''
-      const isRefreshEndpoint = requestUrl.includes('/auth/refresh')
-      const isLoginEndpoint = requestUrl.includes('/auth/login')
-      const isRegisterEndpoint = requestUrl.includes('/auth/register')
-      const isSSOEndpoint = requestUrl.includes('/auth/sso')
-
       // Don't attempt refresh for the auth endpoints themselves.
-      if (isRefreshEndpoint || isLoginEndpoint || isRegisterEndpoint || isSSOEndpoint) {
+      if (isPublicAuthEndpoint(originalRequest.url || '')) {
         return Promise.reject(error)
       }
 

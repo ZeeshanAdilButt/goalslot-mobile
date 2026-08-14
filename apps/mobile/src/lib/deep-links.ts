@@ -253,7 +253,11 @@ function isDeepLinkNotificationData(data: unknown): data is DeepLinkNotification
       return true;
     case "goal":
     case "task":
-      return "id" in data && typeof (data as { id: unknown }).id === "string";
+      return (
+        "id" in data &&
+        typeof (data as { id: unknown }).id === "string" &&
+        (data as { id: string }).id.length > 0
+      );
     case "schedule":
       return "dayOfWeek" in data && isScheduleDayOfWeek((data as { dayOfWeek: unknown }).dayOfWeek);
     case "journal":

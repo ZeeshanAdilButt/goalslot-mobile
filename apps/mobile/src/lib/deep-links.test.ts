@@ -88,6 +88,14 @@ describe("resolveNotificationRoute", () => {
     expect(resolveNotificationRoute({ type: "schedule", dayOfWeek: 9 })).toBeNull();
   });
 
+  // Regression: an empty-string id used to pass validation and resolve to
+  // "/goals?goalId=" / "/tasks?taskId=" instead of being rejected, the same
+  // "" vs. absent gap already guarded against on the conversation branch above.
+  it("returns null for a 'goal' or 'task' payload with an empty id", () => {
+    expect(resolveNotificationRoute({ type: "goal", id: "" })).toBeNull();
+    expect(resolveNotificationRoute({ type: "task", id: "" })).toBeNull();
+  });
+
   it("returns null for an unknown type", () => {
     expect(resolveNotificationRoute({ type: "unknown" })).toBeNull();
   });

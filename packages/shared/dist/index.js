@@ -1424,6 +1424,9 @@ var REQUEST_TIMEOUT_MS = 2e4;
 function isAuthFailureStatus(status) {
   return status === 401 || status === 403;
 }
+function isPublicAuthEndpoint(url) {
+  return url.includes("/auth/refresh") || url.includes("/auth/login") || url.includes("/auth/register") || url.includes("/auth/sso");
+}
 function createApiClient(config) {
   const { baseUrl, storage, onSessionExpired, notify, fetchImpl = fetch } = config;
   const api = axios2.create({
@@ -1451,6 +1454,9 @@ function createApiClient(config) {
     onSessionExpired();
   }
   api.interceptors.request.use(async (requestConfig) => {
+    if (isPublicAuthEndpoint(requestConfig.url || "")) {
+      return requestConfig;
+    }
     const token = await storage.getAccessToken();
     if (token) {
       requestConfig.headers.set("Authorization", `Bearer ${token}`);
@@ -1464,12 +1470,7 @@ function createApiClient(config) {
       if (error.response?.status !== 401 || !originalRequest || originalRequest._retry) {
         return Promise.reject(error);
       }
-      const requestUrl = originalRequest.url || "";
-      const isRefreshEndpoint = requestUrl.includes("/auth/refresh");
-      const isLoginEndpoint = requestUrl.includes("/auth/login");
-      const isRegisterEndpoint = requestUrl.includes("/auth/register");
-      const isSSOEndpoint = requestUrl.includes("/auth/sso");
-      if (isRefreshEndpoint || isLoginEndpoint || isRegisterEndpoint || isSSOEndpoint) {
+      if (isPublicAuthEndpoint(originalRequest.url || "")) {
         return Promise.reject(error);
       }
       if (isRefreshing) {

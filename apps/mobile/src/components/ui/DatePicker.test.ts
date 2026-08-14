@@ -4,7 +4,7 @@
 // is exactly the kind of bug nobody notices until they're looking right at
 // the specific month it breaks on.
 
-import { daysInMonth, firstWeekdayOfMonth, parseDateKey, toDateKey } from "./calendar-math";
+import { daysInMonth, firstWeekdayOfMonth, formatDateKey, parseDateKey, toDateKey } from "./calendar-math";
 
 describe("parseDateKey / toDateKey", () => {
   it("round-trips a date key", () => {
@@ -16,6 +16,25 @@ describe("parseDateKey / toDateKey", () => {
 
   it("zero-pads single-digit month and day", () => {
     expect(toDateKey(2026, 0, 5)).toBe("2026-01-05");
+  });
+});
+
+describe("formatDateKey", () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    process.env.TZ = originalTz;
+  });
+
+  // Regression: this used to go through `new Date("YYYY-MM-DD")`, which JS
+  // parses as UTC midnight — a day early for anyone west of UTC.
+  it("renders the date's own day in a negative-UTC-offset timezone", () => {
+    process.env.TZ = "America/Los_Angeles"; // UTC-7/-8
+    expect(formatDateKey("2026-08-16")).toBe("Aug 16");
+  });
+
+  it("renders the date's own day in a positive-UTC-offset timezone", () => {
+    process.env.TZ = "Pacific/Auckland"; // UTC+12/+13
+    expect(formatDateKey("2026-08-16")).toBe("Aug 16");
   });
 });
 

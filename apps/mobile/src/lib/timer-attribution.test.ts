@@ -7,6 +7,7 @@ import type { ActiveTimerSession, Goal, ScheduleBlock, Task, WeekSchedule } from
 import {
   DORMANT_ELAPSED_TOLERANCE_MS,
   cleanLabel,
+  firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
   resolveScheduledTarget,
@@ -88,6 +89,21 @@ describe("cleanLabel", () => {
 
   it("ignores non-strings that arrive despite the type", () => {
     expect(cleanLabel(42 as unknown as string)).toBeNull();
+  });
+});
+
+describe("firstFinite", () => {
+  it("returns the first finite number among its arguments", () => {
+    expect(firstFinite(null, undefined, 42)).toBe(42);
+    expect(firstFinite(5, 10)).toBe(5);
+  });
+
+  it("returns null when nothing finite is present", () => {
+    // The confirmed live case this guards elsewhere: a numeric field that
+    // arrives as `null` or `undefined` from the server must not silently
+    // become `NaN` downstream (e.g. `Math.round(undefined / 1000)`).
+    expect(firstFinite(null, undefined, NaN)).toBeNull();
+    expect(firstFinite()).toBeNull();
   });
 });
 

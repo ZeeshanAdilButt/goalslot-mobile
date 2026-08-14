@@ -71,6 +71,28 @@ describe('createApiClient', () => {
     await client.goals.getAll()
   })
 
+  it('does not attach a stale token to public auth endpoints', async () => {
+    // Regression test: a token left over from a previous session (or a
+    // multi-account flow) must not ride along on login/register/sso/refresh
+    // — none of them expect one, and the response interceptor a few lines
+    // below already carves out this same set of routes for the same reason.
+    const storage = createMemoryStorage({ access: 'stale-token', refresh: 'stale-refresh' })
+    const client = createApiClient({ baseUrl: BASE_URL, storage, onSessionExpired: vi.fn() })
+    const mock = new MockAdapter(client.api)
+
+    mock.onPost('/auth/login').reply((config) => {
+      expect(config.headers?.Authorization).toBeUndefined()
+      return [200, { accessToken: 'a', refreshToken: 'b' }]
+    })
+    mock.onPost('/auth/register').reply((config) => {
+      expect(config.headers?.Authorization).toBeUndefined()
+      return [200, { accessToken: 'a', refreshToken: 'b' }]
+    })
+
+    await client.auth.login({ email: 'a@b.com', password: 'x' })
+    await client.auth.register({ email: 'a@b.com', password: 'x', name: 'A', otp: '123456' })
+  })
+
   describe('401 refresh flow', () => {
     it('refreshes the token once and retries the original request', async () => {
       const storage = createMemoryStorage({ access: 'expired-token', refresh: 'valid-refresh' })

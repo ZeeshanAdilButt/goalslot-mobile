@@ -71,7 +71,7 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
-import { parseDateKey } from "@/components/ui/calendar-math";
+import { formatDateKey } from "@/components/ui/calendar-math";
 
 export interface EditTaskSheetRef {
   present: (task: Task) => void;
@@ -100,15 +100,8 @@ function isPresetDueDate(date: string | undefined): boolean {
   return DUE_DATE_OPTIONS.some((option) => date === getLocalDateString(addDays(new Date(), option.daysFromToday)));
 }
 
-/** "YYYY-MM-DD" -> "Aug 30" for the Custom chip's label once a non-preset
- *  date is selected. Goes through `parseDateKey` + a local `Date(y, m, d)`
- *  rather than `new Date(dateString)` directly — the latter parses
- *  "YYYY-MM-DD" as UTC midnight, which `toLocaleDateString` can then
- *  render as the previous day in negative-UTC-offset timezones. */
-function formatCustomDueDate(date: string): string {
-  const { year, month, day } = parseDateKey(date);
-  return new Date(year, month, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+/** For the Custom chip's label once a non-preset date is selected. */
+const formatCustomDueDate = formatDateKey;
 
 export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditTaskSheet(_props, ref) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -172,6 +165,16 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
 
     const trimmedTitle = title.trim();
     const trimmedCategory = category.trim();
+
+    // Same gap as the due-date field (see the header comment): the payload
+    // has no null/clear sentinel for these either, so an emptied field is
+    // just omitted below and the server leaves the old value in place.
+    // Blocking here instead of submitting is what keeps that from looking
+    // like a successful clear.
+    if ((task.category && !trimmedCategory) || (task.estimatedMinutes && !trimmedMinutes)) {
+      setError("Clearing category or estimated minutes isn't supported yet — enter a new value instead.");
+      return;
+    }
 
     let payload: UpdateTaskInput;
     try {

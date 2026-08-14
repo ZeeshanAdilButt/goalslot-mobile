@@ -17,14 +17,11 @@ import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { formatDuration, formatTime12h, type Task } from "@goalslot/shared";
 
 import { MetaChip } from "@/components/lists";
+import { formatDateKey } from "@/components/ui/calendar-math";
 import { spacing } from "@/theme/tokens";
 
 /** Due dates as "Mar 4" — web renders `formatDate(task.dueDate, 'MMM d')`. */
-export function formatDueDate(dueDate: string): string {
-  const parsed = new Date(dueDate);
-  if (Number.isNaN(parsed.getTime())) return dueDate;
-  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+export const formatDueDate = formatDateKey;
 
 export interface TaskMetaChipsProps {
   task: Task;
