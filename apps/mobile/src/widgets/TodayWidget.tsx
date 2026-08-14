@@ -230,7 +230,7 @@ function TrackButton({ goalId }: { goalId: string }) {
       clickActionData={{ uri: timerAutoStartDeepLink(goalId) }}
       accessibilityLabel="Start tracking this goal"
     >
-      <TextWidget text="Track" style={trackButtonTextStyle} />
+      <TextWidget text="Start" style={trackButtonTextStyle} />
     </FlexWidget>
   );
 }
