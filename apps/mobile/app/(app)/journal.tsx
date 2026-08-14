@@ -531,7 +531,7 @@ export default function JournalScreen() {
         setJustSaved(true);
         if (savedTimer.current) clearTimeout(savedTimer.current);
         savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_CONFIRMATION_MS);
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
       } else {
         queryClient.setQueryData(entryKey, previous);
         Alert.alert("Couldn't save entry", "Please try again.");

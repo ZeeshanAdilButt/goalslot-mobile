@@ -160,7 +160,7 @@ export default function GoalsScreen() {
             listKey,
             (previous ?? []).map((g) => (g.id === goal.id ? { ...g, pendingSync: true } : g)),
           );
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           queryClient.setQueryData(listKey, previous);
           Alert.alert("Couldn't complete goal", "Please try again.");
@@ -187,7 +187,7 @@ export default function GoalsScreen() {
             listKey,
             (previous ?? []).map((g) => (g.id === goal.id ? { ...g, pendingSync: true } : g)),
           );
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           queryClient.setQueryData(listKey, previous);
           Alert.alert("Couldn't delete goal", "Please try again.");

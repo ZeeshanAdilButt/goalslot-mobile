@@ -461,7 +461,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
           }
           return week;
         });
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
       }
 
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
@@ -605,7 +605,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
             return week;
           });
         }
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
       }
 
       void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });

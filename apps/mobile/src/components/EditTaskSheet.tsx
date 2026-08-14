@@ -212,7 +212,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
         queryClient.setQueryData<Task[]>(listKey, (existing) =>
           (existing ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
         );
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
         sheetRef.current?.dismiss();
       } else {
         queryClient.setQueryData(listKey, previous);

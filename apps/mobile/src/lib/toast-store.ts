@@ -17,7 +17,16 @@
 
 import { create } from "zustand";
 
-export type ToastKind = "success" | "error";
+// "offline" is its own kind (not folded into "success") specifically so
+// ToastHost can give an offline-queued confirmation a visually distinct
+// treatment (wifi-off icon, warning tint) from a true "this actually
+// finished" success — the two read as very different events to the user
+// even though both are non-error outcomes. The shared sync engine
+// (packages/shared/src/offline/sync.ts) only ever emits "success"/"error"
+// itself (its own "Synced N offline changes" summary IS a true success);
+// call sites that queue something for later (the various "Queued — will
+// sync when online" notify() calls) pass "offline" explicitly.
+export type ToastKind = "success" | "error" | "offline";
 
 export interface ToastEntry {
   id: string;

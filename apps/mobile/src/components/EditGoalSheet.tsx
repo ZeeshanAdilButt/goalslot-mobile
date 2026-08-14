@@ -223,7 +223,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
           listKey,
           (previous ?? []).map((g) => (g.id === goal.id ? { ...g, ...goalPatch, pendingSync: true } : g)),
         );
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
         sheetRef.current?.dismiss();
       } else {
         queryClient.setQueryData(listKey, previous);

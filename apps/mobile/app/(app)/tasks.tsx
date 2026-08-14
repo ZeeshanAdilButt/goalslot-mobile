@@ -312,7 +312,7 @@ export default function TasksScreen() {
           // The patch above already applied (status: DONE); just tag it so
           // the row reads as "queued" rather than looking identically saved.
           patchTask(task.id, { pendingSync: true });
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
           Alert.alert("Couldn't complete task", "Please try again.");
@@ -340,7 +340,7 @@ export default function TasksScreen() {
             listQueryKey,
             (previous ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
           );
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
           Alert.alert("Couldn't delete task", "Please try again.");
@@ -362,7 +362,7 @@ export default function TasksScreen() {
         const queued = await queueOfflineEdit("task-update", { id: task.id, data: payload }, err);
         if (queued) {
           patchTask(task.id, { pendingSync: true });
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
           Alert.alert("Couldn't reschedule task", "Please try again.");
@@ -441,7 +441,7 @@ export default function TasksScreen() {
               void offlineSync.refreshPendingCount();
             }
             patchTask(task.id, { pendingSync: true });
-            notify("Queued — will sync when online", "success");
+            notify("Queued — will sync when online", "offline");
           } else {
             restoreSnapshot(previous);
             Alert.alert("Couldn't move task", "Please try again.");
@@ -453,7 +453,7 @@ export default function TasksScreen() {
           const queued = await queueOfflineEdit("task-update", { id: task.id, data: { status } }, err);
           if (queued) {
             patchTask(task.id, { pendingSync: true });
-            notify("Queued — will sync when online", "success");
+            notify("Queued — will sync when online", "offline");
           } else {
             restoreSnapshot(previous);
             Alert.alert("Couldn't move task", "Please try again.");

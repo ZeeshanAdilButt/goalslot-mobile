@@ -281,7 +281,7 @@ export default function ScheduleScreen() {
       // does: the row is already gone from the list, and there is no
       // "pending" version of gone to show.
       if (queuedAny) {
-        notify("Queued — will sync when online", "success");
+        notify("Queued — will sync when online", "offline");
       }
     },
     [allBlocks, analytics, notifications],

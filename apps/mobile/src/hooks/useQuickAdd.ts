@@ -177,7 +177,7 @@ async function runQuickAdd<TInput, TCreated>({
       });
       void offlineSync.refreshPendingCount();
       markPendingSync();
-      notify("Queued — will sync when online", "success");
+      notify("Queued — will sync when online", "offline");
       return;
     }
 

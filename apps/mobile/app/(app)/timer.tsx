@@ -71,7 +71,7 @@ import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { buildTrackingCandidates } from "@/components/voice/tracking-commands";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
 import { outbox } from "@/lib/offline";
 import { isPlanLimitError, hasReachedDailyEntryCap } from "@/lib/plan-limit";
@@ -1046,11 +1046,18 @@ export default function TimerScreen() {
           retries: 0,
         });
         // Durably queued — safe to reset now, the sync engine owns delivery
-        // from here.
+        // from here. A plain informational Alert (no buttons, nothing for
+        // the user to decide) doesn't need the OS dialog treatment — routed
+        // through the toast queue instead, same as every other "queued
+        // offline" confirmation in the app (goals.tsx, tasks.tsx, notes.tsx,
+        // journal.tsx, useQuickAdd.ts all use `notify(..., "offline")` for
+        // this exact situation). This one previously used `Alert.alert`
+        // because it predates ToastHost/toast-store.ts; nothing about it
+        // required the modal treatment.
         finalizeLocalStop();
-        Alert.alert(
-          "Saved offline",
-          `${formatDuration(durationMinutes)} is queued and will sync the next time you're online.`,
+        notify(
+          `${formatDuration(durationMinutes)} saved offline — will sync the next time you're online.`,
+          "offline",
         );
         return;
       }

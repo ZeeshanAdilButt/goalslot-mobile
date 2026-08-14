@@ -441,7 +441,7 @@ export default function NotesScreen() {
             (existing ?? []).map((note) => (patchById.has(note.id) ? { ...note, pendingSync: true } : note)),
           );
           if (options.announceMessage) announce(`${options.announceMessage} — queued, will sync when online`);
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
           return true;
         }
         restoreSnapshot(previous);
@@ -560,7 +560,7 @@ export default function NotesScreen() {
             note: pendingNote,
             readOnly: false,
           });
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
           router.push(`/note/${optimisticId}`);
         } else {
           queryClient.setQueryData<Note[]>(listKey, (existing) => (existing ?? []).filter((n) => n.id !== optimisticId));
@@ -645,7 +645,7 @@ export default function NotesScreen() {
         const deleteQueued = await queueOfflineEdit("note-delete", { id: note.id }, err);
         if (deleteQueued) {
           announce(`Deleted "${note.title}" — will sync when online`);
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
         } else {
           restoreSnapshot(previous);
           offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
@@ -691,7 +691,7 @@ export default function NotesScreen() {
           queryClient.setQueryData<Note[]>(listKey, (existing) =>
             (existing ?? []).map((n) => (n.id === note.id ? { ...n, isFavorite: nextValue, pendingSync: true } : n)),
           );
-          notify("Queued — will sync when online", "success");
+          notify("Queued — will sync when online", "offline");
           return;
         }
         restoreSnapshot(previous);
