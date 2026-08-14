@@ -80,6 +80,7 @@
       ],
       "@bacons/apple-targets",
       "./plugins/withAppActions",
+      "./plugins/withSiriShortcuts",
       [
         "react-native-android-widget",
         {
