@@ -19,6 +19,7 @@
 // stop carrying the whole row, the purely decorative parts (ring, status dot)
 // are hidden from the tree, and the two real controls keep their own stops.
 
+import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { calculateProgressPercent, type Goal } from "@goalslot/shared";
@@ -78,7 +79,14 @@ export interface GoalCardProps {
   onEdit: (goal: Goal) => void;
 }
 
-export function GoalCard({ goal, index, todayKey, onComplete, onDelete, onEdit }: GoalCardProps) {
+// Memoised: goals.tsx already hands this stable (useCallback) handlers, so
+// without this every row still re-rendered whenever the screen re-rendered
+// for a reason that had nothing to do with that particular goal (editing one
+// row, a background refetch that leaves the list referentially new, etc).
+// Each row does real work in its render body — calculateProgressPercent,
+// deadline urgency/formatting, the composed accessibility label — none of
+// which needs to redo itself for a goal whose own props haven't changed.
+export const GoalCard = memo(function GoalCard({ goal, index, todayKey, onComplete, onDelete, onEdit }: GoalCardProps) {
   const progress = calculateProgressPercent(goal.loggedHours, goal.targetHours);
   const accent = safeColor(goal.color, colors.primary);
   // Null for an active goal (which gets the Done button instead of a pill) —
@@ -207,7 +215,7 @@ export function GoalCard({ goal, index, todayKey, onComplete, onDelete, onEdit }
       </View>
     </ListCard>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

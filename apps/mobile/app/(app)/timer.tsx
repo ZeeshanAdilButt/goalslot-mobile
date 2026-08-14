@@ -197,6 +197,10 @@ export default function TimerScreen() {
   );
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
+  // Stable identity so it doesn't defeat SessionHistory's own row memoization
+  // (SessionRow is memo()'d — an inline arrow recreated on every render of
+  // this screen would make every visible row re-render regardless).
+  const openAttachPicker = useCallback((entry: TimeEntry) => setPickerTarget({ kind: "entry", entry }), []);
   // Which already-logged entry is mid-attach, so its history row can show
   // the in-flight state instead of the list looking inert for a round trip.
   const [attachingEntryId, setAttachingEntryId] = useState<string | null>(null);
@@ -1248,7 +1252,7 @@ export default function TimerScreen() {
           entries={recentQuery.data}
           refreshing={recentQuery.isFetching && !recentQuery.isPending}
           onRefresh={() => void recentQuery.refetch()}
-          onAttachGoal={(entry) => setPickerTarget({ kind: "entry", entry })}
+          onAttachGoal={openAttachPicker}
           attachingEntryId={attachingEntryId}
         />
       )}

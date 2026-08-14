@@ -17,7 +17,7 @@
 // "Add goal" affordance that attaches one after the fact. Everything else
 // about the row is unchanged.
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 
@@ -148,7 +148,12 @@ function DayHeader({ label, minutes }: { label: string; minutes: number }) {
   );
 }
 
-function SessionRow({
+// Memoised: `entries`/`items` only change reference on an actual refetch, but
+// the FlashList's own renderItem closure runs fresh every SessionHistory
+// render (e.g. every keystroke this screen's picker sheet drives). Without
+// this, every visible row re-rendered whenever the Timer screen re-rendered
+// for a reason that had nothing to do with that particular entry.
+const SessionRow = memo(function SessionRow({
   entry,
   onAttachGoal,
   attaching,
@@ -201,7 +206,7 @@ function SessionRow({
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   listContent: {

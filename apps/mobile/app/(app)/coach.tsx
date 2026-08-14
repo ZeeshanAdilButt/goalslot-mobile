@@ -45,7 +45,7 @@
 // also offers month/quarter/year via a scope-period picker, which doesn't
 // fit a phone-width chat screen in this pass.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -153,7 +153,14 @@ interface ChatMessageView {
   createdAt?: string;
 }
 
-function ChatBubble({
+// Memoised: `allMessages` is rebuilt every time `streamingReply` changes —
+// i.e. on every SSE chunk while a reply is streaming in — which otherwise
+// re-rendered every bubble already on screen (each one re-running
+// `extractCoachProposals`'s regex/JSON parse below, plus a proposal card's
+// own cache scan) on every token of an unrelated, still-arriving message.
+// `message` keeps a stable object reference for any bubble that isn't the one
+// currently streaming, so this only lets the live bubble re-render per chunk.
+const ChatBubble = memo(function ChatBubble({
   message,
   onApply,
 }: {
@@ -254,7 +261,7 @@ function ChatBubble({
       ))}
     </View>
   );
-}
+});
 
 export default function CoachScreen() {
   const analytics = useAnalytics();

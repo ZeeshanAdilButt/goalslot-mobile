@@ -36,7 +36,7 @@
 //     because a thumb scanning a list needs the primary action under it, not
 //     at the bottom of each card.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable } from "react-native-gesture-handler";
@@ -785,7 +785,11 @@ interface TaskRowProps {
   onEdit: (task: Task) => void;
 }
 
-function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
+// Memoised: renderItem above already hands this stable (useCallback)
+// handlers, so without this every card re-rendered on every list-view
+// re-render (a status change elsewhere in the list, a background refetch)
+// rather than only when its own task/index changed.
+const TaskRow = memo(function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
   const swipeableRef = useRef<Swipeable>(null);
   const isDone = task.status === "DONE";
   const tone = taskStatusTone(task.status);
@@ -878,7 +882,7 @@ function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: Ta
       </Swipeable>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

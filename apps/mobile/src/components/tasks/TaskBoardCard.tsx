@@ -19,6 +19,7 @@
 //   3. Web hides the description and metadata below `sm:`
 //      (task-board.tsx:367-385); `TaskMetaChips compact` is that rule.
 
+import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { formatDuration, type Task } from "@goalslot/shared";
@@ -51,7 +52,20 @@ export interface TaskBoardCardProps {
   onMove: (task: Task) => void;
 }
 
-export function TaskBoardCard({ task, tone, columnTitle, index, onComplete, onEdit, onMove }: TaskBoardCardProps) {
+// Memoised: BoardColumn already hands this stable (useCallback) handlers via
+// its own `renderItem`, so without this every card in a column re-rendered
+// whenever the board re-rendered for a reason unrelated to that card (e.g.
+// another column's task list changing, or the board's own layout effect
+// firing) rather than only when its own task/tone/column changed.
+export const TaskBoardCard = memo(function TaskBoardCard({
+  task,
+  tone,
+  columnTitle,
+  index,
+  onComplete,
+  onEdit,
+  onMove,
+}: TaskBoardCardProps) {
   const isDone = task.status === "DONE";
 
   return (
@@ -102,7 +116,7 @@ export function TaskBoardCard({ task, tone, columnTitle, index, onComplete, onEd
       </View>
     </ListCard>
   );
-}
+});
 
 const styles = StyleSheet.create({
   content: {

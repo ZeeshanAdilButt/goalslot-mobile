@@ -1098,21 +1098,38 @@ export default function VoiceScreen() {
     });
   }, []);
 
+  // Cache of already-parsed replies, keyed by turn id. extractCoachProposals
+  // does real work per turn (a regex extraction plus a lenient-JSON parse for
+  // every ```coach-proposal block), and the `turns` useMemo below has to
+  // depend on the whole `history` array — but `patchTurn` (inside
+  // `runCoachTurn`) gives `history` a brand-new array reference on every
+  // streamed token, which meant EVERY turn already on screen was being
+  // re-parsed on every chunk of whichever turn is currently streaming, not
+  // just that one. This cache is what actually makes "a turn only re-parses
+  // when its own reply changes" true, rather than just documented.
+  const parseCacheRef = useRef(new Map<number, { reply: string; parsed: ReturnType<typeof extractCoachProposals> }>());
+
   // Every turn, parsed once per render — each carries its own reply text,
   // so a turn already on screen from an earlier command never re-parses
   // when a later one streams in.
-  const turns = useMemo(
-    () =>
-      history.map((turn) => {
-        const parsed = extractCoachProposals(turn.reply);
-        const dismissed = dismissedProposals.get(turn.id) ?? EMPTY_DISMISSED;
-        const visibleProposals = parsed.proposals
-          .map((block, index) => ({ block, index }))
-          .filter(({ index }) => !dismissed.has(index));
-        return { turn, parsed, visibleProposals };
-      }),
-    [dismissedProposals, history],
-  );
+  const turns = useMemo(() => {
+    const cache = parseCacheRef.current;
+    const nextCache = new Map<number, { reply: string; parsed: ReturnType<typeof extractCoachProposals> }>();
+    const result = history.map((turn) => {
+      const cached = cache.get(turn.id);
+      const parsed = cached && cached.reply === turn.reply ? cached.parsed : extractCoachProposals(turn.reply);
+      nextCache.set(turn.id, { reply: turn.reply, parsed });
+      const dismissed = dismissedProposals.get(turn.id) ?? EMPTY_DISMISSED;
+      const visibleProposals = parsed.proposals
+        .map((block, index) => ({ block, index }))
+        .filter(({ index }) => !dismissed.has(index));
+      return { turn, parsed, visibleProposals };
+    });
+    // Turns removed from `history` (see removeTurn) simply don't get carried
+    // into the next cache — nothing to evict explicitly.
+    parseCacheRef.current = nextCache;
+    return result;
+  }, [dismissedProposals, history]);
   const latestReply = history.length > 0 ? history[history.length - 1].reply : "";
   const totalVisibleProposals = turns.reduce((sum, { visibleProposals }) => sum + visibleProposals.length, 0);
 

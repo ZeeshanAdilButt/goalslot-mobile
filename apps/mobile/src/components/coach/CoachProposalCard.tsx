@@ -25,7 +25,7 @@
 // model-authored text is line-clamped, and the footer sits a predictable
 // distance below the header regardless of batch size.
 
-import { useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
@@ -353,7 +353,16 @@ function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps)
   );
 }
 
-export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCardProps) {
+// Memoised: rendered from a `.map()` in both coach.tsx (one per assistant
+// message) and voice.tsx (one per turn), and both screens re-render this
+// list on every streamed token of an in-progress reply elsewhere in the
+// thread. `block` and `onApply` are stable for any card that isn't the one
+// currently changing (coach.tsx's ChatBubble is itself memoised, and
+// voice.tsx's `turns` reuses a parsed `block` from its cache — see that
+// file's `parseCacheRef`), so this stops those unrelated cards from
+// re-running their own cache scan (`buildProposalCacheLookups`) and
+// description formatting on every chunk.
+export const CoachProposalCard = memo(function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCardProps) {
   const [state, setState] = useState<CardState>({ phase: "idle" });
   const [expanded, setExpanded] = useState(false);
   const destructive = useMemo(() => isDestructiveProposal(block), [block]);
@@ -553,7 +562,7 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
       )}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
