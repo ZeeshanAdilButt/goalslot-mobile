@@ -37,11 +37,18 @@ const path = require("path");
 // as siblings, matching android-shortcuts.xml's own ownership note.
 const SHORTCUTS_XML_SOURCE = path.join(__dirname, "android-shortcuts.xml");
 
+// Apostrophes are backslash-escaped (`\'`), same as
+// widgetprovider_todaywidget.xml's own `widget_todaywidget_description`
+// string — Android string resources require this (an unescaped `'` isn't
+// an XML-special character so @expo/config-plugins' XML writer passes it
+// through untouched, but AAPT2's resource compiler then rejects it outright
+// with an opaque "Can not extract resource from ParsedResource" error, not
+// a message that names the apostrophe as the cause).
 const NEW_STRINGS = [
   ["shortcut_start_timer_short", "Start timer"],
   ["shortcut_start_timer_long", "Start timer for the current block"],
   ["shortcut_journal_short", "Talk about my day"],
-  ["shortcut_journal_long", "Start today's journal entry"],
+  ["shortcut_journal_long", "Start today\\'s journal entry"],
 ];
 
 function withAppActionsShortcutsXml(config) {

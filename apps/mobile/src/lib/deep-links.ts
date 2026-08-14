@@ -111,14 +111,13 @@ export function timerAutoStartDeepLink(goalId: string): string {
  * Deep link to the Timer tab that starts tracking against whichever
  * schedule block is active right now — the hand-off target for the "Hey
  * Siri, start timer in GoalSlot" App Shortcut (see
- * ios/GoalSlot/StartTimerIntent.swift). Unlike `timerAutoStartDeepLink`,
- * no goalId is known at link-build time: the Timer screen is expected to
- * resolve the active block itself (`resolveActiveBlock` from
- * packages/shared/src/scheduling/fire-time.ts), the same way its existing
- * auto-select-on-open effect already does, and then start it — as of this
- * writing that effect only selects, it doesn't call `start()`, so wiring
- * this `autostart=active` value all the way through is a follow-up change
- * to app/(app)/timer.tsx, not yet done by this file.
+ * ios/GoalSlot/StartTimerIntent.swift) and its Android App Actions
+ * equivalent (plugins/android-shortcuts.xml's `start_timer` shortcut, wired
+ * via plugins/withAppActions.js). Unlike `timerAutoStartDeepLink`, no
+ * goalId is known at link-build time: the Timer screen resolves the active
+ * block itself (`resolveActiveBlock` from
+ * packages/shared/src/scheduling/fire-time.ts) and calls `start()` against
+ * it — see app/(app)/timer.tsx's `autostart === "active"` effect.
  */
 export function timerAutoStartActiveDeepLink(): string {
   return toDeepLinkUrl(ROUTES.timerAutoStartActive());
@@ -128,14 +127,17 @@ export function timerAutoStartActiveDeepLink(): string {
  * Deep link to the Timer tab that starts tracking against a spoken goal or
  * task name — the hand-off target for the "Hey Siri, start timer for
  * <name> in GoalSlot" App Shortcut (see
- * ios/GoalSlot/StartTimerForGoalIntent.swift). `spokenName` is the raw
- * words Siri captured for its free-text parameter, passed through
+ * ios/GoalSlot/StartTimerForGoalIntent.swift) and its Android App Actions
+ * equivalent (plugins/android-shortcuts.xml's `actions.intent.OPEN_APP_FEATURE`
+ * capability, wired via plugins/withAppActions.js). `spokenName` is the raw
+ * words the assistant captured for its free-text parameter, passed through
  * untouched for the Timer screen to fuzzy-match via
  * `resolveSpokenTarget`/`parse.ts` (packages/shared/src/voice/), the same
  * logic the in-app Voice tab and Time Tracker mic button already use (see
- * src/components/voice/tracking-commands.ts). As of this writing,
- * app/(app)/timer.tsx does not yet read this `autostart=spoken` value —
- * see this repo's notes on the two "not yet consumed" deep-link gaps.
+ * src/components/voice/tracking-commands.ts) — see app/(app)/timer.tsx's
+ * `autostart === "spoken"` effect. Only starts on a confident match; an
+ * ambiguous or unresolved name leaves the screen open, idle and
+ * unattributed rather than guessing.
  */
 export function timerAutoStartSpokenDeepLink(spokenName: string): string {
   return toDeepLinkUrl(ROUTES.timerAutoStartSpoken(spokenName));

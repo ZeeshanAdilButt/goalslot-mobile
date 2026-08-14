@@ -50,7 +50,9 @@ import {
   formatDuration,
   genId,
   getLocalDateString,
+  namedTarget,
   resolveActiveBlock,
+  resolveSpokenTarget,
   updateTimeEntrySchema,
   type CreateTimeEntryInput,
   type Goal,
@@ -66,6 +68,7 @@ import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
 import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
+import { buildTrackingCandidates } from "@/components/voice/tracking-commands";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { apiClient } from "@/lib/api-client";
@@ -284,7 +287,16 @@ export default function TimerScreen() {
   // would be a fifth way (alongside the on-screen Start button, the tracking
   // voice command, and the picker's mid-session handlers) to spin up a
   // redundant local session while one is already active elsewhere.
-  const { autostart, goalId: autoStartGoalId } = useLocalSearchParams<{ autostart?: string; goalId?: string }>();
+  const { autostart, goalId: autoStartGoalId, spokenName } = useLocalSearchParams<{
+    autostart?: string;
+    goalId?: string;
+    spokenName?: string;
+  }>();
+  // Shared across all three `autostart` variants below (this effect, and the
+  // "active"/"spoken" ones further down) so that whichever one matches the
+  // param fires exactly once, the same "fire, don't retrigger on remount"
+  // guarantee a single ref gave the widget-only case before Android App
+  // Actions added the other two shapes.
   const autoStartFired = useRef(false);
   useEffect(() => {
     if (autostart !== "1" || !autoStartGoalId || autoStartFired.current || effectiveStatus !== "idle") return;
@@ -293,6 +305,82 @@ export default function TimerScreen() {
     hapticLight();
     analytics.track({ name: "timerStarted", payload: { taskId: undefined } });
   }, [analytics, autoStartGoalId, autostart, effectiveStatus, start]);
+
+  /**
+   * `autostart=active` — the hand-off target for BOTH the "Hey Siri, start
+   * timer in GoalSlot" App Shortcut (ios/GoalSlot/StartTimerIntent.swift)
+   * and its Android App Actions equivalent (plugins/android-shortcuts.xml's
+   * `start_timer` shortcut, wired via plugins/withAppActions.js). Neither
+   * platform's voice trigger knows a goalId up front, so this resolves the
+   * same "what's live right now" block the auto-select-on-open effect below
+   * already computes (`resolveActiveBlock`) and, unlike that effect, calls
+   * `start()` rather than merely `retarget()` — this deep link's whole
+   * point is "start tracking without touching the screen".
+   *
+   * Deliberately does NOT alert when nothing is scheduled right now: the
+   * screen is already open (this effect only runs once navigation has
+   * landed here), so a silent no-op just leaves the user looking at the
+   * ordinary idle Timer screen, free to pick a target and press Start
+   * themselves — the same graceful degrade `timerAutoStartActiveDeepLink`'s
+   * own doc comment in deep-links.ts describes.
+   */
+  useEffect(() => {
+    if (autostart !== "active" || autoStartFired.current || effectiveStatus !== "idle") return;
+    if (!scheduleQuery.data || !tasksQuery.data || !goalsQuery.data) return;
+
+    const activeBlock = resolveActiveBlock(scheduleQuery.data, new Date(), DEVICE_TIMEZONE);
+    const blockGoalId = activeBlock?.goalId ?? activeBlock?.goal?.id;
+    if (!blockGoalId) return;
+    const blockTaskId = activeBlock?.tasks?.[0]?.id;
+
+    // Re-check live state right before mutating, same race this file's
+    // auto-select-on-open effect below guards against (see its own comment
+    // for the full "why", including the confirmed-live incident that
+    // motivated it) — this effect can just as easily see a stale "idle".
+    if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
+
+    autoStartFired.current = true;
+    start(blockTaskId, blockGoalId);
+    hapticLight();
+    analytics.track({ name: "timerStarted", payload: { taskId: blockTaskId } });
+  }, [analytics, autostart, effectiveStatus, goalsQuery.data, hasServerSession, scheduleQuery.data, start, tasksQuery.data]);
+
+  /**
+   * `autostart=spoken` — the hand-off target for both platforms' "start
+   * timer for <name>" voice trigger (ios/GoalSlot/StartTimerForGoalIntent.swift
+   * and android-shortcuts.xml's `actions.intent.OPEN_APP_FEATURE`
+   * capability). `spokenName` is the raw words the assistant captured,
+   * unparsed — resolved here the same way the in-app Voice tab and the Time
+   * Tracker's own mic button do (`resolveSpokenTarget` /
+   * `buildTrackingCandidates`, see tracking-commands.ts), so "start timer
+   * for deen" behaves identically whether it came from a tap-and-hold on
+   * the mic orb or from Assistant.
+   *
+   * Only ever auto-starts on a CONFIDENT match. An ambiguous or unresolved
+   * name deliberately does not guess — same rule the rest of this app's
+   * voice surface follows (see tracking-commands.ts's header) — and instead
+   * leaves the screen open, idle and unattributed for the user to finish by
+   * hand (the picker, or the in-app mic button), matching the degrade path
+   * android-shortcuts.xml's own comment describes for this capability.
+   */
+  useEffect(() => {
+    if (autostart !== "spoken" || !spokenName || autoStartFired.current || effectiveStatus !== "idle") return;
+    if (!tasksQuery.data || !goalsQuery.data) return;
+    if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
+
+    const candidates = buildTrackingCandidates(goalsQuery.data, tasksQuery.data);
+    const resolution = resolveSpokenTarget(namedTarget("unspecified", spokenName), candidates);
+    if (resolution.status !== "confident" || !resolution.target) return;
+
+    autoStartFired.current = true;
+    const target = resolution.target;
+    const resolvedTaskId = target.kind === "task" ? target.id : undefined;
+    const resolvedGoalId =
+      target.kind === "goal" ? target.id : tasksQuery.data.find((t) => t.id === target.id)?.goalId;
+    start(resolvedTaskId, resolvedGoalId);
+    hapticLight();
+    analytics.track({ name: "timerStarted", payload: { taskId: resolvedTaskId } });
+  }, [analytics, autostart, effectiveStatus, goalsQuery.data, hasServerSession, spokenName, start, tasksQuery.data]);
 
   // True once the user has made a deliberate pick THIS visit to the screen
   // (via the tracking picker), which is what stops the auto-select effect
@@ -309,20 +397,22 @@ export default function TimerScreen() {
    * during a planned block doesn't require picking it by hand every time.
    *
    * Guarded four ways, all required:
-   *   - `autostart === "1"` — the widget deep-link above names its own
-   *     explicit goal and is about to call `start()` (or already has,
-   *     earlier in this same effect flush — see below). Deferring to it
-   *     entirely, rather than only skipping once it's visibly fired, closes
-   *     a real race: both effects close over the SAME render's
-   *     `effectiveStatus` ("idle"), since the deep-link effect's `start()`
-   *     mutates the zustand store synchronously but doesn't force a
-   *     re-render before this effect also runs in the same flush. Without
-   *     this guard, this effect could still see "idle", resolve a
-   *     *different* schedule block, and call `retarget()` right after —
-   *     which is no longer the no-op it looks like, because by the time
-   *     `retarget()` itself reads `get().status` the deep-link's `start()`
-   *     has already flipped it to "running", silently overwriting the goal
-   *     the widget was asked to start.
+   *   - `autostart` set at all (any of "1"/"active"/"spoken") — one of the
+   *     three deep-link effects above names its own target (explicit,
+   *     schedule-resolved, or voice-resolved) and is about to call
+   *     `start()` (or already has, earlier in this same effect flush — see
+   *     below). Deferring to them entirely, rather than only skipping once
+   *     one has visibly fired, closes a real race: both effects close over
+   *     the SAME render's `effectiveStatus` ("idle"), since a deep-link
+   *     effect's `start()` mutates the zustand store synchronously but
+   *     doesn't force a re-render before this effect also runs in the same
+   *     flush. Without this guard, this effect could still see "idle",
+   *     resolve a *different* schedule block, and call `retarget()` right
+   *     after — which is no longer the no-op it looks like, because by the
+   *     time `retarget()` itself reads `get().status` the deep-link's
+   *     `start()` has already flipped it to "running", silently
+   *     overwriting the goal (or spoken target) the deep link was asked to
+   *     start.
    *   - `effectiveStatus !== "idle"` — never re-point a session that's
    *     already running or paused, whether that session is local or a
    *     server-side one (see this file's header on `effectiveStatus`) — a
@@ -347,7 +437,7 @@ export default function TimerScreen() {
    */
   useEffect(() => {
     if (
-      autostart === "1" ||
+      autostart !== undefined ||
       effectiveStatus !== "idle" ||
       userSelectedRef.current ||
       selectedTask !== null ||
@@ -410,6 +500,7 @@ export default function TimerScreen() {
       retarget(undefined, goal.id);
     }
   }, [
+    autostart,
     effectiveStatus,
     goalsQuery.data,
     hasServerSession,

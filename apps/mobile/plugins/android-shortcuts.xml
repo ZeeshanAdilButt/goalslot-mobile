@@ -19,20 +19,13 @@
   URL src/lib/deep-links.ts's `journalVoiceCaptureDeepLink()` builds (added
   by the iOS-journal agent), reused here rather than reinvented.
 
-  IMPORTANT — deep-link target status: the two commands below deep-link
-  into the EXISTING /timer route with new query params
-  (?autostart=active and ?autostart=spoken&spokenName=...) that
-  src/lib/deep-links.ts's `timerAutoStartActiveDeepLink()` /
-  `timerAutoStartSpokenDeepLink()` already build (added by the iOS-timer
-  agent — reused here rather than duplicated, so this file adds nothing
-  new to deep-links.ts). As of this writing, app/(app)/timer.tsx does not
-  yet read either param (it only handles the pre-existing
-  `autostart=1&goalId=...` shape used by the widget) — see that file's own
-  autostart effect and the iOS-timer agent's report. Until timer.tsx's
-  owner wires this up, these shortcuts will open the app to the Timer
-  screen but not yet auto-start tracking. This is a known, already-flagged
-  gap in timer.tsx, which is off-limits to touch from this file's owning
-  agents.
+  Deep-link target: the two commands below deep-link into the EXISTING
+  /timer route with new query params (?autostart=active and
+  ?autostart=spoken&spokenName=...) that src/lib/deep-links.ts's
+  `timerAutoStartActiveDeepLink()` / `timerAutoStartSpokenDeepLink()`
+  build. app/(app)/timer.tsx reads both (its `autostart === "active"` and
+  `autostart === "spoken"` effects) and calls `start()` directly — these
+  shortcuts open the app AND start tracking, not just navigate to the tab.
 -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -79,13 +72,14 @@
          for voice command 2, "start timer for <name>", which needs
          free-text slot-filling that a plain shortcut's fixed label text
          can't carry. `feature.name` is passed through UNPARSED as
-         `spokenName` — the Timer screen (via app/(app)/timer.tsx's
-         `autostart=spoken` handling, not yet built as of this writing —
-         see the note above) is expected to run it through
-         packages/shared/src/voice/parse.ts's `parseVoiceCommand` and
-         resolve.ts's `resolveSpokenTarget`, the same fuzzy-matching the
+         `spokenName` — the Timer screen (app/(app)/timer.tsx's
+         `autostart === "spoken"` effect) runs it through
+         packages/shared/src/voice/resolve.ts's `resolveSpokenTarget`
+         against the user's real goals/tasks, the same fuzzy-matching the
          in-app Voice tab and Time Tracker mic button already use, rather
-         than this XML attempting to pre-parse it.
+         than this XML attempting to pre-parse it. It only auto-starts on a
+         CONFIDENT match; anything softer leaves the screen open rather
+         than guessing.
 
          CONFIDENCE FLAG (carried over from research, unverified in this
          session): OPEN_APP_FEATURE's documented example phrasing is
@@ -108,8 +102,9 @@
             android:targetClass="io.goalslot.mobile.MainActivity">
             <parameter
                 android:name="feature.name"
-                android:key="featureName" />
-            <url-template android:template="goalslot://timer?autostart=spoken&amp;spokenName={featureName}" />
+                android:key="featureName"
+                android:required="true" />
+            <url-template android:value="goalslot://timer?autostart=spoken&amp;spokenName={featureName}" />
         </intent>
     </capability>
 
