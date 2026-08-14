@@ -16,7 +16,9 @@
       "bundleIdentifier": "io.goalslot.mobile",
       "buildNumber": "1",
       "entitlements": {
-        "com.apple.security.application-groups": ["group.io.goalslot.mobile"]
+        "com.apple.security.application-groups": [
+          "group.io.goalslot.mobile"
+        ]
       },
       "_infoPlistComment": "Both usage strings below are ALSO written by the expo-speech-recognition config plugin, which supplies generic defaults. They are declared here explicitly because these two are App Store review copy, not plumbing: a missing NSMicrophoneUsageDescription is an outright rejection and a silent crash the first time the mic is touched, and a vague one ('Allow GoalSlot to use the microphone') gets flagged for not saying what the data is used for. Keeping them in app.json means they are reviewable in a diff instead of buried in a node_modules plugin's fallback. The plugin honours an existing value rather than overwriting it. This key sits outside infoPlist on purpose — anything inside that object is written verbatim into Info.plist.",
       "infoPlist": {
@@ -109,7 +111,27 @@
       "apiBaseUrl": "https://api.goalslot.io",
       "_messagingComment": "Origin of the jiffy-messaging deployment. Null = messaging is off in this build: the Messages screens stay unregistered, the drawer entry is hidden, and no socket or token request is ever made. Override per environment with EXPO_PUBLIC_MESSAGING_URL / EXPO_PUBLIC_MESSAGING_WS_URL — app.config.js layers those on top of these, and derives the ws:// URL from the http:// one when only the latter is set.",
       "messagingUrl": null,
-      "messagingWsUrl": null
+      "messagingWsUrl": null,
+      "eas": {
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "bundleIdentifier": "io.goalslot.mobile.widget",
+                  "targetName": "GoalSlotWidget",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.io.goalslot.mobile"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "projectId": "2522a293-1bc4-45b3-aba7-9a1054967145"
+      }
     },
     "runtimeVersion": {
       "policy": "appVersion"
@@ -118,6 +140,7 @@
       "_comment": "NON-FUNCTIONAL PLACEHOLDER. `url` needs a real EAS project ID, which only exists after running `eas init`/`eas update:configure` against an Expo account — explicitly out of scope for this change. `enabled: false` keeps expo-updates from trying to check this placeholder URL at runtime (it would otherwise fail every launch). Flip `enabled` to true and swap in the real https://u.expo.dev/<project-id> URL once EAS is set up.",
       "enabled": false,
       "url": "https://u.expo.dev/REPLACE-WITH-REAL-EAS-PROJECT-ID"
-    }
+    },
+    "owner": "zeeabutt"
   }
 }
