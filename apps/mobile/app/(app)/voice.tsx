@@ -26,7 +26,7 @@
 // do not or cannot speak to their phone.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -64,6 +64,8 @@ import {
 import { buildTrackingCandidates, planTrackingCommand, type TrackingPlan } from "@/components/voice/tracking-commands";
 import { routeVoiceIntentResponse, shouldEscalateToTier2 } from "@/components/voice/voice-router";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
+import { PressableScale } from "@/components/today/PressableScale";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
@@ -1018,56 +1020,72 @@ export default function VoiceScreen() {
     historySheetRef.current?.present();
   }, []);
 
+  // "New chat" confirmation state — see `ConfirmDialog` below the JSX return
+  // for why this is a themed modal rather than `Alert.alert`. `newChatError`
+  // is rendered INSIDE that same dialog on a failed clear, rather than
+  // stacking a second Alert on top of the first the way the old
+  // `Alert.alert(...); Alert.alert("Couldn't start a new chat", ...)` pairing
+  // did — the dialog just stays open with the reason and a retry.
+  const [newChatConfirmVisible, setNewChatConfirmVisible] = useState(false);
+  const [newChatBusy, setNewChatBusy] = useState(false);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
+
   /**
    * "New chat": unavoidably destructive server-side (see the module header —
    * one conversation per user+scopeKey, no thread ids to spin a fresh one up
    * under). The confirm copy says so plainly rather than implying anything
-   * is being "saved" in a way the assistant can still use. Snapshot ->
-   * server clear -> local reset, in that order, so a failed clear never
-   * leaves an archived-but-still-live duplicate hanging around — the
-   * snapshot itself is cheap and local, so taking it unconditionally first
-   * and only acting on it if the clear actually succeeds costs nothing.
+   * is being "saved" in a way the assistant can still use.
    */
   const handleNewChat = useCallback(() => {
     if (history.length === 0) {
       // Nothing to lose — skip the confirm and the archive both.
       return;
     }
-    Alert.alert(
-      "Start a new chat?",
-      "This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Start new chat",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              const snapshot = turnsToArchiveSnapshot(history);
-              if (snapshot.length > 0) {
-                await archiveConversation(scopeKey, snapshot);
-              }
-              try {
-                await apiClient.coach.clearChatHistory(scopeKey);
-              } catch {
-                // The server still has the old conversation — leave the
-                // screen exactly as it was rather than pretending the clear
-                // happened. The snapshot just taken is harmless either way:
-                // it'll sit in Previous chats as an extra copy if the user
-                // retries and succeeds later.
-                Alert.alert("Couldn't start a new chat", "Please try again.");
-                return;
-              }
-              setHistory([]);
-              setDismissedProposals(new Map());
-              void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
-              void markLiveConversationReset(scopeKey);
-            })();
-          },
-        },
-      ],
-    );
-  }, [history, scopeKey]);
+    setNewChatError(null);
+    setNewChatConfirmVisible(true);
+  }, [history.length]);
+
+  const cancelNewChat = useCallback(() => {
+    if (newChatBusy) return;
+    setNewChatConfirmVisible(false);
+    setNewChatError(null);
+  }, [newChatBusy]);
+
+  /**
+   * Snapshot -> server clear -> local reset, in that order, so a failed
+   * clear never leaves an archived-but-still-live duplicate hanging around —
+   * the snapshot itself is cheap and local, so taking it unconditionally
+   * first and only acting on it if the clear actually succeeds costs
+   * nothing.
+   */
+  const confirmNewChat = useCallback(() => {
+    if (newChatBusy) return;
+    setNewChatBusy(true);
+    setNewChatError(null);
+    void (async () => {
+      const snapshot = turnsToArchiveSnapshot(history);
+      if (snapshot.length > 0) {
+        await archiveConversation(scopeKey, snapshot);
+      }
+      try {
+        await apiClient.coach.clearChatHistory(scopeKey);
+      } catch {
+        // The server still has the old conversation — leave the screen
+        // exactly as it was rather than pretending the clear happened. The
+        // snapshot just taken is harmless either way: it'll sit in Previous
+        // chats as an extra copy if the user retries and succeeds later.
+        setNewChatBusy(false);
+        setNewChatError("Couldn't start a new chat. Please try again.");
+        return;
+      }
+      setHistory([]);
+      setDismissedProposals(new Map());
+      void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+      void markLiveConversationReset(scopeKey);
+      setNewChatBusy(false);
+      setNewChatConfirmVisible(false);
+    })();
+  }, [history, newChatBusy, scopeKey]);
 
   const dismissProposal = useCallback((turnId: number, index: number) => {
     setDismissedProposals((current) => {
@@ -1397,65 +1415,86 @@ export default function VoiceScreen() {
 
         <View style={styles.dockActions}>
           {state.status === "listening" ? (
-            <Pressable
+            <PressableScale
               onPress={() => void cancel()}
+              haptic={false}
               accessibilityRole="button"
               accessibilityLabel="Cancel and discard what you said"
-              style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+              style={[styles.dockChip, styles.dockChipTransient]}
             >
-              <Text style={styles.textActionLabel}>Cancel</Text>
-            </Pressable>
+              <Icon name="close" size={iconSize.sm} color={colors.mutedForeground} />
+              <Text style={styles.dockChipLabel}>Cancel</Text>
+            </PressableScale>
           ) : null}
 
           {state.status === "error" ? (
-            <Pressable
+            <PressableScale
               onPress={reset}
+              haptic={false}
               accessibilityRole="button"
               accessibilityLabel="Dismiss this message"
-              style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+              style={[styles.dockChip, styles.dockChipTransient]}
             >
-              <Text style={styles.textActionLabel}>Dismiss</Text>
-            </Pressable>
+              <Icon name="close" size={iconSize.sm} color={colors.mutedForeground} />
+              <Text style={styles.dockChipLabel}>Dismiss</Text>
+            </PressableScale>
           ) : null}
 
           {/* Always present, in every state. Voice is an alternative way in,
               never the only one — someone who cannot speak, will not speak
               here, or is on a device with no recognizer gets the identical
               feature one tap away. */}
-          <Pressable
+          <PressableScale
             onPress={() => router.push("/coach")}
             accessibilityRole="link"
             accessibilityLabel="Type your request instead, in Coach chat"
-            style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+            style={[styles.dockChip, blocked && styles.dockChipStrong]}
           >
-            <Text style={[styles.textActionLabel, blocked && styles.textActionLabelStrong]}>Type instead</Text>
-          </Pressable>
+            <Icon name="keyboard" size={iconSize.sm} color={blocked ? colors.foreground : colors.mutedForeground} />
+            <Text style={[styles.dockChipLabel, blocked && styles.dockChipLabelStrong]}>Type instead</Text>
+          </PressableScale>
 
-          <Pressable
+          <PressableScale
             onPress={openHistory}
             accessibilityRole="button"
             accessibilityLabel="Previous chats"
             accessibilityHint="Browse and reopen earlier conversations with the Coach"
-            style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+            style={styles.dockChip}
           >
-            <Text style={styles.textActionLabel}>Previous chats</Text>
-          </Pressable>
+            <Icon name="inbox" size={iconSize.sm} color={colors.mutedForeground} />
+            <Text style={styles.dockChipLabel}>Previous chats</Text>
+          </PressableScale>
 
           {/* Only offered once there's something on screen worth clearing —
               see handleNewChat, which also no-ops on an empty thread. */}
           {hasAnswer ? (
-            <Pressable
+            <PressableScale
               onPress={handleNewChat}
               accessibilityRole="button"
               accessibilityLabel="Start a new chat"
               accessibilityHint="Clears the assistant's memory of this conversation, after asking to confirm"
-              style={({ pressed }) => [styles.textAction, pressed && styles.textActionPressed]}
+              style={styles.dockChip}
             >
-              <Text style={styles.textActionLabel}>New chat</Text>
-            </Pressable>
+              <Icon name="add" size={iconSize.sm} color={colors.mutedForeground} />
+              <Text style={styles.dockChipLabel}>New chat</Text>
+            </PressableScale>
           ) : null}
         </View>
       </View>
+
+      <ConfirmDialog
+        visible={newChatConfirmVisible}
+        title="Start a new chat?"
+        description="This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore."
+        icon="add"
+        confirmLabel="Start new chat"
+        cancelLabel="Cancel"
+        destructive
+        busy={newChatBusy}
+        error={newChatError}
+        onConfirm={confirmNewChat}
+        onCancel={cancelNewChat}
+      />
 
       <CoachHistorySheet ref={historySheetRef} />
     </SafeAreaView>
@@ -1645,25 +1684,51 @@ const styles = StyleSheet.create({
   },
   dockActions: {
     flexDirection: "row",
-    gap: spacing.lg,
-  },
-  textAction: {
-    minHeight: minTouchTarget,
-    minWidth: minTouchTarget,
-    paddingHorizontal: spacing.md,
-    alignItems: "center",
+    flexWrap: "wrap",
     justifyContent: "center",
+    gap: spacing.sm,
   },
-  textActionPressed: {
-    opacity: 0.6,
+  // A real pill, not underlined text — bordered card surface + icon, the
+  // same "chip" language coach.tsx's own `analyzeDayButton` quick action
+  // already uses for a secondary action docked above its composer, so this
+  // row reads as a deliberate control cluster rather than a row of inline
+  // links that happened to land at the bottom of the screen.
+  dockChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    ...shadows.subtle,
   },
-  textActionLabel: {
-    ...typography.body,
+  // Cancel/Dismiss only ever appear for the few seconds a recording or an
+  // error is on screen — a flatter, borderless fill keeps them visually
+  // subordinate to the three chips that are always there (Type instead,
+  // Previous chats, New chat), instead of competing with them at the same
+  // weight.
+  dockChipTransient: {
+    backgroundColor: colors.secondary,
+    borderColor: colors.secondary,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  // "Type instead" is the one chip whose importance changes with state: once
+  // voice is blocked (denied permission / no recognizer) it's no longer an
+  // alternative, it's the only way in, so it gets the stronger treatment the
+  // plain-text version signalled with `textActionLabelStrong` before.
+  dockChipStrong: {
+    borderColor: colors.foreground,
+  },
+  dockChipLabel: {
+    ...typography.bodySmall,
     fontWeight: "600",
     color: colors.mutedForeground,
-    textDecorationLine: "underline",
   },
-  textActionLabelStrong: {
+  dockChipLabelStrong: {
     color: colors.foreground,
   },
   // Mirrors TrackerVoiceButton's `.panel`/candidateRow/panelActions

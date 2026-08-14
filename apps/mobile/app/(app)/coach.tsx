@@ -46,7 +46,7 @@
 // fit a phone-width chat screen in this pass.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -69,6 +69,7 @@ import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { formatMessageTime } from "@/components/messaging/format";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
@@ -390,51 +391,67 @@ export default function CoachScreen() {
     return list;
   }, [persistedMessages, optimisticUser, streaming, streamingReply]);
 
+  // "New chat" confirmation state — see voice.tsx's identical dialog and
+  // `src/components/ui/ConfirmDialog.tsx`'s header for why this is a themed
+  // modal rather than `Alert.alert`. Both screens clear the exact same
+  // server-side conversation, so they share the one component rather than
+  // each styling their own version of the same yes/no question.
+  const [newChatConfirmVisible, setNewChatConfirmVisible] = useState(false);
+  const [newChatBusy, setNewChatBusy] = useState(false);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
+
   /**
    * "New chat": unavoidably destructive server-side (one conversation per
    * user+scopeKey, no thread ids to spin a fresh one up under — see the
-   * module header). The confirm copy says so plainly. Snapshot -> server
-   * clear -> local reset, in that order: the snapshot is cheap and purely
-   * local, so taking it unconditionally before the clear (rather than after)
-   * means a failed clear never leaves the conversation half-archived.
+   * module header). The confirm copy says so plainly.
    */
   const handleNewChat = useCallback(() => {
     if (isReadOnly || persistedMessages.length === 0) return;
-    Alert.alert(
-      "Start a new chat?",
-      "This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Start new chat",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              const snapshot: ConversationTurnSnapshot[] = persistedMessages.map((m) => ({
-                role: m.role,
-                content: m.content,
-              }));
-              await archiveConversation(scopeKey, snapshot);
-              try {
-                await apiClient.coach.clearChatHistory(scopeKey);
-              } catch {
-                // The server still has the old conversation — leave the
-                // screen as-is rather than pretending the clear happened.
-                // The snapshot just taken is harmless: it'll sit in Previous
-                // chats as an extra copy if the user retries and succeeds.
-                Alert.alert("Couldn't start a new chat", "Please try again.");
-                return;
-              }
-              setOptimisticUser(null);
-              setError(null);
-              await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
-              void markLiveConversationReset(scopeKey);
-            })();
-          },
-        },
-      ],
-    );
-  }, [isReadOnly, persistedMessages, scopeKey]);
+    setNewChatError(null);
+    setNewChatConfirmVisible(true);
+  }, [isReadOnly, persistedMessages.length]);
+
+  const cancelNewChat = useCallback(() => {
+    if (newChatBusy) return;
+    setNewChatConfirmVisible(false);
+    setNewChatError(null);
+  }, [newChatBusy]);
+
+  /**
+   * Snapshot -> server clear -> local reset, in that order: the snapshot is
+   * cheap and purely local, so taking it unconditionally before the clear
+   * (rather than after) means a failed clear never leaves the conversation
+   * half-archived.
+   */
+  const confirmNewChat = useCallback(() => {
+    if (newChatBusy) return;
+    setNewChatBusy(true);
+    setNewChatError(null);
+    void (async () => {
+      const snapshot: ConversationTurnSnapshot[] = persistedMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      await archiveConversation(scopeKey, snapshot);
+      try {
+        await apiClient.coach.clearChatHistory(scopeKey);
+      } catch {
+        // The server still has the old conversation — leave the screen
+        // as-is rather than pretending the clear happened. The snapshot
+        // just taken is harmless: it'll sit in Previous chats as an extra
+        // copy if the user retries and succeeds.
+        setNewChatBusy(false);
+        setNewChatError("Couldn't start a new chat. Please try again.");
+        return;
+      }
+      setOptimisticUser(null);
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+      void markLiveConversationReset(scopeKey);
+      setNewChatBusy(false);
+      setNewChatConfirmVisible(false);
+    })();
+  }, [newChatBusy, persistedMessages, scopeKey]);
 
   /**
    * Core send/stream/persist flow, shared by the composer's Send button and
@@ -847,6 +864,20 @@ export default function CoachScreen() {
           </>
         ) : null}
       </KeyboardAvoidingView>
+
+      <ConfirmDialog
+        visible={newChatConfirmVisible}
+        title="Start a new chat?"
+        description="This clears the assistant's memory of the current conversation. It'll stay in Previous chats, but the assistant won't remember it anymore."
+        icon="add"
+        confirmLabel="Start new chat"
+        cancelLabel="Cancel"
+        destructive
+        busy={newChatBusy}
+        error={newChatError}
+        onConfirm={confirmNewChat}
+        onCancel={cancelNewChat}
+      />
 
       <CoachHistorySheet ref={historySheetRef} />
     </SafeAreaView>

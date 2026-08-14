@@ -39,6 +39,7 @@ import {
   Inbox,
   Key,
   KeyRound,
+  Keyboard,
   LayoutDashboard,
   LogOut,
   MessagesSquare,
@@ -128,6 +129,10 @@ const ICONS = {
   // visibly different from an idle mic rather than merely dimmer.
   mic: Mic,
   "mic-off": MicOff,
+  // The Voice tab's "Type instead" dock action — the keyboard-entry
+  // alternative to speaking a command, so it gets a glyph distinct from
+  // `coach` (the AI-chat bubble icon used for Coach itself elsewhere).
+  keyboard: Keyboard,
   // Added for the app-wide connectivity pill (src/components/ConnectivityPill.tsx)
   // — previously only messaging's own OfflineBanner said anything about
   // connectivity, and it drew no icon at all.

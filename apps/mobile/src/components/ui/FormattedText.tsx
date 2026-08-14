@@ -38,9 +38,19 @@ export function FormattedText({ text, style }: FormattedTextProps) {
     <View>
       {lines.map((line, index) => {
         const bulletMatch = BULLET_LINE_RE.exec(line);
+        // Consecutive "- "/"* " lines are one flat list (the Coach's system
+        // prompt only ever emits plain dash bullets — see this file's header
+        // comment), but the row itself carried no vertical gap of its own:
+        // two list items sat back to back with nothing but their own text's
+        // line-height between them, which read as one run-on block rather
+        // than a set of distinct items. A small gap ONLY between two bullet
+        // rows in a row (never before the first one) keeps a list visually
+        // grouped while still letting each item read as its own line.
+        const previousLine = index > 0 ? lines[index - 1] : null;
+        const followsBullet = previousLine !== null && BULLET_LINE_RE.test(previousLine);
         if (bulletMatch) {
           return (
-            <View key={index} style={styles.bulletRow}>
+            <View key={index} style={[styles.bulletRow, followsBullet && styles.bulletRowSpaced]}>
               <Text style={[style, styles.bulletGlyph]}>{"•"}</Text>
               <Text style={[style, styles.bulletText]}>{renderBoldSpans(bulletMatch[1], style)}</Text>
             </View>
@@ -83,6 +93,11 @@ const styles = StyleSheet.create({
   bulletRow: {
     flexDirection: "row",
     gap: spacing.xs,
+  },
+  // See the `followsBullet` comment above — only applied between two
+  // adjacent list items, never before the list's first line.
+  bulletRowSpaced: {
+    marginTop: spacing.xs,
   },
   bulletGlyph: {
     // Nudges the glyph up slightly to sit on the same baseline as the first
