@@ -21,7 +21,7 @@ import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } 
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import {
   DAYS_OF_WEEK_FULL,
@@ -76,8 +76,19 @@ const HAMBURGER_CLEARANCE = 64;
 
 export default function ScheduleScreen() {
   const analytics = useAnalytics();
+  const router = useRouter();
   const { notifications } = useCapabilities();
   const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
+  // Whether the bell's promise is actually being kept: `reminders.masterEnabled`
+  // is only this app's own intent, not proof the OS will do anything with it.
+  // A user who denied (or never granted) the system notification permission
+  // still sees the bell as fully "on" with zero indication that nothing will
+  // ever actually ring — the alarms get silently, permanently dropped by
+  // notifications.ts's own permission check, and there was previously no way
+  // to notice short of stumbling onto Settings > Notifications. Re-read on
+  // every focus, same as notification-settings.tsx's own permission row —
+  // granting happens by leaving for the OS Settings app and coming back.
+  const [notificationsBlocked, setNotificationsBlocked] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [detailBlock, setDetailBlock] = useState<ScheduleBlock | null>(null);
 
@@ -102,6 +113,18 @@ export default function ScheduleScreen() {
     useCallback(() => {
       analytics.track({ name: "screenViewed", payload: { screenName: "schedule" } });
     }, [analytics]),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void notifications.getPermissionStatus().then((status) => {
+        if (!cancelled) setNotificationsBlocked(status !== "granted");
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [notifications]),
   );
 
   // Keeps the now line, the active-block emphasis and the past/upcoming split
@@ -347,8 +370,17 @@ export default function ScheduleScreen() {
   // switch had silently undone itself — see schedule-reminders-store.ts.
   const handleToggleAllReminders = useCallback(() => {
     hapticLight();
+    // Toggling this store's flag can't fix a blocked OS permission — the
+    // switch would just flip from "on and silently doing nothing" to "off
+    // and doing nothing on purpose", with the same invisible root cause
+    // either way. Route to the one place that actually can (device Settings,
+    // via notification-settings.tsx) instead of pretending the tap worked.
+    if (notificationsBlocked) {
+      router.push("/notification-settings");
+      return;
+    }
     void reminders.setMasterEnabled(!reminders.masterEnabled);
-  }, [reminders]);
+  }, [notificationsBlocked, reminders, router]);
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -374,20 +406,36 @@ export default function ScheduleScreen() {
             // the touch target is bought back with hitSlop (36 + 2×8 = 52),
             // the same trade the floating hamburger makes in _layout.tsx.
             hitSlop={spacing.sm}
-            accessibilityRole="switch"
-            accessibilityLabel="All schedule alarms"
-            accessibilityHint={
-              reminders.masterEnabled
-                ? "Turns off every schedule alarm, including slots you add later"
-                : "Turns every schedule alarm back on"
+            accessibilityRole={notificationsBlocked ? "button" : "switch"}
+            accessibilityLabel={
+              notificationsBlocked ? "Schedule alarms are blocked" : "All schedule alarms"
             }
-            accessibilityState={{ checked: reminders.masterEnabled }}
+            accessibilityHint={
+              notificationsBlocked
+                ? "Notifications are off for GoalSlot, so alarms won't ring. Opens notification settings to fix it."
+                : reminders.masterEnabled
+                  ? "Turns off every schedule alarm, including slots you add later"
+                  : "Turns every schedule alarm back on"
+            }
+            accessibilityState={notificationsBlocked ? undefined : { checked: reminders.masterEnabled }}
           >
             <Icon
               name={reminders.masterEnabled ? "bell" : "bell-off"}
               size={20}
-              color={reminders.masterEnabled ? colors.foreground : colors.mutedForeground}
+              color={
+                notificationsBlocked
+                  ? colors.warning
+                  : reminders.masterEnabled
+                    ? colors.foreground
+                    : colors.mutedForeground
+              }
             />
+            {/* Only worth flagging while the switch itself is "on" — off is
+                already unambiguous, and doubling up the warning there would
+                just be noise. */}
+            {notificationsBlocked && reminders.masterEnabled ? (
+              <View style={styles.remindersToggleWarningDot} />
+            ) : null}
           </Pressable>
         </View>
       </View>
@@ -549,6 +597,19 @@ const styles = StyleSheet.create({
   // the FAB below) that all give something back under a finger.
   remindersTogglePressed: {
     backgroundColor: colors.secondary,
+  },
+  // A borrowed-background ring (not a hairline) so the dot reads as cut out
+  // of the circle behind it rather than sitting flush on top of the icon.
+  remindersToggleWarningDot: {
+    position: "absolute",
+    top: 1,
+    right: 1,
+    width: 10,
+    height: 10,
+    borderRadius: radii.full,
+    backgroundColor: colors.warning,
+    borderWidth: 2,
+    borderColor: colors.card,
   },
   eyebrow: {
     ...typography.label,
