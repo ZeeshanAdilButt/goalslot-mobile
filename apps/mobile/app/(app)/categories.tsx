@@ -44,6 +44,8 @@
 import { useCallback, useState } from "react";
 import {
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -151,20 +153,27 @@ export default function CategoriesScreen() {
         title="Categories"
         subtitle="The colors your goals, tasks and reports are grouped by."
       />
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={onRefresh}
-            accessibilityLabel="Pull to refresh categories and labels"
-          />
-        }
-      >
-        <CategoriesSection />
-        <LabelsSection />
-      </ScrollView>
+      {/* The category/label create forms autofocus their name field — the only
+          autoFocus text input outside a sheet in the app — so the keyboard
+          opens immediately on "Add category"/"Add label" with nothing else
+          prompting a scroll. Without this, Android leaves that field under
+          the keyboard the moment it's tapped. */}
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={onRefresh}
+              accessibilityLabel="Pull to refresh categories and labels"
+            />
+          }
+        >
+          <CategoriesSection />
+          <LabelsSection />
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -809,6 +818,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  flex: {
+    flex: 1,
   },
   content: {
     paddingHorizontal: spacing.xl,

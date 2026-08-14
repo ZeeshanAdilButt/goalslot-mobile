@@ -756,7 +756,10 @@ export default function CoachScreen() {
 
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        // Android does NOT resize the window for the keyboard under
+        // edge-to-edge (on unconditionally past SDK 35) — "height" is what
+        // actually moves the composer above the keyboard here.
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       >
         <View style={styles.bodyArea}>{body}</View>

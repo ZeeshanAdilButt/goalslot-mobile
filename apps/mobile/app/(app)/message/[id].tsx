@@ -10,10 +10,11 @@
 //
 // Keyboard behaviour is the part of a chat screen that most often goes wrong,
 // so it is split deliberately:
-//   * KeyboardAvoidingView here lifts the composer on iOS. Android is handled
-//     by `softwareKeyboardLayoutMode: "resize"` in app.json (the window
-//     itself shrinks), which is why `behavior` is undefined there — using
-//     'padding' on top of a resizing window double-counts the keyboard.
+//   * KeyboardAvoidingView here lifts the composer on both platforms.
+//     `softwareKeyboardLayoutMode: "resize"` in app.json does NOT resize the
+//     window on Android under edge-to-edge (on unconditionally past SDK 35)
+//     — the OS ignores adjustResize there, so "height" is what actually
+//     moves the composer, not a redundant double-count of the keyboard.
 //   * `keyboardVerticalOffset` is 0 because this route hides the tab bar.
 //     Coach passes 90 for exactly the opposite reason.
 //   * Everything about staying pinned to the newest message lives in
@@ -419,10 +420,7 @@ export default function MessageThreadScreen() {
 
       <KeyboardAvoidingView
         style={styles.flex}
-        // Android resizes the window itself (app.json
-        // `softwareKeyboardLayoutMode: "resize"`), so adding padding here
-        // would lift the composer twice.
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         // 0, not Coach's 90: this route hides the tab bar, so there is no
         // chrome below the composer to compensate for.
         keyboardVerticalOffset={0}
