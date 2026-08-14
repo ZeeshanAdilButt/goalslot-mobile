@@ -646,7 +646,13 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
-      android_keyboardInputMode="adjustResize"
+      // adjustPan, not adjustResize — see QuickAddSheet for the full
+      // reasoning. Short version: "adjustResize" makes @gorhom/bottom-sheet
+      // skip its own keyboard avoidance and wait for the OS to shrink the
+      // window, but this app runs edge-to-edge, where Android ignores
+      // `adjustResize` entirely. Nothing moved and the sheet stayed behind the
+      // keyboard. "adjustPan" hands the lift back to the library.
+      android_keyboardInputMode="adjustPan"
       enablePanDownToClose
       // Only one detent here (dynamic sizing with no `snapPoints`), and for
       // this form that's correct — it already opens at the tallest size the

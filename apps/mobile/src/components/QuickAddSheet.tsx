@@ -129,7 +129,35 @@ export const QuickAddSheet = forwardRef<BottomSheetModal, QuickAddSheetProps>(fu
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
       keyboardBlurBehavior="restore"
-      android_keyboardInputMode="adjustResize"
+      // adjustPan, NOT adjustResize — and this is the whole fix for "the
+      // keyboard covers the sheet" on Android. The prop does not set the
+      // native window flag; it tells @gorhom/bottom-sheet *who* is responsible
+      // for moving the sheet clear of the keyboard. Passing "adjustResize"
+      // opts the library OUT of doing anything: in that mode BottomSheet.tsx
+      // forces `heightWithinContainer = 0` and returns from its keyboard
+      // reaction without repositioning, on the assumption that the OS already
+      // shrank the window under it.
+      //
+      // It doesn't. This app runs edge-to-edge — android/gradle.properties
+      // sets `edgeToEdgeEnabled=true`, and RN enables it unconditionally
+      // anyway once the app targets SDK 35+ (WindowUtil.updateEdgeToEdgeFeatureFlag
+      // -> WindowCompat.setDecorFitsSystemWindows(window, false)). With
+      // decor-fits-system-windows off, Android ignores
+      // `android:windowSoftInputMode="adjustResize"`; the IME is reported as
+      // an inset and the window keeps its full height. So neither the OS nor
+      // the library moved anything, and the sheet sat at the bottom of a
+      // full-height window with the keyboard drawn straight over it — no sheet
+      // visible at all, which is exactly what the device screenshot showed.
+      //
+      // "adjustPan" is the library's own default and puts it back in charge:
+      // it offsets the sheet by the keyboard height from RN's keyboardDidShow,
+      // which ReactRootView derives from real `WindowInsetsCompat.Type.ime()`
+      // insets and is therefore correct under edge-to-edge. It also stays
+      // correct if the window ever *does* resize (a non-edge-to-edge build):
+      // the container then measures shorter, `containerOffset.bottom` grows by
+      // the same amount, and the computed offset cancels back to ~0 rather
+      // than double-lifting. JS-only change — no native rebuild needed.
+      android_keyboardInputMode="adjustPan"
       enablePanDownToClose
       handleIndicatorStyle={styles.handleIndicator}
       backgroundStyle={styles.sheetBackground}
