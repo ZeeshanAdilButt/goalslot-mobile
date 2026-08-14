@@ -67,17 +67,21 @@ import {
 import { EmptyState, ErrorState, Skeleton } from "@/components";
 import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
+import { formatMessageTime } from "@/components/messaging/format";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
+import { MicOrb } from "@/components/voice/MicOrb";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
+import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
 import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const MAX_MESSAGE_LENGTH = 2000;
 const RATE_LIMIT_MESSAGE = "You've used today's 30 Coach messages. It resets in 24 hours — try again later.";
@@ -93,6 +97,21 @@ function shiftDateKey(dateKey: string, deltaDays: number): string {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+/**
+ * Appends a dictated phrase onto whatever's already in the composer, with a
+ * single separating space — same shape as journal.tsx's own
+ * `appendDictatedPhrase` (kept local rather than shared for the same reason
+ * `shiftDateKey` above is: a two-line string helper, not a domain concept).
+ * Append rather than replace so a second dictation on top of typed text, or
+ * on top of an earlier dictation, adds to it instead of clobbering it.
+ */
+function appendDictatedPhrase(existing: string, phrase: string): string {
+  const trimmedPhrase = phrase.trim();
+  if (trimmedPhrase.length === 0) return existing;
+  if (existing.length === 0) return trimmedPhrase;
+  return /\s$/.test(existing) ? `${existing}${trimmedPhrase}` : `${existing} ${trimmedPhrase}`;
 }
 
 function toDayAnalysisEntry(entry: TimeEntry): DayAnalysisTimeEntryInput {
@@ -112,6 +131,14 @@ interface ChatMessageView {
   role: "USER" | "ASSISTANT";
   content: string;
   pending?: boolean;
+  /**
+   * Absent for an optimistic/streaming message (there's nothing to persist
+   * yet); present once the history refetch lands the real, server-timestamped
+   * row. Deliberately not backfilled with `Date.now()` in the meantime — a
+   * clock reading under a bubble that hasn't actually round-tripped to the
+   * server would be a small lie, and the bubble reads fine with none.
+   */
+  createdAt?: string;
 }
 
 function ChatBubble({
@@ -123,6 +150,11 @@ function ChatBubble({
   onApply?: (actions: CoachProposalAction[]) => Promise<string>;
 }) {
   const isUser = message.role === "USER";
+  // Clock-time only ("9:05 AM"), the same helper and treatment
+  // src/components/messaging/MessageBubble.tsx uses under its own bubbles —
+  // this is metadata, present but visually subordinate, not a second line of
+  // content competing with the message.
+  const time = message.createdAt ? formatMessageTime(message.createdAt) : "";
 
   if (isUser) {
     return (
@@ -130,10 +162,19 @@ function ChatBubble({
         <View
           style={[styles.bubble, styles.bubbleUser]}
           accessible
-          accessibilityLabel={`You said: ${message.content}`}
+          accessibilityLabel={`You said: ${message.content}${time ? ` at ${time}.` : ""}`}
         >
           <Text style={styles.bubbleTextUser}>{message.content}</Text>
         </View>
+        {time ? (
+          <Text
+            style={styles.timestamp}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            {time}
+          </Text>
+        ) : null}
       </View>
     );
   }
@@ -147,7 +188,7 @@ function ChatBubble({
       <View
         style={[styles.bubble, styles.bubbleAssistant]}
         accessible={!showTypingOnly}
-        accessibilityLabel={showTypingOnly ? undefined : `Coach replied: ${cleaned}`}
+        accessibilityLabel={showTypingOnly ? undefined : `Coach replied: ${cleaned}${time ? ` at ${time}.` : ""}`}
       >
         {showTypingOnly ? (
           <View
@@ -164,6 +205,15 @@ function ChatBubble({
           </>
         )}
       </View>
+      {!showTypingOnly && time ? (
+        <Text
+          style={styles.timestamp}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
+          {time}
+        </Text>
+      ) : null}
       {proposalPending ? (
         <View style={styles.proposalPending} accessibilityLabel="Coach is preparing a proposed change">
           <Text style={styles.proposalPendingText}>Preparing a proposed change…</Text>
@@ -227,6 +277,12 @@ export default function CoachScreen() {
   });
 
   const [input, setInput] = useState("");
+  // Same focus-ring treatment as journal.tsx's editor (`isEditorFocused` /
+  // `textInputFocused`) — a plain hairline border reads identically focused
+  // or not, which is exactly the "doesn't feel considered" complaint the
+  // composer had. Local to the composer only; nothing else on this screen
+  // needs it.
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [streamingReply, setStreamingReply] = useState("");
   const [optimisticUser, setOptimisticUser] = useState<ChatMessageView | null>(null);
@@ -238,10 +294,60 @@ export default function CoachScreen() {
     return () => abortRef.current?.abort();
   }, []);
 
+  const { voice } = useCapabilities();
+
+  /**
+   * The composer's mic — dictate a message instead of typing it.
+   *
+   * PRODUCT DECISION: this does NOT get voice.tsx's three-tier fast-path
+   * routing (local pattern match -> Tier 2 /coach/voice-intent classifier ->
+   * full Coach chat — see that screen's `handleCommand`). Plain
+   * dictate-into-composer only. Why:
+   *
+   * - Every other way this screen sends anything goes through an explicit
+   *   Send press first — even "Analyze my day" puts its assembled prompt
+   *   back in the input on failure rather than silently retrying (see
+   *   `sendCoachMessage`'s `onFailure`). A fast-path command like "stop the
+   *   timer" executing instantly, with no message ever appearing in this
+   *   thread, would break that contract: an action would happen that
+   *   nothing on screen shows happening, on a screen that is nothing BUT a
+   *   record of what was said and sent. That is more surprising here than
+   *   plain dictation is, not less.
+   * - The fast-path's own UI — the "which one did you mean" and "log 12
+   *   minutes?" confirmation panels voice.tsx renders in its dock — has
+   *   nowhere to live in this screen's single-row composer without
+   *   reproducing voice.tsx's dedicated layout here too.
+   * - The instant-command experience already has a home one tab away (the
+   *   Voice tab), which this composer's mic deliberately does not try to
+   *   duplicate. This button's job is narrower: let someone who already
+   *   opened Coach to type also just speak the words instead, exactly like
+   *   journal.tsx's dictation-into-draft mic does for a journal entry.
+   *
+   * `onCommand` always returns 'handoff', never 'done' — the words landed in
+   * the input, not in a sent message, so there is nothing for the hook's own
+   * success tick to confirm; the user still has to review and press Send.
+   */
+  const handleVoiceCommand = useCallback(async (transcript: string): Promise<VoiceCommandOutcome> => {
+    setInput((prev) => appendDictatedPhrase(prev, transcript));
+    return { kind: "handoff" };
+  }, []);
+
+  const {
+    state: voiceState,
+    start: startVoice,
+    stop: stopVoice,
+    openSettings: openVoiceSettings,
+  } = useVoiceCapture({ voice, onCommand: handleVoiceCommand, label: "Coach dictation" });
+
   const persistedMessages = useMemo<ChatMessageView[]>(() => {
     return (historyQuery.data ?? [])
       .filter((m: CoachMessageDto) => m.role === "USER" || m.role === "ASSISTANT")
-      .map((m: CoachMessageDto) => ({ id: m.id, role: m.role as "USER" | "ASSISTANT", content: m.content }));
+      .map((m: CoachMessageDto) => ({
+        id: m.id,
+        role: m.role as "USER" | "ASSISTANT",
+        content: m.content,
+        createdAt: m.createdAt,
+      }));
   }, [historyQuery.data]);
 
   const allMessages = useMemo<ChatMessageView[]>(() => {
@@ -443,6 +549,42 @@ export default function CoachScreen() {
     setStreaming(false);
   }, []);
 
+  /**
+   * Mirrors TrackerVoiceButton's own `handleMicPress` exactly: a listening
+   * mic is stopped (commits whatever it heard), a denied one jumps straight
+   * to Settings instead of re-prompting (the OS never shows that dialog
+   * twice), and a mid-reply screen refuses to open the mic at all — the
+   * composer is already `editable={false}` while `streaming`, so starting a
+   * dictation that has nowhere visible to land would be worse than just
+   * disabling the button.
+   */
+  const handleMicPress = useCallback(() => {
+    if (voiceState.status === "listening") {
+      void stopVoice();
+      return;
+    }
+    if (voiceState.status === "permission-denied") {
+      openVoiceSettings();
+      return;
+    }
+    if (voiceState.status === "processing" || streaming) return;
+    void startVoice();
+  }, [openVoiceSettings, startVoice, stopVoice, streaming, voiceState.status]);
+
+  const voiceBlocked = voiceState.status === "permission-denied" || voiceState.status === "unavailable";
+  // Only worth a caption while there's something to say beyond "idle, ready
+  // to tap" — 'processing' is skipped too: `handleVoiceCommand` above is
+  // synchronous (no network call), so that state never lingers long enough
+  // for a line of text to be worth rendering before it flips back to idle.
+  const voiceStatusLine =
+    voiceState.status === "listening"
+      ? voiceState.transcript.length > 0
+        ? voiceState.transcript
+        : "Listening…"
+      : voiceState.status === "error" || voiceBlocked
+        ? voiceState.message
+        : null;
+
   useEffect(() => {
     // Auto-scroll to the newest message as the thread grows or a reply streams in.
     scrollRef.current?.scrollToEnd({ animated: true });
@@ -582,11 +724,48 @@ export default function CoachScreen() {
               </Pressable>
             </View>
 
+            {/* Live transcript while listening, or the hook's own
+                permission-denied/unavailable/error message — same three
+                states journal.tsx's and TrackerVoiceButton's mics surface,
+                just spoken here as a caption above the row instead of a
+                separate panel, since this composer has no room for one. */}
+            {voiceStatusLine ? (
+              <Text
+                style={[styles.voiceStatusLine, voiceBlocked && styles.voiceStatusLineBlocked]}
+                accessibilityLiveRegion="polite"
+                numberOfLines={2}
+              >
+                {voiceStatusLine}
+              </Text>
+            ) : null}
+
             <View style={styles.composer}>
+              <MicOrb
+                status={voiceState.status}
+                onPress={handleMicPress}
+                disabled={streaming}
+                // Matches the Send/Stop buttons' own 44pt so the row reads as
+                // three peers, not a smaller decoration bolted beside them.
+                size={44}
+                accessibilityLabel={
+                  voiceState.status === "listening"
+                    ? "Stop dictating"
+                    : voiceState.status === "permission-denied"
+                      ? "Open Settings to allow microphone access"
+                      : "Dictate your message"
+                }
+                accessibilityHint={
+                  voiceState.status === "listening"
+                    ? undefined
+                    : "Speaks your message into the text field below instead of typing it"
+                }
+              />
               <TextInput
-                style={styles.textInput}
+                style={[styles.textInput, isComposerFocused && styles.textInputFocused]}
                 value={input}
                 onChangeText={setInput}
+                onFocus={() => setIsComposerFocused(true)}
+                onBlur={() => setIsComposerFocused(false)}
                 placeholder="Ask the Coach a question…"
                 placeholderTextColor={colors.mutedForeground}
                 multiline
@@ -731,8 +910,12 @@ const styles = StyleSheet.create({
   bubble: {
     maxWidth: "85%",
     borderRadius: radii.lg,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    // A step up from the DM thread's own bubble padding (spacing.sm/md —
+    // see MessageBubble.tsx), because this bubble routinely holds several
+    // sentences of prose rather than a short text; the same reasoning as the
+    // font-size bump just below.
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
   },
   bubbleUser: {
     backgroundColor: colors.primary,
@@ -744,17 +927,40 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderBottomLeftRadius: radii.sm,
   },
+  // `typography.body` (14/20) is the shared scale's UI-row size — right for a
+  // list row or a short DM bubble (MessageBubble.tsx intentionally keeps
+  // that size), wrong for what this bubble actually holds: multi-sentence,
+  // often multi-paragraph replies the user has to read closely to act on.
+  // Same fix, same reasoning journal.tsx already applied to its own prose
+  // editor (see that file's `textInput` comment): a step up in size, with an
+  // explicit lineHeight tuned to it rather than inherited, and letterSpacing
+  // nudged tighter as foundation.ts's own scale does for every larger step.
   bubbleTextUser: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.primaryForeground,
   },
   bubbleTextAssistant: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.foreground,
   },
   streamingCursor: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
     color: colors.mutedForeground,
+  },
+  // Clock time under a bubble — present, but never competing with the
+  // message. Same shape as MessageBubble.tsx's own `meta`: caption's size
+  // without caption's uppercase eyebrow treatment, which would make a plain
+  // "9:05 AM" read as a label instead of a timestamp.
+  timestamp: {
+    ...typography.caption,
+    fontWeight: "400",
+    textTransform: "none",
+    color: colors.mutedForegroundLight,
   },
   typingIndicator: {
     paddingVertical: spacing.xxs,
@@ -839,8 +1045,36 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    fontSize: 15,
+    // Matches the bubble text's own size (see bubbleTextAssistant above) so
+    // what the user is typing previews at the same size it'll read back at,
+    // with its own lineHeight since RN won't derive one for a multiline field.
+    fontSize: 16,
+    lineHeight: 22,
+    letterSpacing: -0.1,
     color: colors.foreground,
+  },
+  // A plain hairline border reads identically focused or not — no cue that
+  // the box is "live" and ready for text. Same ring-on-focus journal.tsx's
+  // editor uses (`textInputFocused`). Elevation is `subtle`, not journal's
+  // `raised`: foundation.ts's own elevation ramp names `subtle` for "a
+  // control seated on a surface (button, input)" and reserves `raised` for a
+  // surface floating over other content — journal's editor IS the page's
+  // main surface, this is one control docked in a footer above the keyboard.
+  textInputFocused: {
+    borderColor: colors.ring,
+    borderWidth: 1.5,
+    ...shadows.subtle,
+  },
+  voiceStatusLine: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
+    backgroundColor: colors.background,
+  },
+  voiceStatusLineBlocked: {
+    color: colors.destructive,
+    fontWeight: "600",
   },
   sendButton: {
     minHeight: 44,

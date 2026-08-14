@@ -1511,8 +1511,11 @@ const styles = StyleSheet.create({
     borderRadius: radii.card,
     borderBottomRightRadius: radii.sm,
     backgroundColor: colors.primary,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    // Matches coach.tsx's own bubble padding bump (spacing.md/lg, up from
+    // sm/md) — sized for the same 16px/24-line-height prose text below,
+    // not the shared scale's tighter UI-row padding.
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
     gap: spacing.xxs,
     ...shadows.subtle,
   },
@@ -1521,8 +1524,15 @@ const styles = StyleSheet.create({
     color: colors.primaryForeground,
     opacity: 0.7,
   },
+  // Same size bump as coach.tsx's `bubbleTextUser`/`bubbleTextAssistant` —
+  // see that file's comment. Voice renders the identical Coach reply text
+  // (`FormattedText`) and the same kind of spoken, often multi-sentence
+  // transcript; the two screens would read as two different chat products
+  // if only one of them got the readability fix.
   saidText: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.primaryForeground,
   },
   replyBubble: {
@@ -1533,12 +1543,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
     ...shadows.subtle,
   },
   replyText: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.foreground,
   },
   pendingText: {

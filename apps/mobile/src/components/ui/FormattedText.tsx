@@ -92,7 +92,13 @@ const styles = StyleSheet.create({
   bulletText: {
     flex: 1,
   },
+  // A paragraph break has to read as more air than the line-height already
+  // gives a wrapped line within one paragraph, or it doesn't read as a break
+  // at all. `spacing.sm` (8) rather than the old `spacing.xs` (4) — sized
+  // against the callers' bubble text (16px/24 line-height, see coach.tsx's
+  // and voice.tsx's `bubbleTextAssistant`/`replyText`), where 4px nearly
+  // disappeared against that much larger leading.
   paragraphGap: {
-    height: spacing.xs,
+    height: spacing.sm,
   },
 });

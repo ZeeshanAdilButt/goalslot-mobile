@@ -431,8 +431,11 @@ const styles = StyleSheet.create({
   bubble: {
     maxWidth: "85%",
     borderRadius: radii.lg,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
+    // Matches coach.tsx's live bubble padding — this renders the exact same
+    // AI-reply content (extractCoachProposals'd, FormattedText'd), just from
+    // an archived snapshot, so it should read at the same size.
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
   },
   bubbleUser: {
     alignSelf: "flex-end",
@@ -446,12 +449,18 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderBottomLeftRadius: radii.sm,
   },
+  // Same size bump as coach.tsx's `bubbleTextUser`/`bubbleTextAssistant` —
+  // see that file's comment.
   bubbleTextUser: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.primaryForeground,
   },
   bubbleTextAssistant: {
-    ...typography.body,
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: -0.1,
     color: colors.foreground,
   },
   archivedFooter: {
