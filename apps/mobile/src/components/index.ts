@@ -7,7 +7,7 @@ export * from "./QueryErrorState";
 export * from "./QuickAddSheet";
 export * from "./Skeleton";
 // Screens already reach for the state primitives through this barrel, so the
-// shared UI primitives (Button, Card, Badge, IconBadge, ProgressRing, Icon,
-// TextField) are re-exported here too — otherwise a screen needs two import
-// paths to build one row. `@/components/ui` still works unchanged.
+// shared UI primitives (Button, IconBadge, Icon, TextField) are re-exported
+// here too — otherwise a screen needs two import paths to build one row.
+// `@/components/ui` still works unchanged.
 export * from "./ui";
