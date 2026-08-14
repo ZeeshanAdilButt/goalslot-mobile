@@ -36,8 +36,12 @@
 import { useCallback } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useQuery } from "@tanstack/react-query";
+
+import { countUnreadConversations } from "@goalslot/shared";
 
 import { useAuth } from "@/providers/auth-provider";
+import { messagingQueries } from "@/lib/queries";
 import { messagingEnabled } from "@/lib/messaging-config";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -66,6 +70,26 @@ interface DrawerNavItem {
   href: DrawerHref;
   label: string;
   icon: IconName;
+}
+
+/**
+ * Unread conversation count for the Messages row's badge.
+ *
+ * Reads the conversations query rather than fetching its own: the Messages
+ * screen and the app-wide socket (useMessagingLiveUpdates in
+ * app/(app)/_layout.tsx) already keep that cache current, so the drawer
+ * shows whatever the app most recently knew without adding a request every
+ * time the drawer opens. `enabled: messagingEnabled` keeps this inert in
+ * builds with no messaging service configured, matching the nav row itself.
+ */
+function useUnreadMessagesCount(currentUserId: string | undefined): number {
+  const conversationsQuery = useQuery({
+    ...messagingQueries.conversations(),
+    enabled: messagingEnabled && !!currentUserId,
+  });
+
+  if (!currentUserId || !conversationsQuery.data) return 0;
+  return countUnreadConversations(conversationsQuery.data, currentUserId);
 }
 
 interface DrawerNavGroup {
@@ -142,6 +166,7 @@ export interface DrawerContentProps {
 
 export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerContentProps) {
   const { user, logout } = useAuth();
+  const unreadMessages = useUnreadMessagesCount(user?.id);
 
   // Same confirm-before-logout UX as Settings (destructive + irreversible
   // from the user's point of view — they land back on the login screen).
@@ -188,6 +213,7 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
             {group.label ? <Text style={styles.groupLabel}>{group.label}</Text> : null}
             {group.items.map((item) => {
               const active = isActiveRoute(pathname, item.href);
+              const badgeCount = item.href === "/messages" ? unreadMessages : 0;
               return (
                 <Pressable
                   key={item.href}
@@ -198,7 +224,13 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
                     pressed && !active && styles.navRowPressed,
                   ]}
                   accessibilityRole="link"
-                  accessibilityLabel={item.label}
+                  // The count belongs in the accessible name too - a screen
+                  // reader user gets no benefit from a purely visual badge.
+                  accessibilityLabel={
+                    badgeCount > 0
+                      ? `${item.label}, ${badgeCount} unread ${badgeCount === 1 ? "conversation" : "conversations"}`
+                      : item.label
+                  }
                   accessibilityState={{ selected: active }}
                 >
                   {active ? <View style={styles.activeBar} /> : null}
@@ -214,6 +246,15 @@ export function DrawerContent({ pathname, onNavigate, onRequestClose }: DrawerCo
                   <Text style={[styles.navLabel, active && styles.navLabelActive]} numberOfLines={1}>
                     {item.label}
                   </Text>
+                  {badgeCount > 0 ? (
+                    // Already voiced through the row's accessibilityLabel
+                    // above, so the badge itself is hidden from the a11y
+                    // tree rather than read out a second time as a bare
+                    // number with no context.
+                    <View style={styles.badge} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                      <Text style={styles.badgeText}>{badgeCount > 99 ? "99+" : badgeCount}</Text>
+                    </View>
+                  ) : null}
                 </Pressable>
               );
             })}
@@ -354,6 +395,26 @@ const styles = StyleSheet.create({
   navLabelActive: {
     fontWeight: "600", // `data-[active=true]:font-semibold`
     color: colors.foreground, // `data-[active=true]:text-zinc-900`
+  },
+  // Mirrors web's sidebar count badge (app-sidebar.tsx: `variant="brand"`,
+  // `ml-auto h-4 text-[10px]`). The label above owns `flex: 1`, so this
+  // lands at the trailing edge without needing a margin of its own.
+  badge: {
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radii.pill,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: {
+    ...typography.caption,
+    fontSize: 11,
+    fontWeight: "700",
+    // Brand yellow is a light fill; the count has to be dark to stay legible
+    // on it, same as web's brand badge.
+    color: colors.foreground,
   },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
