@@ -38,7 +38,7 @@
 // leaves the mounted useJournalReminderSync() to notice the change and act
 // on it — same pattern the picker underneath it already uses for the timer.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Linking, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
@@ -52,7 +52,9 @@ import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicke
 import { useScheduleRemindersStore } from "@/lib/schedule-reminders-store";
 import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore } from "@/lib/timer-store";
+import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { useJournalReminderSync } from "@/lib/useJournalReminders";
+import { useAuth } from "@/providers/auth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, spacing } from "@/theme/tokens";
@@ -89,6 +91,21 @@ export default function NotificationSettingsScreen() {
       };
     }, [notifications]),
   );
+
+  // Remote push needs a device token, and a token can only be minted once
+  // permission exists — so the moment permission becomes "granted", register
+  // with the API rather than waiting for the next cold start. Keyed on
+  // `permission` so it covers both routes to a grant: the in-app prompt
+  // below, and the user leaving for the OS settings app and coming back
+  // (which the focus effect above re-reads). Re-running is harmless — the
+  // sync is idempotent and short-circuits to "unchanged" — and the effect
+  // only fires when the value actually changes, not on every focus.
+  const { user } = useAuth();
+  const userId = user?.id;
+  useEffect(() => {
+    if (permission !== "granted" || !userId) return;
+    void syncPushRegistration(userId, createPushRegistrationPort());
+  }, [permission, userId]);
 
   const handlePermissionPress = useCallback(async () => {
     if (permission === "granted") return;

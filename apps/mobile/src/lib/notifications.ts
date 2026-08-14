@@ -101,6 +101,57 @@ export function resetAlarmChannelCacheForTests(): void {
   notifyChannelReady = null;
 }
 
+// ---------------------------------------------------------------------------
+// Remote push (as opposed to everything above, which is LOCAL notifications
+// this app schedules on the device itself)
+// ---------------------------------------------------------------------------
+
+/**
+ * Acquires this device's Expo push token — the address the API's Expo channel
+ * (goal-slot-api/src/modules/reminders/channels/expo-push-channel.provider.ts)
+ * sends to. Lives in this file rather than alongside the registration logic
+ * because this is the file allowed to import expo-notifications; the
+ * orchestration around it (when to fetch, dedupe, POST, withdraw) is in
+ * src/lib/push-registration.ts and is a pure function over this one.
+ *
+ * Returns null rather than throwing, on purpose — every documented failure
+ * here is a normal, non-exceptional state that must not break app start:
+ *
+ *   - a simulator/emulator has no push capability at all;
+ *   - the call reaches out to Expo's servers, so it fails when offline;
+ *   - a build with no push credentials provisioned (notably any iOS build
+ *     signed with a free/personal Apple account, which cannot carry the
+ *     Push Notifications capability) is rejected outright.
+ *
+ * The caller retries on the next launch; there is nothing a user could do
+ * about any of these in the moment, so none of them warrant an error UI.
+ */
+export async function getExpoPushToken(projectId: string): Promise<string | null> {
+  try {
+    const token = await Notifications.getExpoPushTokenAsync({ projectId });
+    return typeof token?.data === "string" && token.data.length > 0 ? token.data : null;
+  } catch (error) {
+    console.warn("[notifications] could not acquire an Expo push token", error);
+    return null;
+  }
+}
+
+/**
+ * Subscribes to push-token rotation. The push service can roll a token while
+ * the app is running, at which point the old one silently stops delivering —
+ * so re-registering promptly is the difference between "messages stopped
+ * arriving for no reason" and a self-healing registration.
+ *
+ * The listener is handed the DEVICE token, which is not what the API stores;
+ * callers re-run the full registration sync (which re-reads the Expo token)
+ * rather than trying to use the value passed in. Returns an unsubscribe
+ * function so React callers can clean up on unmount.
+ */
+export function addPushTokenChangeListener(onChange: () => void): () => void {
+  const subscription = Notifications.addPushTokenListener(() => onChange());
+  return () => subscription.remove();
+}
+
 export function createExpoNotificationCapability(): NotificationCapability {
   return {
     async getPermissionStatus() {

@@ -13,6 +13,10 @@ import { create } from "zustand";
 import { hasResponse, type User } from "@goalslot/shared";
 
 import { apiClient, setSessionExpiredHandler } from "../lib/api-client";
+import {
+  createPushRegistrationPort,
+  unregisterPushRegistration,
+} from "../lib/push-registration";
 import { secureTokenStorage } from "../lib/secure-token-storage";
 import { resetSessionState } from "../lib/session-reset";
 
@@ -84,6 +88,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   async logout() {
+    // FIRST, while the access token is still valid: withdraw this device's
+    // push subscription. It is an authenticated DELETE, so it has to happen
+    // before the tokens go — afterwards it can only 401, and the row would
+    // survive on the server, leaving this phone receiving the previous
+    // account's message notifications while signed into a different account
+    // or none at all. That's the remote-push counterpart of the local
+    // scheduled-notification leak session-reset.ts documents in its point 6.
+    //
+    // Never throws (see push-registration.ts) — sign-out must complete even
+    // if the device is offline at the time.
+    await unregisterPushRegistration(createPushRegistrationPort());
+
     // Tokens are only the key to the door — the previous account's goals,
     // tasks and queued offline writes live in caches behind it. Clearing
     // just the tokens is what let the next person to sign in on this device

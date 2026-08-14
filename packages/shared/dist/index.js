@@ -1233,6 +1233,35 @@ function createNotesApi(api) {
   };
 }
 
+// src/api/push-subscriptions.ts
+function createPushSubscriptionsApi(api) {
+  return {
+    /**
+     * Registers (or re-confirms) an Expo push token for the signed-in user.
+     *
+     * Safe to call repeatedly: the API upserts on the `userId_expoToken`
+     * compound unique, so the same device re-registering on every launch
+     * updates one row rather than accumulating duplicates. That's also why
+     * the client-side dedupe in the mobile app is an optimisation to avoid
+     * a redundant request, not a correctness requirement.
+     *
+     * Note the row is keyed by (user, token), so the SAME physical device
+     * signed into two accounts legitimately produces two rows — one per
+     * user. That is correct, and it is exactly why sign-out should call
+     * `unregister` rather than leaving the previous account's row pointing
+     * at a phone somebody else is now holding.
+     */
+    registerExpo: (expoToken) => api.post("/push-subscriptions", { expoToken }),
+    /**
+     * Removes a single subscription by id. The API scopes the delete to the
+     * calling user (403 if the row belongs to somebody else) and 404s if it
+     * has already gone, so callers should treat both as "already handled"
+     * rather than as a failure worth surfacing.
+     */
+    unregister: (id) => api.delete(`/push-subscriptions/${id}`)
+  };
+}
+
 // src/api/sharing.ts
 function createSharingApi(api) {
   return {
@@ -1424,6 +1453,11 @@ function createApiClient(config) {
     users: createUsersApi(api),
     goals: createGoalsApi(api),
     notes: createNotesApi(api),
+    // Device registration for remote push. Without a row here the whole
+    // server-side dispatch pipeline (reminder-dispatch -> Expo channel)
+    // runs against an empty subscription set and delivers nothing —
+    // see ./push-subscriptions.ts.
+    pushSubscriptions: createPushSubscriptionsApi(api),
     tasks: createTasksApi(api),
     schedule: createScheduleApi(api),
     timeEntries: createTimeEntriesApi(api),
@@ -3424,6 +3458,7 @@ export {
   createOfflineSync,
   createOperationRegistry,
   createOutbox,
+  createPushSubscriptionsApi,
   createScheduleApi,
   createScheduleBlockSchema,
   createScheduleQueries,

@@ -35,7 +35,7 @@
 // Logout stays the load-bearing one: useAuth().logout() existed since the
 // auth provider was built and nothing called it until this screen shipped.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -52,6 +52,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "@/components/settings";
+import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
@@ -116,6 +117,17 @@ export default function SettingsScreen() {
       };
     }, [notifications]),
   );
+
+  // Permission is requested from this screen too (the Notifications row
+  // below), and remote push can only register once it exists — so mirror
+  // notification-settings.tsx and sync the device's push token the moment
+  // the grant lands, instead of leaving it until the next cold start. Both
+  // screens do this rather than one, because either can be where the user
+  // says yes. The sync is idempotent, so the overlap costs nothing.
+  useEffect(() => {
+    if (permission !== "granted" || !user?.id) return;
+    void syncPushRegistration(user.id, createPushRegistrationPort());
+  }, [permission, user?.id]);
 
   // Two different jobs share this one row, gated on whether permission is
   // settled yet. Not settled: this IS the permission control — request it,

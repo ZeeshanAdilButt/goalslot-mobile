@@ -21,6 +21,7 @@ import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
 import { createMessagingApi } from './messaging'
 import { createNotesApi } from './notes'
+import { createPushSubscriptionsApi } from './push-subscriptions'
 import { createSharingApi } from './sharing'
 import { createScheduleApi } from './schedule'
 import { createTasksApi } from './tasks'
@@ -200,6 +201,11 @@ export function createApiClient(config: ApiClientConfig) {
     users: createUsersApi(api),
     goals: createGoalsApi(api),
     notes: createNotesApi(api),
+    // Device registration for remote push. Without a row here the whole
+    // server-side dispatch pipeline (reminder-dispatch -> Expo channel)
+    // runs against an empty subscription set and delivers nothing —
+    // see ./push-subscriptions.ts.
+    pushSubscriptions: createPushSubscriptionsApi(api),
     tasks: createTasksApi(api),
     schedule: createScheduleApi(api),
     timeEntries: createTimeEntriesApi(api),

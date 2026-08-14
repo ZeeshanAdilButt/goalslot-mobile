@@ -13,6 +13,8 @@ import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
 import { resolveNotificationRoute } from "@/lib/deep-links";
+import { addPushTokenChangeListener } from "@/lib/notifications";
+import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { CapabilitiesProvider } from "@/providers/capabilities-provider";
 import { GrowthProvider } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
@@ -22,7 +24,7 @@ import { useAuth } from "@/providers/auth-provider";
 initSentry();
 
 function AppGate() {
-  const { status, loadUser } = useAuth();
+  const { status, loadUser, user } = useAuth();
 
   // True while the persisted query cache is still being read back off
   // AsyncStorage. Without this the tree mounts first and the restore lands
@@ -46,6 +48,32 @@ function AppGate() {
     const unsubscribe = offlineSync.init();
     return unsubscribe;
   }, []);
+
+  // Remote-push registration. Without this the server has no address for
+  // this device: `reminder-dispatch` runs, finds no `kind:'EXPO'`
+  // subscription rows for the user, and delivers nothing — which is the
+  // whole reason "new message" pushes never arrived. See
+  // src/lib/push-registration.ts.
+  //
+  // Runs once the user id is known, and again whenever it changes, so an
+  // account switch re-points this handset at the account that is actually
+  // signed in. It never prompts for permission (it registers only if
+  // permission is already granted) and never throws, so it cannot delay or
+  // break app start.
+  const userId = user?.id;
+  useEffect(() => {
+    if (status !== "authenticated" || !userId) return;
+
+    const port = createPushRegistrationPort();
+    void syncPushRegistration(userId, port);
+
+    // A push service can roll a token while the app is running, silently
+    // invalidating the old one. Re-syncing on that event is what keeps the
+    // registration self-healing instead of dying until the next cold start.
+    return addPushTokenChangeListener(() => {
+      void syncPushRegistration(userId, port);
+    });
+  }, [status, userId]);
 
   // Notification-tap routing. `useLastNotificationResponse` covers both
   // cold start (reads expo-notifications' native "last response" once on

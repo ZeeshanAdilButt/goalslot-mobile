@@ -61,6 +61,28 @@ describe("resolveNotificationRoute", () => {
     expect(resolveNotificationRoute({ type: "journal" })).toBe("/journal");
   });
 
+  // The remote-push case. This payload is minted by goal-slot-api's
+  // messaging.service.ts (`{ type: 'conversation', conversationId }`) and
+  // arrives verbatim as the Expo message's `data`, so these assertions are
+  // the contract with the server — the key is `conversationId`, not `id`.
+  it("routes a 'conversation' payload to that conversation's screen", () => {
+    expect(resolveNotificationRoute({ type: "conversation", conversationId: "conv-1" })).toBe(
+      "/message/conv-1",
+    );
+  });
+
+  it("escapes a conversation id that isn't URL-safe", () => {
+    expect(resolveNotificationRoute({ type: "conversation", conversationId: "a/b?c" })).toBe(
+      "/message/a%2Fb%3Fc",
+    );
+  });
+
+  it("returns null for a 'conversation' payload with no usable id", () => {
+    expect(resolveNotificationRoute({ type: "conversation" })).toBeNull();
+    expect(resolveNotificationRoute({ type: "conversation", conversationId: "" })).toBeNull();
+    expect(resolveNotificationRoute({ type: "conversation", conversationId: 7 })).toBeNull();
+  });
+
   it("returns null for payloads missing required fields", () => {
     expect(resolveNotificationRoute({ type: "goal" })).toBeNull();
     expect(resolveNotificationRoute({ type: "schedule", dayOfWeek: 9 })).toBeNull();

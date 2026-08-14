@@ -52,6 +52,10 @@ const ROUTES = {
     `/timer?autostart=spoken&spokenName=${encodeURIComponent(spokenName)}`,
   journal: (): string => "/journal",
   journalVoiceCapture: (): string => "/journal?voice=1",
+  // The one route here that is fed by a REMOTE push rather than a local
+  // notification this app scheduled — see `conversation` in
+  // DeepLinkNotificationData below.
+  conversation: (conversationId: string): string => `/message/${encodeURIComponent(conversationId)}`,
 } as const;
 
 /** Must match `expo.scheme` in app.json. */
@@ -194,7 +198,21 @@ export type DeepLinkNotificationData =
   // The journal reminder's tap target (src/lib/journal-reminders.ts) — opens
   // today's entry directly rather than cold-opening to Today, since the
   // whole point of the notification is "go write in your journal now".
-  | { type: "journal" };
+  | { type: "journal" }
+  // "<name> sent you a message". Unlike every other member of this union,
+  // this payload is minted SERVER-side, not by this app: it is exactly what
+  // goal-slot-api's messaging.service.ts puts on the dispatch —
+  // `{ type: 'conversation', conversationId }` — and is carried through
+  // reminder-dispatch to the Expo channel's message `data` unchanged. The
+  // key is `conversationId`, not `id`, because that is what the server
+  // sends; renaming it here would just silently stop matching.
+  //
+  // Routed even in a build where messaging is switched off
+  // (messaging-config.ts's `messagingEnabled`): `app/(app)/_layout.tsx`
+  // keeps `message/[id]` registered unconditionally and the screen degrades
+  // to a "not available" state, so opening it is safe, whereas swallowing
+  // the tap would leave a notification that visibly does nothing.
+  | { type: "conversation"; conversationId: string };
 
 /**
  * Resolves a notification's `content.data` payload to the in-app route it
@@ -220,6 +238,8 @@ export function resolveNotificationRoute(data: unknown): string | null {
       return ROUTES.scheduleDay(data.dayOfWeek);
     case "journal":
       return ROUTES.journal();
+    case "conversation":
+      return ROUTES.conversation(data.conversationId);
   }
 }
 
@@ -238,6 +258,12 @@ function isDeepLinkNotificationData(data: unknown): data is DeepLinkNotification
       return "dayOfWeek" in data && isScheduleDayOfWeek((data as { dayOfWeek: unknown }).dayOfWeek);
     case "journal":
       return true;
+    case "conversation":
+      return (
+        "conversationId" in data &&
+        typeof (data as { conversationId: unknown }).conversationId === "string" &&
+        (data as { conversationId: string }).conversationId.length > 0
+      );
     default:
       return false;
   }
