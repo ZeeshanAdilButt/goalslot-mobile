@@ -21,6 +21,8 @@
 //     Tracker", "Reflection pair: Journal + Coach", "Auxiliary surfaces"),
 //     just made visible. Eleven undifferentiated rows is the thing that
 //     makes a drawer read as a dump of links rather than as navigation.
+//     Journal is the one row that no longer sits where web puts it — see
+//     the note on NAV_GROUPS for that deliberate mobile-only divergence.
 //   - SidebarMenuButton: rounded row, muted label and icon at rest; active
 //     gets a zinc-100 fill, a zinc-200 border, a semibold label and a
 //     brand-yellow icon (sidebar.tsx:443 `data-[active=true]:*` +
@@ -101,8 +103,25 @@ interface DrawerNavGroup {
 // Grouping and order both follow web's `navItems` (app-sidebar.tsx:53-70).
 // Timer is web's "Time Tracker" and Coach AI is web's "GoalSlot AI" — same
 // screens, mobile's existing labels kept so the drawer matches the tab bar.
+//
+// ONE deliberate mobile-only divergence: Journal is promoted out of the
+// "Reflect" pair and up beside Today, ahead of Plan. Web can leave it fourth
+// because its sidebar is always on screen — depth there costs a glance. On a
+// phone the drawer is closed by default, so a row in the fourth group is
+// three interactions deep for a habit that only works if it's daily, and the
+// tab bar has no sixth slot to give it (see app/(app)/_layout.tsx). Today +
+// Journal is also a coherent unlabelled pair on its own terms: the day's
+// plan and the day's reflection, the two rows a user touches every day.
+// Coach AI stays in "Reflect" — Journal is the daily habit; Coach is a thing
+// you go to when you want it — which keeps the labelled groups reading
+// Plan -> Do -> Reflect, the same sequence as the header tagline.
 const NAV_GROUPS: DrawerNavGroup[] = [
-  { items: [{ href: "/", label: "Today", icon: "today" }] },
+  {
+    items: [
+      { href: "/", label: "Today", icon: "today" },
+      { href: "/journal", label: "Journal", icon: "journal" },
+    ],
+  },
   {
     label: "Plan",
     items: [
@@ -119,10 +138,9 @@ const NAV_GROUPS: DrawerNavGroup[] = [
   },
   {
     label: "Reflect",
-    items: [
-      { href: "/journal", label: "Journal", icon: "journal" },
-      { href: "/coach", label: "Coach AI", icon: "coach" },
-    ],
+    // Journal used to sit here, above Coach AI — see the note on NAV_GROUPS
+    // for why it now lives with Today instead.
+    items: [{ href: "/coach", label: "Coach AI", icon: "coach" }],
   },
   {
     label: "Workspace",

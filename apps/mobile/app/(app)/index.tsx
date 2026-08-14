@@ -63,6 +63,7 @@ import { Skeleton, SkeletonListItem } from "@/components/Skeleton";
 import { describeCountdown } from "@/components/today/countdown";
 import { FocusNowCard } from "@/components/today/FocusNowCard";
 import { GoalProgressRow } from "@/components/today/GoalProgressRow";
+import { JournalPromptCard, type JournalPromptState } from "@/components/today/JournalPromptCard";
 import { PressableScale } from "@/components/today/PressableScale";
 import { QuickActionCard } from "@/components/today/QuickActionCard";
 import { SectionEmpty } from "@/components/today/SectionEmpty";
@@ -71,7 +72,7 @@ import { TaskRow } from "@/components/today/TaskRow";
 import { TimelineRow } from "@/components/today/TimelineRow";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
-import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { motion } from "@/theme";
@@ -156,6 +157,13 @@ export default function TodayScreen() {
   const taskSheetRef = useRef<BottomSheetModal>(null);
   const slotSheetRef = useRef<BottomSheetModal>(null);
 
+  // Local calendar day, and the key several things below hang off. Lives up
+  // here with the queries rather than down with the other derived memos
+  // because `journalTodayQuery` is keyed on it. Stable within a day: `now`
+  // is replaced every minute, but `getLocalDateString` of it isn't, so the
+  // query key doesn't churn.
+  const todayStr = useMemo(() => getLocalDateString(now), [now]);
+
   const scheduleQuery = useQuery(scheduleQueries.weekly());
   const tasksQuery = useQuery(taskQueries.list());
   // Both of these reuse query keys other screens already register —
@@ -165,6 +173,15 @@ export default function TodayScreen() {
   // screens instead of drifting.
   const activeGoalsQuery = useQuery(goalQueries.list({ status: "ACTIVE" }));
   const timeEntriesQuery = useQuery(timeEntryQueries.recent());
+  // Only reason this screen fetches journal at all: it lets the shortcut
+  // below say "write" vs "continue" instead of a generic label. It's the
+  // cheapest query on the screen — ONE day's entry, and the exact key
+  // app/(app)/journal.tsx subscribes to (`byDate(today)`), so the two share a
+  // cache entry in both directions: Today warms the editor, and the editor's
+  // save (which invalidates `journalQueries.all`) updates this card. A day
+  // with no entry resolves to `null` rather than throwing — the 404 is
+  // swallowed in packages/shared/src/queries/journal.ts.
+  const journalTodayQuery = useQuery(journalQueries.byDate(todayStr));
 
   // Keeps "right now" honest while the screen sits open — a schedule block
   // that was active a minute ago can silently become stale otherwise.
@@ -215,8 +232,9 @@ export default function TodayScreen() {
       tasksQuery.refetch(),
       activeGoalsQuery.refetch(),
       timeEntriesQuery.refetch(),
+      journalTodayQuery.refetch(),
     ]);
-  }, [scheduleQuery, tasksQuery, activeGoalsQuery, timeEntriesQuery]);
+  }, [scheduleQuery, tasksQuery, activeGoalsQuery, timeEntriesQuery, journalTodayQuery]);
 
   // Derived from the queries rather than tracked in local state (the pattern
   // notes.tsx:731 and schedule.tsx:274 already use). A hand-managed
@@ -228,7 +246,8 @@ export default function TodayScreen() {
     (scheduleQuery.isFetching && !scheduleQuery.isPending) ||
     (tasksQuery.isFetching && !tasksQuery.isPending) ||
     (activeGoalsQuery.isFetching && !activeGoalsQuery.isPending) ||
-    (timeEntriesQuery.isFetching && !timeEntriesQuery.isPending);
+    (timeEntriesQuery.isFetching && !timeEntriesQuery.isPending) ||
+    (journalTodayQuery.isFetching && !journalTodayQuery.isPending);
 
   // "The request failed AND we have nothing cached to show instead." A stale
   // cached list is still worth rendering; an error with no data is not, and
@@ -267,7 +286,14 @@ export default function TodayScreen() {
     return [...blocks].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
   }, [scheduleQuery.data, dayOfWeek]);
 
-  const todayStr = useMemo(() => getLocalDateString(now), [now]);
+  // `undefined` while the fetch is in flight (and after a failure, since the
+  // query never resolves), `null` for a day nobody has written yet, an entry
+  // otherwise. A saved-but-blank entry counts as unwritten — the copy would
+  // otherwise offer to "continue" an empty editor.
+  const journalState: JournalPromptState = useMemo(() => {
+    if (journalTodayQuery.data === undefined) return "unknown";
+    return journalTodayQuery.data?.content.trim() ? "started" : "empty";
+  }, [journalTodayQuery.data]);
 
   const dueTodayTasks = useMemo(
     () => (tasksQuery.data ?? []).filter((task) => isDueToday(task, todayStr)).sort(sortByStatusThenTitle),
@@ -351,6 +377,23 @@ export default function TodayScreen() {
   const goSchedule = useCallback(() => go(ROUTES.schedule), [go]);
   const goTasks = useCallback(() => go(ROUTES.tasks), [go]);
   const goGoals = useCallback(() => go(ROUTES.goals), [go]);
+  const goJournal = useCallback(() => go(ROUTES.journal), [go]);
+
+  // The FAB's menu mixes three sheet-openers with one navigation, so the pick
+  // handler has to fork. Deliberately NOT folded into `openQuickAdd`, which
+  // stays exactly what it was — a `QuickAddKind` -> sheet function that the
+  // empty states below also call.
+  const onFabPick = useCallback(
+    (action: QuickAddAction) => {
+      if (action === "journal") {
+        setAddPickerOpen(false);
+        goJournal();
+        return;
+      }
+      openQuickAdd(action);
+    },
+    [goJournal, openQuickAdd],
+  );
 
   const firstName = user?.name ? user.name.split(" ")[0] : null;
 
@@ -435,11 +478,26 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
+        {/* Journal, high on the screen and above the fold, because it has no
+            tab of its own and the drawer is a place most users never open.
+            It sits under the hero rather than above it: "what is happening
+            right now" still outranks "close out the day", and the hero is
+            the one surface allowed to be brand-tinted up here.
+            The Journal tile further down in "Jump back in" stays — that grid
+            is the complete list of off-tab destinations, and a hole in it
+            would read as a bug. This card is the daily writing prompt; that
+            one is navigation. */}
+        <Stagger index={2} reduceMotion={reduceMotion}>
+          <View style={styles.journalWrap}>
+            <JournalPromptCard state={journalState} onPress={goJournal} />
+          </View>
+        </Stagger>
+
         {/* 4-up stat grid, 2x2 on a phone — dw-time-web's
             dashboard-stats.tsx is the same four measures (today's focus
             time, a longer-window total, active goals, task throughput) in a
             single row of four. */}
-        <Stagger index={2} reduceMotion={reduceMotion}>
+        <Stagger index={3} reduceMotion={reduceMotion}>
           <View style={styles.statGrid}>
             <View style={styles.statRow}>
               {/* Each value collapses to UNKNOWN_STAT when its query failed
@@ -489,7 +547,7 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
-        <Stagger index={3} reduceMotion={reduceMotion}>
+        <Stagger index={4} reduceMotion={reduceMotion}>
           <Section
             title="Today's schedule"
             count={todaysBlocks.length}
@@ -532,7 +590,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={4} reduceMotion={reduceMotion}>
+        <Stagger index={5} reduceMotion={reduceMotion}>
           <Section title="Due today" count={dueTodayTasks.length} onViewAll={goTasks} viewAllLabel="tasks">
             {tasksQuery.isPending ? (
               <>
@@ -581,7 +639,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={5} reduceMotion={reduceMotion}>
+        <Stagger index={6} reduceMotion={reduceMotion}>
           <Section
             title="Goal progress"
             count={activeGoalsQuery.data?.length ?? 0}
@@ -637,7 +695,7 @@ export default function TodayScreen() {
             destinations; everything else lives behind a hamburger most
             users never open, which was a confirmed discoverability problem
             (see the note in app/(app)/_layout.tsx). */}
-        <Stagger index={6} reduceMotion={reduceMotion}>
+        <Stagger index={7} reduceMotion={reduceMotion}>
           <View style={styles.section}>
             <Text style={styles.sectionTitle} accessibilityRole="header">
               Jump back in
@@ -714,7 +772,7 @@ export default function TodayScreen() {
         />
       ) : null}
 
-      <QuickAddFab open={addPickerOpen} onToggle={() => setAddPickerOpen((v) => !v)} onPick={openQuickAdd} />
+      <QuickAddFab open={addPickerOpen} onToggle={() => setAddPickerOpen((v) => !v)} onPick={onFabPick} />
 
       <QuickAddSheet ref={goalSheetRef} kind="goal" />
       <QuickAddSheet ref={taskSheetRef} kind="task" />
@@ -851,10 +909,29 @@ function Section({
   );
 }
 
-const ADD_KINDS: { kind: QuickAddKind; label: string }[] = [
-  { kind: "slot", label: "Slot" },
-  { kind: "task", label: "Task" },
-  { kind: "goal", label: "Goal" },
+/**
+ * What the FAB can produce. The three `QuickAddKind`s open a QuickAddSheet
+ * in place; `journal` navigates instead, because today's entry IS a
+ * full-screen editor (app/(app)/journal.tsx) rather than a sheet.
+ *
+ * Mixing a navigation into an "add" menu would normally be a category error.
+ * It isn't one here: journal is one-entry-per-day, so opening /journal is
+ * literally "start (or resume) today's entry" — the same create-shaped
+ * promise the other three make. What it avoids is a THIRD floating control
+ * on this screen, which already carries this FAB plus the floating hamburger
+ * from app/(app)/_layout.tsx.
+ */
+type QuickAddAction = QuickAddKind | "journal";
+
+const ADD_ACTIONS: { action: QuickAddAction; label: string; accessibilityLabel: string }[] = [
+  // Order is bottom-up on screen: the LAST entry sits closest to the FAB.
+  // Journal goes first so it lands furthest from the button, leaving
+  // Slot/Task/Goal at exactly the distances they've always been at — an
+  // existing user's thumb keeps hitting what it expects.
+  { action: "journal", label: "Journal", accessibilityLabel: "Write today's journal" },
+  { action: "slot", label: "Slot", accessibilityLabel: "Add slot" },
+  { action: "task", label: "Task", accessibilityLabel: "Add task" },
+  { action: "goal", label: "Goal", accessibilityLabel: "Add goal" },
 ];
 
 function QuickAddFab({
@@ -864,21 +941,23 @@ function QuickAddFab({
 }: {
   open: boolean;
   onToggle: () => void;
-  onPick: (kind: QuickAddKind) => void;
+  onPick: (action: QuickAddAction) => void;
 }) {
   return (
     <View style={styles.fabContainer} pointerEvents="box-none">
       {open
-        ? ADD_KINDS.map(({ kind, label }) => (
+        ? ADD_ACTIONS.map(({ action, label, accessibilityLabel }) => (
             <PressableScale
-              key={kind}
+              key={action}
               style={styles.fabOption}
               // The sheet's own onChange fires hapticLight() when it reaches
               // its open snap point — a second one here would double-tap.
-              haptic={false}
-              onPress={() => onPick(kind)}
+              // Journal has no sheet downstream to fire one, so it keeps the
+              // default press haptic.
+              haptic={action === "journal"}
+              onPress={() => onPick(action)}
               accessibilityRole="button"
-              accessibilityLabel={`Add ${label.toLowerCase()}`}
+              accessibilityLabel={accessibilityLabel}
             >
               <Text style={styles.fabOptionText}>{label}</Text>
             </PressableScale>
@@ -939,6 +1018,13 @@ const styles = StyleSheet.create({
 
   heroWrap: {
     marginTop: spacing.md,
+    paddingHorizontal: spacing.xl,
+  },
+
+  // Tighter than the hero's own `marginTop` — the journal card reads as a
+  // companion to the card above it, not as a section of its own.
+  journalWrap: {
+    marginTop: spacing.sm,
     paddingHorizontal: spacing.xl,
   },
 
