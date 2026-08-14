@@ -32,13 +32,23 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  createTimeEntrySchema,
   currentCoachWeekScopeKey,
   extractCoachProposals,
+  genId,
+  getLocalDateString,
+  hasResponse,
+  NO_TARGET,
   parseVoiceCommand,
+  todayKey,
+  type ActionableVoiceIntent,
   type AppendNoteIntent,
   type CoachMessageDto,
+  type CoachVoiceIntentContext,
   type ConversationTurnSnapshot,
   type CoachProposalAction,
+  type CreateTimeEntryInput,
+  type JournalEntry,
   type ResolvedTarget,
 } from "@goalslot/shared";
 
@@ -51,6 +61,8 @@ import {
   rejectIfNoteReadOnly,
   type NotePlan,
 } from "@/components/voice/note-commands";
+import { buildTrackingCandidates, planTrackingCommand, type TrackingPlan } from "@/components/voice/tracking-commands";
+import { routeVoiceIntentResponse, shouldEscalateToTier2 } from "@/components/voice/voice-router";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
@@ -61,9 +73,12 @@ import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
 import { hapticWarning } from "@/lib/haptics";
 import { appendNoteParagraph } from "@/lib/note-content";
-import { queueOfflineEdit } from "@/lib/offline";
-import { coachQueries, noteQueries } from "@/lib/queries";
+import { outbox, queueOfflineEdit } from "@/lib/offline";
+import { isPlanLimitError } from "@/lib/plan-limit";
+import { coachQueries, goalQueries, journalQueries, noteQueries, taskQueries, timeEntryQueries, timerSessionQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
+import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -76,6 +91,7 @@ const EXAMPLES = [
   "Add a task to call the bank",
   "Move my study block to 7pm",
   "Add milk to my shopping notes",
+  "Add to my journal: had a great workout today",
 ];
 
 interface Turn {
@@ -103,6 +119,33 @@ const EMPTY_DISMISSED: ReadonlySet<number> = new Set();
 type NotePending =
   | { kind: "choose"; heardName: string; candidates: readonly ResolvedTarget[]; intent: AppendNoteIntent }
   | { kind: "confirm-append"; target: ResolvedTarget; content: string; message: string };
+
+/**
+ * A spoken tracking command waiting on the user — an ambiguous name to pick
+ * between, or a logged duration to confirm. Mirrors TrackerVoiceButton's own
+ * `Pending` union exactly (same two shapes, same reason: start/stop/pause/
+ * resume never pend, only a name resolution or a LOG_TIME write does).
+ * Lives outside `state`/`history` for the same reason `notePending` does —
+ * see that type's doc comment just above.
+ */
+type TrackingPending =
+  | { kind: "choose"; heardName: string; candidates: readonly ResolvedTarget[]; intent: ActionableVoiceIntent }
+  | { kind: "confirm-log"; minutes: number; target: ResolvedTarget | null; message: string };
+
+/**
+ * Appends a spoken sentence onto the end of today's journal entry as its own
+ * paragraph — never a silent overwrite of whatever the user already wrote
+ * today, the same "always append" rule note-commands.ts's own appendToNote
+ * follows for pages. Journal content is plain text, not HTML (see
+ * journal.tsx's header: no TipTap, no decorative chrome), so this is a
+ * blank-line join rather than notes' `appendNoteParagraph` HTML escaping.
+ */
+function appendJournalParagraph(existing: string, spoken: string): string {
+  const trimmed = spoken.trim();
+  if (trimmed.length === 0) return existing;
+  if (existing.trim().length === 0) return trimmed;
+  return `${existing}\n\n${trimmed}`;
+}
 
 /**
  * Rebuilds `Turn[]` from the persisted `CoachMessageDto[]` the server holds
@@ -181,6 +224,37 @@ export default function VoiceScreen() {
   const notesQuery = useQuery(noteQueries.list());
   const noteCandidates = useMemo(() => buildNoteCandidates(notesQuery.data ?? []), [notesQuery.data]);
 
+  // Tier 1's tracking-command candidates and Tier 2's request context both
+  // read from the same two lists TrackerVoiceButton and timer.tsx already
+  // load — same query keys, so this reuses whatever is already cached
+  // instead of opening a second copy of the user's goals/tasks.
+  const goalsQuery = useQuery(goalQueries.list());
+  const tasksQuery = useQuery(taskQueries.list());
+  const trackingCandidates = useMemo(
+    () => buildTrackingCandidates(goalsQuery.data ?? [], tasksQuery.data ?? []),
+    [goalsQuery.data, tasksQuery.data],
+  );
+
+  // The other possible source of truth for what the timer is doing — see
+  // timer.tsx's header for the full "cross-device session" rationale. Unlike
+  // that screen this one doesn't poll: it only has to be right at the moment
+  // a command is spoken, and `handleMicPress`/the focus effect below refresh
+  // it before that moment rather than every few seconds in the background.
+  const serverSessionQuery = useQuery(timerSessionQueries.active());
+  const serverSession = serverSessionQuery.data ?? null;
+  const hasServerSession = serverSession !== null;
+  const localTimerStatus = useTimerStore((s) => s.status);
+  const timerStart = useTimerStore((s) => s.start);
+  const timerRetarget = useTimerStore((s) => s.retarget);
+  const timerPause = useTimerStore((s) => s.pause);
+  const timerResume = useTimerStore((s) => s.resume);
+  const timerStop = useTimerStore((s) => s.stop);
+  const effectiveTimerStatus: TimerStatus = hasServerSession
+    ? serverSession.status === "RUNNING"
+      ? "running"
+      : "paused"
+    : localTimerStatus;
+
   // The whole conversation, oldest first, never wiped by a new turn
   // starting — only ever appended to (or, for a turn that failed outright,
   // removed by id). Pressing the mic again while an answer is already on
@@ -210,6 +284,17 @@ export default function VoiceScreen() {
   // "Add it", the mic has long since gone back to idle and no Coach turn was
   // ever started for this command.
   const [noteNotice, setNoteNotice] = useState<string | null>(null);
+  // The tracking-command question currently on screen, if any — see
+  // `TrackingPending`'s doc comment above.
+  const [trackingPending, setTrackingPending] = useState<TrackingPending | null>(null);
+  const [trackingBusy, setTrackingBusy] = useState(false);
+  // The result of a start/stop/pause/resume/log run outside the direct mic
+  // flow (i.e. from picking a candidate or confirming a logged duration) —
+  // same reason `noteNotice` exists: `state` is already back to idle by
+  // then. A command that runs directly from `handleCommand` itself instead
+  // reports through `state.message` (useVoiceCapture's own 'done'/'failed'
+  // handling), exactly like TrackerVoiceButton's own direct mic path.
+  const [trackingNotice, setTrackingNotice] = useState<string | null>(null);
   const nextTurnId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
@@ -277,6 +362,252 @@ export default function VoiceScreen() {
       const queued = await queueOfflineEdit("note-update", { id: target.id, data: { content: newHtml } }, err);
       if (queued) return `Saved offline — will add to ${target.name} once you're back online`;
       throw new Error("Couldn't save that to the page. Please try again.");
+    }
+  }, []);
+
+  /** A target id Tier 2 already resolved, turned into the `ResolvedTarget` shape `planTrackingCommand`'s `forcedTarget` expects — the display name comes from the same goals/tasks lists just sent as that request's candidates. */
+  const resolveTier2Target = useCallback(
+    (target: { kind: "goal" | "task"; id: string }): ResolvedTarget => {
+      const name =
+        target.kind === "goal"
+          ? (goalsQuery.data ?? []).find((goal) => goal.id === target.id)?.title
+          : (tasksQuery.data ?? []).find((task) => task.id === target.id)?.title;
+      // Falling back to the bare id is defensive only — Tier 2 was handed
+      // exactly these ids as its candidates, so a miss here would mean the
+      // list changed between the request and the response landing.
+      return { id: target.id, kind: target.kind, name: name ?? target.id, score: 1, matchedOn: name ?? target.id };
+    },
+    [goalsQuery.data, tasksQuery.data],
+  );
+
+  /**
+   * Stops the LOCAL (non-server) session and writes the TimeEntry for it —
+   * the one branch `runTrackingAction` below can't just delegate to
+   * TrackerVoiceButton's own stop handling, because that always hands off to
+   * timer.tsx's `handleStop`, which is tightly coupled to screen-local UI
+   * state (retry alerts, plan-limit warnings, an elapsed-time ref fed by
+   * TimerRing) this screen has no equivalent surface for. Structurally this
+   * is the same "assemble entry, try create, fall back to outbox" shape
+   * TrackerVoiceButton's own `logTime` already uses for LOG_TIME — just
+   * sourcing its duration from the store's own clock instead of a spoken
+   * number.
+   */
+  const stopAndLogLocalSession = useCallback(async (): Promise<VoiceCommandOutcome> => {
+    const { taskId, goalId } = useTimerStore.getState();
+    const elapsedMs = timerStop();
+    // At least a minute — createTimeEntrySchema's own floor. The timer has
+    // already stopped by this point, so silently discarding a shorter
+    // session would surprise the user more than rounding it up would.
+    const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+    const targetName =
+      (goalId ? (goalsQuery.data ?? []).find((goal) => goal.id === goalId)?.title : undefined) ??
+      (taskId ? (tasksQuery.data ?? []).find((task) => task.id === taskId)?.title : undefined) ??
+      null;
+
+    const payload: CreateTimeEntryInput = createTimeEntrySchema.parse({
+      taskName: targetName ?? DEFAULT_SESSION_LABEL,
+      ...(taskId ? { taskId, taskTitle: targetName ?? undefined } : {}),
+      ...(goalId ? { goalId } : {}),
+      duration: minutes,
+      date: getLocalDateString(),
+    });
+
+    try {
+      await apiClient.timeEntries.create(payload);
+      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+      if (goalId) void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      return { kind: "done", message: "Stopped and saved" };
+    } catch (err) {
+      if (!hasResponse(err)) {
+        // Offline. Measured-and-then-dropped time is unrecoverable, so it's
+        // banked rather than surfaced as a failure — same as TrackerVoiceButton's logTime.
+        await outbox.addToOutbox({
+          id: genId(),
+          kind: "time-entry-create",
+          payload,
+          idempotencyKey: genId(),
+          createdAt: Date.now(),
+          retries: 0,
+        });
+        return { kind: "done", message: "Saved offline — will sync when you're back on" };
+      }
+      return {
+        kind: "failed",
+        message: isPlanLimitError(err)
+          ? "You've reached today's plan limit for tracked sessions. Upgrade or wait for a new day."
+          : "Couldn't save that time entry. Please try again.",
+      };
+    }
+  }, [goalsQuery.data, tasksQuery.data, timerStop]);
+
+  /**
+   * Runs an immediately-runnable transport change (start/retarget/pause/
+   * resume/stop) exactly the way TrackerVoiceButton/timer.tsx already do —
+   * against the cross-device server session when one is active
+   * (apiClient.timerSession), otherwise against the local zustand store —
+   * so a command spoken from this screen behaves identically to the same
+   * command spoken from the Time Tracker's own mic or pressed on its own
+   * buttons.
+   */
+  const runTrackingAction = useCallback(
+    async (plan: Extract<TrackingPlan, { kind: "run" }>): Promise<VoiceCommandOutcome> => {
+      if (hasServerSession) {
+        if (plan.action === "start") {
+          // Mirrors TrackerVoiceButton's own guard: a server session is
+          // already the authoritative one, so a local start here would
+          // reproduce the exact double-timer bug that flag exists to avoid.
+          return { kind: "failed", message: "A session is already running — open the Time Tracker to control it." };
+        }
+        try {
+          switch (plan.action) {
+            case "retarget":
+              // Matches timer.tsx's own handlePickTask/handlePickGoal update
+              // calls exactly (taskName sent for a task target so the
+              // server's own display name updates too; a goal target clears
+              // taskId outright rather than leaving a stale one attached).
+              await apiClient.timerSession.update(
+                plan.target?.kind === "task"
+                  ? { taskId: plan.target.id, goalId: null, taskName: plan.target.name }
+                  : { goalId: plan.target?.id ?? null, taskId: null },
+              );
+              break;
+            case "pause":
+              await apiClient.timerSession.pause();
+              break;
+            case "resume":
+              await apiClient.timerSession.resume();
+              break;
+            case "stop": {
+              const res = await apiClient.timerSession.stop({});
+              void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+              if (res.data.timeEntry.goalId) {
+                void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+              }
+              break;
+            }
+          }
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          return { kind: "done", message: plan.message };
+        } catch {
+          return { kind: "failed", message: "Couldn't reach the timer. Check your connection and try again." };
+        }
+      }
+
+      const goalId = plan.target?.kind === "goal" ? plan.target.id : undefined;
+      const taskId = plan.target?.kind === "task" ? plan.target.id : undefined;
+      switch (plan.action) {
+        case "start":
+          timerStart(taskId, goalId);
+          return { kind: "done", message: plan.message };
+        case "retarget":
+          timerRetarget(taskId, goalId);
+          return { kind: "done", message: plan.message };
+        case "pause":
+          timerPause();
+          return { kind: "done", message: plan.message };
+        case "resume":
+          timerResume();
+          return { kind: "done", message: plan.message };
+        case "stop":
+          return stopAndLogLocalSession();
+      }
+    },
+    [hasServerSession, stopAndLogLocalSession, timerPause, timerResume, timerRetarget, timerStart],
+  );
+
+  /** Parks a tracking plan as an on-screen question, runs it immediately, or reports it failed outright. */
+  const runTrackingPlan = useCallback(
+    async (plan: TrackingPlan): Promise<VoiceCommandOutcome> => {
+      switch (plan.kind) {
+        case "escalate":
+          // The only caller filters this out before reaching here; kept so
+          // the switch stays exhaustive against TrackingPlan's full union.
+          return { kind: "handoff" };
+        case "reject":
+          return { kind: "failed", message: plan.message };
+        case "choose":
+          setTrackingPending({ kind: "choose", heardName: plan.heardName, candidates: plan.candidates, intent: plan.intent });
+          return { kind: "handoff" };
+        case "confirm-log":
+          setTrackingPending({ kind: "confirm-log", minutes: plan.minutes, target: plan.target, message: plan.message });
+          return { kind: "handoff" };
+        case "run":
+          setTrackingPending(null);
+          return runTrackingAction(plan);
+      }
+    },
+    [runTrackingAction],
+  );
+
+  /** Writes a LOG_TIME command's TimeEntry once the user presses "Log it" — identical shape to TrackerVoiceButton's own `logTime`. */
+  const logTrackedTime = useCallback(async (minutes: number, target: ResolvedTarget | null): Promise<string> => {
+    const payload: CreateTimeEntryInput = createTimeEntrySchema.parse({
+      taskName: target?.name ?? DEFAULT_SESSION_LABEL,
+      ...(target?.kind === "task" ? { taskId: target.id, taskTitle: target.name } : {}),
+      ...(target?.kind === "goal" ? { goalId: target.id } : {}),
+      duration: minutes,
+      date: getLocalDateString(),
+    });
+
+    try {
+      await apiClient.timeEntries.create(payload);
+      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+      if (target?.kind === "goal") void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      return `Logged ${minutes} min${target === null ? "" : ` to ${target.name}`}`;
+    } catch (err) {
+      if (!hasResponse(err)) {
+        await outbox.addToOutbox({
+          id: genId(),
+          kind: "time-entry-create",
+          payload,
+          idempotencyKey: genId(),
+          createdAt: Date.now(),
+          retries: 0,
+        });
+        return `Saved offline — ${minutes} min will sync when you're back on`;
+      }
+      if (isPlanLimitError(err)) {
+        throw new Error("You've reached today's plan limit for tracked sessions. Upgrade or wait for a new day.");
+      }
+      throw new Error("Couldn't save that time entry. Please try again.");
+    }
+  }, []);
+
+  /**
+   * Appends a spoken sentence to today's journal entry — the same
+   * upsert-by-date shape journal.tsx's own `handleSave` uses (create on the
+   * first save for a date, update against the id after), fetched fresh
+   * rather than read from whatever this tab happens to have cached, since
+   * this tab has no reason to have opened today's entry before now.
+   */
+  const appendToJournal = useCallback(async (text: string): Promise<string> => {
+    const date = todayKey();
+    const entryKey = journalQueries.journalQueries.byDate(date);
+    const existing = await queryClient.fetchQuery(journalQueries.byDate(date));
+    const isCreate = !existing?.id || existing.pendingSync === true;
+    const nextContent = appendJournalParagraph(existing?.content ?? "", text);
+
+    try {
+      const response = isCreate
+        ? await apiClient.journal.create({ date, content: nextContent })
+        : await apiClient.journal.update(existing!.id, { content: nextContent });
+      queryClient.setQueryData(entryKey, response.data);
+      void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
+      return "Added to today's journal";
+    } catch (err) {
+      const kind = isCreate ? "journal-create" : "journal-update";
+      const payload = isCreate ? { date, content: nextContent } : { id: existing!.id, data: { content: nextContent } };
+      const queued = await queueOfflineEdit(kind, payload, err);
+      if (queued) {
+        queryClient.setQueryData<JournalEntry>(entryKey, {
+          id: existing?.id ?? genId(),
+          date,
+          content: nextContent,
+          pendingSync: true,
+        });
+        return "Saved offline — will add to your journal once you're back online";
+      }
+      throw new Error("Couldn't save that to your journal. Please try again.");
     }
   }, []);
 
@@ -371,22 +702,118 @@ export default function VoiceScreen() {
     [removeTurn, scopeKey],
   );
 
+  /**
+   * The three-tier voice routing pipeline — see
+   * src/components/voice/voice-router.ts's header for the full breakdown of
+   * why each tier exists and what it hands to the next one.
+   *
+   * Tier 1 (instant, zero network): the local `parseVoiceCommand` classifier
+   * tried against BOTH command families it knows — note-append, then
+   * tracking. Only an utterance that explicitly ends in "...notes"/"...page(s)"
+   * resolves to APPEND_NOTE at all (see splitContentAndTarget's note-kind-word
+   * gate in packages/shared/src/voice/parse.ts); tracking recognises a fixed
+   * set of start/stop/pause/resume/log phrasings (see tracking-commands.ts).
+   * Anything neither recognises parses UNKNOWN and both plans come back
+   * 'escalate'.
+   *
+   * Tier 2 (fast network call): reached only on that double escalation.
+   * POST /coach/voice-intent classifies the transcript against the exact
+   * same goals/tasks Tier 1's own candidates were built from, so a
+   * confidently-resolved tracking target needs no second local match — see
+   * `resolveTier2Target`.
+   *
+   * Tier 3 (unchanged): the full Coach chat, for anything neither tier above
+   * was willing to act on, or if Tier 2 itself fails outright (network, 5xx)
+   * — the one path guaranteed to still work, exactly what this screen always
+   * fell back to before Tier 2 existed.
+   */
   const handleCommand = useCallback(
     async (transcript: string): Promise<VoiceCommandOutcome> => {
-      // Tried first, not instead of the Coach: only an utterance that
-      // explicitly ends in "...notes"/"...page(s)" resolves to APPEND_NOTE
-      // at all (see splitContentAndTarget's note-kind-word gate in
-      // packages/shared/src/voice/parse.ts) — anything else, including
-      // "add a task to call the bank", parses UNKNOWN, plans 'escalate', and
-      // falls straight through to the exact same Coach call this screen
-      // always made. That fall-through is the whole compatibility guarantee
-      // this command has to keep.
-      const notePlan = planNoteCommand({ intent: parseVoiceCommand(transcript), candidates: noteCandidates });
+      const intent = parseVoiceCommand(transcript);
+
+      const notePlan = planNoteCommand({ intent, candidates: noteCandidates });
       if (notePlan.kind !== "escalate") return runNotePlan(notePlan);
 
-      return runCoachTurn(transcript);
+      const trackingPlan = planTrackingCommand({ intent, timerStatus: effectiveTimerStatus, candidates: trackingCandidates });
+      if (trackingPlan.kind !== "escalate") return runTrackingPlan(trackingPlan);
+
+      if (!shouldEscalateToTier2(intent)) {
+        // Unreachable — both plans above escalate under exactly the same
+        // condition `shouldEscalateToTier2` checks (intent === UNKNOWN).
+        // Kept so this function reads top-to-bottom as the three tiers in
+        // order, rather than relying on that coincidence staying true.
+        return runCoachTurn(transcript);
+      }
+
+      try {
+        const context: CoachVoiceIntentContext = {
+          candidateGoals: (goalsQuery.data ?? []).map((goal) => ({ id: goal.id, title: goal.title })),
+          candidateTasks: (tasksQuery.data ?? []).map((task) => ({
+            id: task.id,
+            title: task.title,
+            ...(task.goalId ? { goalId: task.goalId } : {}),
+          })),
+          timerStatus: effectiveTimerStatus,
+        };
+        const res = await apiClient.coach.voiceIntent(transcript, context);
+        const route = routeVoiceIntentResponse(res.data);
+
+        if (route.kind === "track") {
+          // Rebuilds the same `TrackingPlan` Tier 1 would produce, so
+          // execution goes through the one tested `runTrackingPlan` path
+          // regardless of which tier resolved the command. `forcedTarget`
+          // skips local fuzzy matching entirely — Tier 2 already resolved
+          // the name against the exact candidates this request just sent it.
+          const forcedTarget = route.target === null ? undefined : resolveTier2Target(route.target);
+          const syntheticIntent: ActionableVoiceIntent = {
+            type:
+              route.action === "start"
+                ? "START_TRACKING"
+                : route.action === "stop"
+                  ? "STOP_TRACKING"
+                  : route.action === "pause"
+                    ? "PAUSE"
+                    : "RESUME",
+            target: NO_TARGET,
+            transcript,
+            confidence: 1,
+          };
+          const plan = planTrackingCommand({
+            intent: syntheticIntent,
+            timerStatus: effectiveTimerStatus,
+            candidates: trackingCandidates,
+            forcedTarget,
+          });
+          return runTrackingPlan(plan);
+        }
+
+        if (route.kind === "journal") {
+          try {
+            return { kind: "done", message: await appendToJournal(route.text) };
+          } catch (err) {
+            return { kind: "failed", message: err instanceof Error ? err.message : "Couldn't save that to your journal." };
+          }
+        }
+
+        return runCoachTurn(transcript);
+      } catch {
+        // The classifier call itself failed — fall back to the one path
+        // guaranteed to still work.
+        return runCoachTurn(transcript);
+      }
     },
-    [noteCandidates, runCoachTurn, runNotePlan],
+    [
+      appendToJournal,
+      effectiveTimerStatus,
+      goalsQuery.data,
+      noteCandidates,
+      resolveTier2Target,
+      runCoachTurn,
+      runNotePlan,
+      runTrackingPlan,
+      tasksQuery.data,
+      trackingCandidates,
+    ],
   );
 
   const handlePickNoteCandidate = useCallback(
@@ -423,6 +850,47 @@ export default function VoiceScreen() {
     void runCoachTurn(transcript);
   }, [notePending, runCoachTurn]);
 
+  const handlePickTrackingCandidate = useCallback(
+    (target: ResolvedTarget) => {
+      if (trackingPending?.kind !== "choose") return;
+      const plan = planTrackingCommand({
+        intent: trackingPending.intent,
+        timerStatus: effectiveTimerStatus,
+        candidates: trackingCandidates,
+        forcedTarget: target,
+      });
+      setTrackingNotice(null);
+      void runTrackingPlan(plan).then((outcome) => {
+        if (outcome.kind === "failed") hapticWarning();
+        if (outcome.kind !== "handoff") setTrackingNotice(outcome.message);
+      });
+    },
+    [effectiveTimerStatus, runTrackingPlan, trackingCandidates, trackingPending],
+  );
+
+  const handleConfirmTrackingLog = useCallback(() => {
+    if (trackingPending?.kind !== "confirm-log") return;
+    const { minutes, target } = trackingPending;
+    setTrackingPending(null);
+    setTrackingNotice(null);
+    setTrackingBusy(true);
+    void logTrackedTime(minutes, target)
+      .then((message) => setTrackingNotice(message))
+      .catch((err: unknown) => {
+        hapticWarning();
+        setTrackingNotice(err instanceof Error ? err.message : "Couldn't save that time entry.");
+      })
+      .finally(() => setTrackingBusy(false));
+  }, [logTrackedTime, trackingPending]);
+
+  /** The tracking choose panel's escape hatch — same shape as `askCoachInstead` above. */
+  const askCoachInsteadForTracking = useCallback(() => {
+    if (trackingPending?.kind !== "choose") return;
+    const { transcript } = trackingPending.intent;
+    setTrackingPending(null);
+    void runCoachTurn(transcript);
+  }, [runCoachTurn, trackingPending]);
+
   const { state, start, stop, cancel, reset, openSettings } = useVoiceCapture({
     voice,
     onCommand: handleCommand,
@@ -443,6 +911,12 @@ export default function VoiceScreen() {
   useFocusEffect(
     useCallback(() => {
       analytics.track({ name: "screenViewed", payload: { screenName: "voice" } });
+      // Re-checked on every focus, same reason timer.tsx does this: a
+      // session started from the Coach, from another device, or from the
+      // Time Tracker's own mic while this tab wasn't visible would otherwise
+      // stay invisible to `hasServerSession` until some unrelated refetch
+      // happened to run.
+      void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
       if (typeof forwarded === "string" && forwarded.length > 0 && forwardedRef.current !== forwarded) {
         forwardedRef.current = forwarded;
         void handleCommand(forwarded).then((outcome) => {
@@ -471,6 +945,9 @@ export default function VoiceScreen() {
         // sitting there — offering a stale "Add it?" for a page the user
         // may have since deleted — the moment they come back to this tab.
         setNotePending(null);
+        // Same rule for a tracking question — a stale "Which one?" for a
+        // goal that's since been renamed or a session that's since ended.
+        setTrackingPending(null);
       };
       // `hasAnswer` is deliberately absent from the dependencies: it flips
       // the moment a reply starts arriving, and re-running this effect then
@@ -488,14 +965,15 @@ export default function VoiceScreen() {
       openSettings();
       return;
     }
-    if (state.status === "processing" || noteBusy) return;
+    if (state.status === "processing" || noteBusy || trackingBusy) return;
     // No history reset here. Starting a new recording is a follow-up turn
     // in the same thread, not a fresh conversation — see the note on
     // `history` above. `handleCommand` appends the new turn once there is
     // a transcript to append; nothing needs to happen to the old ones now.
     setNotePending(null);
+    setTrackingPending(null);
     void start();
-  }, [noteBusy, openSettings, start, state.status, stop]);
+  }, [noteBusy, openSettings, start, state.status, stop, trackingBusy]);
 
   const applyActions = useCallback(
     (actions: CoachProposalAction[]) => apply({ actions }),
@@ -611,10 +1089,12 @@ export default function VoiceScreen() {
       case "unavailable":
         return state.message;
       default:
-        // A confirmed (or failed) append lands here — by the time it
-        // settles, `state` is already back to idle (see appendToNote's
-        // caller: it never runs through useVoiceCapture's own `onCommand`,
-        // so there is no 'success'/'error' state for it to occupy).
+        // A confirmed (or failed) append/log lands here — by the time it
+        // settles, `state` is already back to idle (see appendToNote's and
+        // logTrackedTime's callers: neither runs through useVoiceCapture's
+        // own `onCommand`, so there is no 'success'/'error' state for either
+        // to occupy).
+        if (trackingNotice !== null) return trackingNotice;
         if (noteNotice !== null) return noteNotice;
         return !hasAnswer ? "Tap the mic and say what you need" : "Tap the mic to ask something else";
     }
@@ -765,6 +1245,80 @@ export default function VoiceScreen() {
                 style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
               >
                 <Text style={styles.notePrimaryLabel}>{noteBusy ? "Adding…" : "Add it"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {/* Mirrors the note panels above (and TrackerVoiceButton's own
+            choose/confirm-log panels) — same shape of question, same visual
+            treatment, so it reads as the same feature even though it's
+            reached through a different mic and a different command family. */}
+        {trackingPending?.kind === "choose" ? (
+          <View style={styles.notePanel} accessibilityLiveRegion="polite">
+            <Text style={styles.notePanelTitle}>
+              {trackingPending.candidates.length > 0
+                ? `Heard "${trackingPending.heardName}". Which one?`
+                : `Heard "${trackingPending.heardName}" — nothing matches that.`}
+            </Text>
+            {/* Never a silent fallback to an unattributed timer: the whole
+                reason this feature exists is a goal the user could not find. */}
+            {trackingPending.candidates.map((candidate) => (
+              <Pressable
+                key={`${candidate.kind}-${candidate.id}`}
+                onPress={() => handlePickTrackingCandidate(candidate)}
+                accessibilityRole="button"
+                accessibilityLabel={`${candidate.name}, ${candidate.kind}`}
+                style={({ pressed }) => [styles.noteCandidateRow, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteCandidateName}>{candidate.name}</Text>
+              </Pressable>
+            ))}
+            <View style={styles.notePanelActions}>
+              <Pressable
+                onPress={() => setTrackingPending(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                style={({ pressed }) => [styles.noteSecondaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteSecondaryLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={askCoachInsteadForTracking}
+                accessibilityRole="button"
+                accessibilityLabel="Ask GoalSlot AI instead"
+                style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.notePrimaryLabel}>Ask GoalSlot AI</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {trackingPending?.kind === "confirm-log" ? (
+          <View style={styles.notePanel} accessibilityLiveRegion="polite">
+            {/* Confirmed, unlike start/stop/pause/resume: this writes a
+                record with a duration nobody measured, and a misheard digit
+                would sit in the user's reporting unnoticed. */}
+            <Text style={styles.notePanelTitle}>{trackingPending.message}</Text>
+            <View style={styles.notePanelActions}>
+              <Pressable
+                onPress={() => setTrackingPending(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel, don't log this time"
+                style={({ pressed }) => [styles.noteSecondaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.noteSecondaryLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleConfirmTrackingLog}
+                disabled={trackingBusy}
+                accessibilityRole="button"
+                accessibilityLabel={`Log ${trackingPending.minutes} minutes${trackingPending.target === null ? "" : ` to ${trackingPending.target.name}`}`}
+                accessibilityState={{ disabled: trackingBusy, busy: trackingBusy }}
+                style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
+              >
+                <Text style={styles.notePrimaryLabel}>{trackingBusy ? "Logging…" : "Log it"}</Text>
               </Pressable>
             </View>
           </View>

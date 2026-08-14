@@ -118,6 +118,85 @@ interface CoachChatHistoryEnvelope {
   messages?: CoachMessageDto[]
 }
 
+// ---------------------------------------------------------------------------
+// POST /coach/voice-intent — the fast, non-streaming Tier 2 classifier that
+// sits between the local, zero-network `parseVoiceCommand` (Tier 1, see
+// ../voice/parse.ts) and the full Coach chat turn (Tier 3, `streamChat`
+// above). Tier 1 only recognises a fixed, narrow set of phrasings; anything
+// it can't confidently place is handed to this endpoint instead of going
+// straight to the LLM chat pipeline, on the theory that classifying intent
+// is a much smaller (and much faster/cheaper) job than holding a whole
+// conversation. See apps/mobile/app/(app)/voice.tsx for the caller.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the endpoint can classify a transcript as. Deliberately a wider set
+ * than Tier 1's `VoiceIntentType` (../voice/intent.ts): this endpoint also
+ * recognises journal, task/goal creation, and day-summary questions that the
+ * local rule table never attempts, plus the catch-all CHAT/UNKNOWN that mean
+ * "let the full Coach handle this".
+ */
+export const COACH_VOICE_INTENT_TYPES = [
+  'START_TRACKING',
+  'STOP_TRACKING',
+  'PAUSE',
+  'RESUME',
+  'APPEND_NOTE',
+  'APPEND_JOURNAL',
+  'CREATE_TASK',
+  'CREATE_GOAL',
+  'DAY_QUERY',
+  'CHAT',
+  'UNKNOWN',
+] as const
+
+export type CoachVoiceIntentType = (typeof COACH_VOICE_INTENT_TYPES)[number]
+
+export interface CoachVoiceIntentCandidateGoal {
+  id: string
+  title: string
+}
+
+export interface CoachVoiceIntentCandidateTask {
+  id: string
+  title: string
+  goalId?: string
+}
+
+/** What the caller already knows about the timer, so the model doesn't have to guess whether "stop" makes sense right now. */
+export type CoachVoiceIntentTimerStatus = 'idle' | 'running' | 'paused'
+
+export interface CoachVoiceIntentContext {
+  candidateGoals: readonly CoachVoiceIntentCandidateGoal[]
+  candidateTasks: readonly CoachVoiceIntentCandidateTask[]
+  timerStatus: CoachVoiceIntentTimerStatus
+}
+
+/**
+ * The one target shape the endpoint ever resolves to. Deliberately narrower
+ * than Tier 1's `TargetKind` (../voice/intent.ts, which also has 'category'
+ * and 'note'): the request context above only ever supplies goal/task
+ * candidates, so the model has nothing to match a note against and a 'note'
+ * kind could never come back populated. A caller that gets APPEND_NOTE back
+ * with a null target should treat it exactly like an unresolved local
+ * match — hand off rather than guess which page was meant.
+ */
+export interface CoachVoiceIntentTarget {
+  kind: 'goal' | 'task'
+  id: string
+}
+
+export interface CoachVoiceIntentResponse {
+  intent: CoachVoiceIntentType
+  /** 'low' means "don't act on this without confirming" — same spirit as Tier 1's confidence score, collapsed to two buckets since this is a classification, not a fuzzy string match. */
+  confidence: 'high' | 'low'
+  target: CoachVoiceIntentTarget | null
+  /** The words to act on — a note/journal paragraph, a task/goal title. Null when the intent carries no text of its own (e.g. STOP_TRACKING). */
+  text: string | null
+  /** Human-readable, for logs/debugging — never shown to the end user. */
+  reasoning: string
+}
+
 export function createCoachApi(api: AxiosInstance) {
   return {
     // Backend always wraps this as { messages: CoachMessageDto[] } (see
@@ -140,6 +219,13 @@ export function createCoachApi(api: AxiosInstance) {
         actions,
         ...(sourceMessageId ? { sourceMessageId } : {}),
       }),
+    // Tier 2 of the voice routing pipeline — see this file's header comment
+    // just above CoachVoiceIntentResponse. Plain request/response, not SSE:
+    // classification is a single JSON object, not a token stream, so this
+    // goes through axios like every other REST call here rather than
+    // through postCoachStream's fetch-based machinery.
+    voiceIntent: (transcript: string, context: CoachVoiceIntentContext) =>
+      api.post<CoachVoiceIntentResponse>('/coach/voice-intent', { transcript, context }),
   }
 }
 

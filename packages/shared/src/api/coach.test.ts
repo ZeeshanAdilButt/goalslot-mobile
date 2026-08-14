@@ -171,4 +171,27 @@ describe('createCoachApi', () => {
     const res = await coachApi.getChatHistory('2026-W32')
     expect(res.data).toEqual([])
   })
+
+  it('posts the transcript and context to /coach/voice-intent', async () => {
+    const response = {
+      intent: 'START_TRACKING',
+      confidence: 'high',
+      target: { kind: 'goal', id: 'goal_1' },
+      text: null,
+      reasoning: 'Clear tracking request.',
+    }
+    const post = vi.fn().mockResolvedValue({ data: response })
+    const api = { post } as unknown as AxiosInstance
+    const coachApi = createCoachApi(api)
+
+    const context = {
+      candidateGoals: [{ id: 'goal_1', title: 'Deen' }],
+      candidateTasks: [],
+      timerStatus: 'idle' as const,
+    }
+    const res = await coachApi.voiceIntent('start tracking deen', context)
+
+    expect(post).toHaveBeenCalledWith('/coach/voice-intent', { transcript: 'start tracking deen', context })
+    expect(res.data).toEqual(response)
+  })
 })
