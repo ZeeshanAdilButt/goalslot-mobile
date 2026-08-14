@@ -41,6 +41,7 @@ import {
   AccessibilityInfo,
   Alert,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -76,6 +77,7 @@ import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
+import { htmlToPlainText } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -512,9 +514,22 @@ export default function JournalScreen() {
   }, [selectedDate, reduceMotion, editorTransition]);
   const editorTransitionStyle = useAnimatedStyle(() => ({ opacity: editorTransition.value }));
 
+  // `entryQuery.data.content` is TipTap-authored HTML (the web editor's
+  // format — same as a note's body, see note-content.ts's own header
+  // comment). This editor is a plain multiline TextInput and always has
+  // been: it never rendered TipTap formatting, so a mobile view of a
+  // web-authored entry was already lossy for bold/italic/etc regardless of
+  // this change. Flattening through `htmlToPlainText` here means the box
+  // shows the sentence someone wrote instead of its literal markup
+  // (`<blockquote><p><em>...`), and — since `handleSave` below writes
+  // `draft` straight back as `content` — a save now genuinely normalizes
+  // that day's stored content to plain text instead of writing the exact
+  // same HTML back unchanged, which is what made Save look like a no-op.
+  // Entries never opened on mobile are untouched: this only runs on read,
+  // so nothing is migrated until the day it's actually loaded here.
   useEffect(() => {
     if (entryQuery.data !== undefined) {
-      setDraft(entryQuery.data?.content ?? "");
+      setDraft(entryQuery.data ? htmlToPlainText(entryQuery.data.content) : "");
       setIsDirty(false);
     }
   }, [entryQuery.data]);
@@ -810,73 +825,19 @@ export default function JournalScreen() {
     );
   }
 
-  let recentContent: React.ReactNode;
-  if (recentQuery.isPending) {
-    recentContent = (
-      <View>
-        {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
-          <SkeletonListItem key={index} showLeading={false} />
-        ))}
-      </View>
-    );
-  } else if (recentQuery.isError && !recentQuery.data) {
-    // Same offline-vs-server-error distinction as `entryQuery` above: a
-    // network failure (no `.response`) just means this device couldn't ask,
-    // not that the server said no — the copy and icon say so instead of the
-    // generic "something went wrong" framing, though Retry stays available
-    // either way since connectivity can return at any moment.
-    recentContent = hasResponse(recentQuery.error) ? (
-      <ErrorState compact message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
-    ) : (
-      <ErrorState
-        compact
-        iconName="wifi-off"
-        message="Recent entries aren't available offline."
-        onRetry={() => void recentQuery.refetch()}
-      />
-    );
-  } else if (recentEntries.length === 0) {
-    recentContent = (
-      <EmptyState
-        compact
-        iconName="journal"
-        tone="brand"
-        message="No journal entries yet"
-        description="Write today's entry above to start your streak."
-      />
-    );
-  } else {
-    // A single fade-and-rise for the whole card, not a per-row stagger down
-    // the FlashList — Reveal's own header comment already explains why it's
-    // hand-rolled rather than `entering={...}`: it must play exactly once
-    // per mount. A recycled FlashList cell is not a stable mount the way a
-    // Reports card is, so animating individual rows risks replaying the
-    // entrance mid-scroll as cells get recycled. One Reveal around the
-    // whole list sidesteps that entirely and still gives the section its
-    // own quiet arrival right after the editor above it settles (`delay`
-    // staggers it just past the editor's own cross-fade, not simultaneous
-    // with it).
-    recentContent = (
-      <Reveal delay={60} style={styles.recentListCard}>
-        <FlashList
-          data={recentEntries}
-          // Keyed by date, not id: the date is the row's real identity (one
-          // entry per day), and it is the one field that survives a save
-          // unchanged — an entry saved offline carries a local id that the
-          // server replaces on sync, which would otherwise remount the row.
-          keyExtractor={(item) => item.date}
-          renderItem={renderRecentItem}
-          contentContainerStyle={styles.recentListContent}
-        />
-      </Reveal>
-    );
-  }
-
-  return (
-    // edges={["top"]} matches index.tsx/reports.tsx. Without it this screen's
-    // date navigation rendered underneath the system status bar on devices
-    // with a tall status bar (reported on a Samsung S22).
-    <SafeAreaView style={styles.container} edges={["top"]}>
+  // Everything from the eyebrow through the "Recent entries" label, hoisted
+  // into one element so it can be handed to the FlashList below as its
+  // `ListHeaderComponent` — exactly the shape timer.tsx's `hero` +
+  // SessionHistory's `ListHeaderComponent` already use for the identical
+  // problem (a tall header pushing a below-the-fold list and a primary
+  // button off screen with no scroll container anywhere to reach them). A
+  // screen can only have one scroll container without fighting gesture
+  // ownership, so the header has to render INSIDE the list's own scroll view
+  // rather than as a sibling above it — see the three no-history branches
+  // below, which reuse this identical element inside a plain ScrollView so
+  // the screen looks and scrolls the same whichever is showing.
+  const header = (
+    <>
       <Text style={styles.eyebrow}>Journal</Text>
 
       {/* The date IS this screen's headline — there's no separate title above
@@ -1123,10 +1084,94 @@ export default function JournalScreen() {
         </Text>
       </Pressable>
 
-      <View style={styles.recentSection}>
-        <Text style={styles.recentHeading}>Recent entries</Text>
-        <View style={styles.recentListArea}>{recentContent}</View>
-      </View>
+      <Text style={styles.recentHeading}>Recent entries</Text>
+    </>
+  );
+
+  let body: React.ReactNode;
+  if (recentQuery.isPending) {
+    body = (
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        {header}
+        <View style={styles.recentSkeletonArea}>
+          {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
+            <SkeletonListItem key={index} showLeading={false} />
+          ))}
+        </View>
+      </ScrollView>
+    );
+  } else if (recentQuery.isError && !recentQuery.data) {
+    // Same offline-vs-server-error distinction as `entryQuery` above: a
+    // network failure (no `.response`) just means this device couldn't ask,
+    // not that the server said no — the copy and icon say so instead of the
+    // generic "something went wrong" framing, though Retry stays available
+    // either way since connectivity can return at any moment.
+    body = (
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        {header}
+        {hasResponse(recentQuery.error) ? (
+          <ErrorState compact message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
+        ) : (
+          <ErrorState
+            compact
+            iconName="wifi-off"
+            message="Recent entries aren't available offline."
+            onRetry={() => void recentQuery.refetch()}
+          />
+        )}
+      </ScrollView>
+    );
+  } else if (recentEntries.length === 0) {
+    body = (
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        {header}
+        <EmptyState
+          compact
+          iconName="journal"
+          tone="brand"
+          message="No journal entries yet"
+          description="Write today's entry above to start your streak."
+        />
+      </ScrollView>
+    );
+  } else {
+    // The one branch with real rows gets the real FlashList, header and all
+    // — `ListHeaderComponent` renders inside the list's own scroll view, so
+    // this is still exactly one scroll container for the whole screen, and
+    // FlashList's virtualization is kept for the rows (unlike the three
+    // branches above, which have no rows to virtualize in the first place).
+    //
+    // The fade-and-rise (Reveal) that used to wrap just this list now wraps
+    // the whole thing, header included — since the header already carries
+    // its own separate cross-fade (`editorTransitionStyle` above), the two
+    // motions compose rather than replay: the editor fades in on its own on
+    // every date change, and this list still gets its own quiet arrival on
+    // mount (`delay` staggers it past the editor's transition, matching the
+    // gap the two used to have as siblings).
+    body = (
+      <Reveal delay={60} style={styles.recentListReveal}>
+        <FlashList
+          data={recentEntries}
+          // Keyed by date, not id: the date is the row's real identity (one
+          // entry per day), and it is the one field that survives a save
+          // unchanged — an entry saved offline carries a local id that the
+          // server replaces on sync, which would otherwise remount the row.
+          keyExtractor={(item) => item.date}
+          renderItem={renderRecentItem}
+          ListHeaderComponent={header}
+          contentContainerStyle={styles.recentListContent}
+          keyboardShouldPersistTaps="handled"
+        />
+      </Reveal>
+    );
+  }
+
+  return (
+    // edges={["top"]} matches index.tsx/reports.tsx. Without it this screen's
+    // date navigation rendered underneath the system status bar on devices
+    // with a tall status bar (reported on a Samsung S22).
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      {body}
 
       <ConfirmDialog
         visible={pendingDelete !== null}
@@ -1534,9 +1579,27 @@ const styles = StyleSheet.create({
   saveButtonTextQueued: {
     color: colors.warning,
   },
-  recentSection: {
+  // contentContainerStyle for the loading/error/empty branches' ScrollView —
+  // flexGrow (not flex) so ErrorState/EmptyState can still center within
+  // whatever space is left under the header content that scrolls above them.
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: spacing.xxl,
+  },
+  recentSkeletonArea: {
     flex: 1,
     marginTop: spacing.xxl,
+    paddingHorizontal: spacing.lg,
+    gap: spacing.sm,
+  },
+  // The FlashList is now the whole screen's own scroll container (editor and
+  // all, via ListHeaderComponent), so this just gives the Reveal wrapper
+  // room to fill — the rows no longer sit inside a separate bordered card,
+  // since the editor above them already carries its own surface treatment
+  // and a second outer border around the whole page read as a doubled-up
+  // frame rather than one coherent surface.
+  recentListReveal: {
+    flex: 1,
   },
   recentHeading: {
     fontSize: typography.size.xs,
@@ -1545,31 +1608,12 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
     paddingHorizontal: spacing.lg,
+    marginTop: spacing.xxl,
     marginBottom: spacing.sm,
   },
-  recentListArea: {
-    flex: 1,
-  },
-  // Same elevated-surface treatment as the editor above it — `radii.card`
-  // (not the smaller `radii.lg` this used to carry) so the two surfaces read
-  // as one family rather than the list looking like a lower-tier bolt-on
-  // under the "real" writing surface. The list previously sat directly on
-  // the screen background with nothing to separate it as its own surface at
-  // all. Margin (not the loading/error/empty branches' own padding) is what
-  // keeps this aligned with the screen's other spacing.lg gutters without
-  // double-padding those branches.
-  recentListCard: {
-    flex: 1,
-    marginHorizontal: spacing.lg,
-    borderRadius: radii.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
-    overflow: "hidden",
-    ...shadows.card,
-  },
   recentListContent: {
-    paddingVertical: 4,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xxl,
   },
   // Wrapper exists purely to clip the swipe-revealed delete panel to the row
   // (see the note at its render site). The row keeps its own separator, so
