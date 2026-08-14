@@ -19,6 +19,22 @@
 // but there was no reason to risk it) to a shape built for every other
 // screen's very different question ("is anything queued?", not "is the
 // socket connected?").
+//
+// STACKING WITH <GlobalTrackingBanner/>: both this pill and the "you're
+// tracking time" banner (src/components/timer/GlobalTrackingBanner.tsx) are
+// absolutely positioned at the top of the screen, but they're mounted in
+// different layout trees — the banner one level down in app/(app)/_layout.tsx,
+// this pill here in the root app/_layout.tsx, rendered as a sibling *after*
+// <Slot/> (see that file's AppGate). Later siblings paint over earlier ones,
+// so without help this pill always wins the overlap and hides the banner
+// underneath it whenever both are showing — reported as "when I am tracking
+// time and then the tracking time bar shows up, it gets hidden behind that
+// [offline] bar." `useTrackingBannerHeight` (a tiny store the banner writes
+// its own measured footprint into on every layout, mirroring the
+// `onContentHeightChange` prop it already reports to (app)/_layout.tsx for
+// padding <Tabs/>) is how this pill learns that footprint despite living
+// outside the banner's own subtree, so it can drop below it instead of
+// overlapping it.
 
 import { useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -27,12 +43,14 @@ import Animated, { FadeInDown, FadeOutUp } from "react-native-reanimated";
 
 import { isOnline, subscribeOnline } from "@/lib/offline";
 import { usePendingSyncCount } from "@/lib/pending-sync-store";
+import { useTrackingBannerHeight } from "@/lib/tracking-banner-store";
 import { Icon } from "@/components/ui/Icon";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 export function ConnectivityPill() {
   const [online, setOnline] = useState(isOnline());
   const pendingCount = usePendingSyncCount((state) => state.count);
+  const trackingBannerHeight = useTrackingBannerHeight((state) => state.height);
   const insets = useSafeAreaInsets();
 
   useEffect(() => subscribeOnline(setOnline), []);
@@ -47,11 +65,18 @@ export function ConnectivityPill() {
       : "You're offline"
     : `Syncing ${pendingCount} offline change${pendingCount === 1 ? "" : "s"}…`;
 
+  // Sits directly below the safe-area top normally. When the tracking
+  // banner is also showing, drop below its full measured footprint (already
+  // marginTop-inclusive — see GlobalTrackingBanner's own onLayout comment)
+  // plus one more gap, so the two stack top-to-bottom instead of overlapping.
+  const top =
+    insets.top + (trackingBannerHeight > 0 ? trackingBannerHeight + spacing.sm : spacing.sm);
+
   return (
     <Animated.View
       entering={FadeInDown.duration(200)}
       exiting={FadeOutUp.duration(160)}
-      style={[styles.wrap, { top: insets.top + spacing.sm }]}
+      style={[styles.wrap, { top }]}
       pointerEvents="none"
     >
       <View

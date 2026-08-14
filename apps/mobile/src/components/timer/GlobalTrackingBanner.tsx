@@ -28,6 +28,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { goalQueries, taskQueries } from "@/lib/queries";
 import { getElapsedMs, useTimerStore } from "@/lib/timer-store";
+import { useTrackingBannerHeight } from "@/lib/tracking-banner-store";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 import { Icon } from "@/components/ui/Icon";
 
@@ -122,9 +123,14 @@ export function GlobalTrackingBanner({
 
   // Hooks must run unconditionally, so this sits above the early return
   // below — it's the only path that fires once status flips back to idle
-  // and the Pressable (and its onLayout) stop rendering entirely.
+  // and the Pressable (and its onLayout) stop rendering entirely. Also
+  // resets the shared store below so <ConnectivityPill/> stops reserving
+  // room for a banner that's no longer on screen.
   useEffect(() => {
-    if (status === "idle") onContentHeightChange?.(0);
+    if (status === "idle") {
+      onContentHeightChange?.(0);
+      useTrackingBannerHeight.getState().setHeight(0);
+    }
   }, [status, onContentHeightChange]);
 
   if (status === "idle") return null;
@@ -144,10 +150,15 @@ export function GlobalTrackingBanner({
         // + spacing.sm: onLayout reports the Pressable's own box, which
         // excludes its `marginTop` (margin sits outside an element's
         // reported layout rect) — added back in so the caller gets the
-        // banner's true total footprint, marginTop included.
-        onLayout={(e) =>
-          onContentHeightChange?.(e.nativeEvent.layout.height + spacing.sm)
-        }
+        // banner's true total footprint, marginTop included. Mirrored into
+        // the shared store (not just the prop) so <ConnectivityPill/>, which
+        // lives one layout up and never receives this prop directly, can
+        // read the same figure and stack itself below instead of on top.
+        onLayout={(e) => {
+          const height = e.nativeEvent.layout.height + spacing.sm;
+          onContentHeightChange?.(height);
+          useTrackingBannerHeight.getState().setHeight(height);
+        }}
         style={({ pressed }) => [
           styles.banner,
           pressed && styles.bannerPressed,
