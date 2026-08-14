@@ -51,5 +51,3 @@ export function createTimeEntryQueries(timeEntriesApi: TimeEntriesApi) {
       }),
   }
 }
-
-export type TimeEntryQueries = ReturnType<typeof createTimeEntryQueries>

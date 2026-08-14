@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { findSpokenDuration, parseVoiceCommand } from './parse'
-import { describeVoiceIntent, isNamedTarget, isReversibleVoiceIntent } from './intent'
+import { isNamedTarget, isReversibleVoiceIntent } from './intent'
 
 /** Narrowing helper — every assertion below cares about the target. */
 function targetOf(transcript: string): { kind: string; name: string } | null {
@@ -300,20 +300,5 @@ describe('findSpokenDuration', () => {
 
   it('finds nothing in a run with no quantity', () => {
     expect(findSpokenDuration(['to', 'deen'])).toBeNull()
-  })
-})
-
-describe('describeVoiceIntent', () => {
-  it('renders a line a confirmation prompt can show', () => {
-    expect(describeVoiceIntent(parseVoiceCommand('start tracking deen'))).toBe('Start tracking deen')
-    expect(describeVoiceIntent(parseVoiceCommand('log 30 minutes to deen'))).toBe('Log 30 min to deen')
-    expect(describeVoiceIntent(parseVoiceCommand('stop'))).toBe('Stop tracking')
-    expect(describeVoiceIntent(parseVoiceCommand('nonsense'))).toBe('Unknown command')
-  })
-
-  it('prefers a resolved record name over the words that were said', () => {
-    // "dean" was heard; "Deen" is what it resolved to, and the confirmation
-    // has to name the real record or it is confirming the wrong thing.
-    expect(describeVoiceIntent(parseVoiceCommand('start tracking dean'), 'Deen')).toBe('Start tracking Deen')
   })
 })

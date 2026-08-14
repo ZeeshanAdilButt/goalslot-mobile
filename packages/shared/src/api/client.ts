@@ -9,7 +9,7 @@
 // that also has to run inside React Native (no `window`, no `localStorage`,
 // and potentially more than one authenticated context per process).
 
-import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 
 import type { ApiClientConfig } from './types'
 import { createAuthApi } from './auth'
@@ -242,6 +242,3 @@ export function createApiClient(config: ApiClientConfig) {
     },
   }
 }
-
-export type ApiClient = ReturnType<typeof createApiClient>
-export type { AxiosInstance }

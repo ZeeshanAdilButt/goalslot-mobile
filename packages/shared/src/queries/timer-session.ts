@@ -31,5 +31,3 @@ export function createTimerSessionQueries(timerSessionApi: TimerSessionApi) {
       }),
   }
 }
-
-export type TimerSessionQueries = ReturnType<typeof createTimerSessionQueries>

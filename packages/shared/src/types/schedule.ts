@@ -48,18 +48,6 @@ export interface ScheduleBlock {
  */
 export type WeekSchedule = Record<number, ScheduleBlock[]>
 
-export type SchedulePayload = {
-  title: string
-  startTime: string
-  endTime: string
-  dayOfWeek: number
-  category: string
-  color: string
-  goalId?: string
-  seriesId?: string
-  isPrivate?: boolean
-}
-
 export type ScheduleUpdateScope = 'single' | 'series'
 
 /**
@@ -72,13 +60,3 @@ export type ScheduleUpdateScope = 'single' | 'series'
  * and the call site agree on it; it is never serialised.
  */
 export type ScheduleDeleteScope = 'single' | 'series'
-
-export type ScheduleUpdatePayload = Partial<Omit<SchedulePayload, 'seriesId'>> & {
-  updateScope?: ScheduleUpdateScope
-}
-
-export type DraftSelection = {
-  dayOfWeek: number
-  start: number
-  end: number
-}

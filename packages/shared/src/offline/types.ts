@@ -48,8 +48,3 @@ export interface OfflineOperation<TPayload = unknown, TResult = unknown> {
    */
   onDropped?: (payload: TPayload, error: unknown) => void
 }
-
-export interface OfflineMeta {
-  entityId: string
-  idempotencyKey: string
-}

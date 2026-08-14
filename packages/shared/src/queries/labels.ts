@@ -40,5 +40,3 @@ export function createLabelQueries(labelsApi: LabelsApi) {
       }),
   }
 }
-
-export type LabelQueries = ReturnType<typeof createLabelQueries>

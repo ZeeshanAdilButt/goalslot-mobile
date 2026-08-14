@@ -45,8 +45,6 @@ export function createMessagingApi(api: AxiosInstance) {
   }
 }
 
-export type MessagingApi = ReturnType<typeof createMessagingApi>
-
 // ---------------------------------------------------------------------------
 // jiffy-messaging service side
 // ---------------------------------------------------------------------------

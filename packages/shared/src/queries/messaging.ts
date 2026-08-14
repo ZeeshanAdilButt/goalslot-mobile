@@ -98,5 +98,3 @@ export function createMessagingQueries(client: MessagingServiceClient, sharingAp
       }),
   }
 }
-
-export type MessagingQueries = ReturnType<typeof createMessagingQueries>

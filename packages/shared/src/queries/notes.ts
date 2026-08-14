@@ -42,5 +42,3 @@ export function createNoteQueries(notesApi: NotesApi) {
       }),
   }
 }
-
-export type NoteQueries = ReturnType<typeof createNoteQueries>

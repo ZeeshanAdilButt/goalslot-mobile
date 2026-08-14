@@ -27,5 +27,3 @@ export function createScheduleQueries(scheduleApi: ScheduleApi) {
       }),
   }
 }
-
-export type ScheduleQueries = ReturnType<typeof createScheduleQueries>

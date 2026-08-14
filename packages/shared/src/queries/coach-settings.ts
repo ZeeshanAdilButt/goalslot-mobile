@@ -46,5 +46,3 @@ export function createCoachSettingsQueries(coachSettingsApi: CoachSettingsApi) {
       }),
   }
 }
-
-export type CoachSettingsQueries = ReturnType<typeof createCoachSettingsQueries>

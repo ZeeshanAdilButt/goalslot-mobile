@@ -45,13 +45,10 @@ __export(index_exports, {
   DEFAULT_PAGE_SIZE: () => DEFAULT_PAGE_SIZE,
   GOAL_STATUS_OPTIONS: () => GOAL_STATUS_OPTIONS,
   INDENTATION_WIDTH: () => INDENTATION_WIDTH,
-  LABEL_COLORS: () => LABEL_COLORS,
   MAX_MESSAGE_LENGTH: () => MAX_MESSAGE_LENGTH,
-  MIN_DURATION: () => MIN_DURATION,
   MessagingError: () => MessagingError,
   NO_TARGET: () => NO_TARGET,
   SHARED_PACKAGE_NAME: () => SHARED_PACKAGE_NAME,
-  SLOT_MIN: () => SLOT_MIN,
   TARGET_KINDS: () => TARGET_KINDS,
   VOICE_INTENT_TYPES: () => VOICE_INTENT_TYPES,
   applyMessageToConversations: () => applyMessageToConversations,
@@ -116,7 +113,6 @@ __export(index_exports, {
   currentCoachWeekScopeKey: () => currentCoachWeekScopeKey,
   deriveConversationPreview: () => deriveConversationPreview,
   deriveConversationTitle: () => deriveConversationTitle,
-  describeVoiceIntent: () => describeVoiceIntent,
   extractCoachProposals: () => extractCoachProposals,
   findCounterpart: () => findCounterpart,
   findNextScheduleBlock: () => findNextScheduleBlock,
@@ -128,7 +124,6 @@ __export(index_exports, {
   formatCoachTokenCount: () => formatCoachTokenCount,
   formatDayAnalysisPrompt: () => formatDayAnalysisPrompt,
   formatDuration: () => formatDuration,
-  formatSpokenDuration: () => formatSpokenDuration,
   formatTime12h: () => formatTime12h,
   genId: () => genId,
   getISOWeekKey: () => getISOWeekKey,
@@ -136,9 +131,6 @@ __export(index_exports, {
   getLocalTimeString: () => getLocalTimeString,
   getProjection: () => getProjection,
   getReportingWeekDates: () => getReportingWeekDates,
-  getZonedDateString: () => getZonedDateString,
-  getZonedTimeString: () => getZonedTimeString,
-  hasOverlap: () => hasOverlap,
   hasResponse: () => hasResponse,
   insertArchivedConversationEntry: () => insertArchivedConversationEntry,
   isActionableVoiceIntent: () => isActionableVoiceIntent,
@@ -170,7 +162,6 @@ __export(index_exports, {
   resetLiveConversationEntry: () => resetLiveConversationEntry,
   resolveActiveBlock: () => resolveActiveBlock,
   resolveSpokenTarget: () => resolveSpokenTarget,
-  snapMinutes: () => snapMinutes,
   sortConversationsByRecency: () => sortConversationsByRecency,
   sortMessages: () => sortMessages,
   splitContentAndTarget: () => splitContentAndTarget,
@@ -193,17 +184,6 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/types/goal.ts
-var LABEL_COLORS = [
-  { name: "Red", value: "#FEE2E2", textColor: "#991B1B" },
-  { name: "Orange", value: "#FED7AA", textColor: "#9A3412" },
-  { name: "Yellow", value: "#FEF3C7", textColor: "#92400E" },
-  { name: "Green", value: "#D1FAE5", textColor: "#065F46" },
-  { name: "Cyan", value: "#CFFAFE", textColor: "#0E7490" },
-  { name: "Blue", value: "#DBEAFE", textColor: "#1E40AF" },
-  { name: "Purple", value: "#E9D5FF", textColor: "#6B21A8" },
-  { name: "Pink", value: "#FCE7F3", textColor: "#9D174D" },
-  { name: "Gray", value: "#E5E7EB", textColor: "#374151" }
-];
 var GOAL_STATUS_OPTIONS = [
   { value: "ACTIVE", label: "Active" },
   { value: "PAUSED", label: "Paused" },
@@ -302,7 +282,6 @@ var updateJournalEntrySchema = import_zod5.z.object({
 });
 
 // src/scheduling/time.ts
-var import_date_fns_tz = require("date-fns-tz");
 function timeToMinutes(time) {
   const [hoursStr, minutesStr] = time.split(":");
   const hours = Number(hoursStr);
@@ -343,12 +322,6 @@ function getLocalTimeString(date = /* @__PURE__ */ new Date()) {
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
 }
-function getZonedDateString(date, timezone) {
-  return getLocalDateString((0, import_date_fns_tz.toZonedTime)(date, timezone));
-}
-function getZonedTimeString(date, timezone) {
-  return getLocalTimeString((0, import_date_fns_tz.toZonedTime)(date, timezone));
-}
 function todayKey(date = /* @__PURE__ */ new Date()) {
   return getLocalDateString(date);
 }
@@ -386,20 +359,6 @@ function getReportingWeekDates(date = /* @__PURE__ */ new Date()) {
 // src/scheduling/grid.ts
 var DAY_START_MIN = 0;
 var DAY_END_MIN = 24 * 60;
-var SLOT_MIN = 15;
-var MIN_DURATION = 15;
-function snapMinutes(minutes) {
-  const clamped = Math.max(DAY_START_MIN, Math.min(DAY_END_MIN, minutes));
-  return Math.round(clamped / SLOT_MIN) * SLOT_MIN;
-}
-function hasOverlap(weekSchedule, day, start, end, ignoreId) {
-  return (weekSchedule[day] || []).some((block) => {
-    if (block.id === ignoreId) return false;
-    const bStart = timeToMinutes(block.startTime);
-    const bEnd = timeToMinutes(block.endTime);
-    return start < bEnd && end > bStart;
-  });
-}
 
 // src/scheduling/progress.ts
 function calculateProgressPercent(logged, target) {
@@ -409,12 +368,12 @@ function calculateProgressPercent(logged, target) {
 
 // src/scheduling/fire-time.ts
 var import_date_fns2 = require("date-fns");
-var import_date_fns_tz2 = require("date-fns-tz");
+var import_date_fns_tz = require("date-fns-tz");
 function pad2(n) {
   return n.toString().padStart(2, "0");
 }
 function zonedCalendarParts(instant, timezone) {
-  const zoned = (0, import_date_fns_tz2.toZonedTime)(instant, timezone);
+  const zoned = (0, import_date_fns_tz.toZonedTime)(instant, timezone);
   return {
     year: zoned.getFullYear(),
     month: zoned.getMonth(),
@@ -430,7 +389,7 @@ function buildZonedDateFromParts(dateString, timeString, timezone) {
   const day = Number(dayStr);
   const [hours = 0, minutes = 0] = (timeString || "00:00").split(":").map(Number);
   const naive = new Date(year || 1970, (month || 1) - 1, day || 1, hours, minutes, 0, 0);
-  return (0, import_date_fns_tz2.fromZonedTime)(naive, timezone);
+  return (0, import_date_fns_tz.fromZonedTime)(naive, timezone);
 }
 function resolveActiveBlock(weekSchedule, now, timezone) {
   if (!weekSchedule) return null;
@@ -2782,34 +2741,6 @@ function isActionableVoiceIntent(intent) {
 function isReversibleVoiceIntent(intent) {
   return intent.type === "START_TRACKING" || intent.type === "STOP_TRACKING" || intent.type === "PAUSE" || intent.type === "RESUME";
 }
-var INTENT_VERBS = {
-  START_TRACKING: "Start tracking",
-  STOP_TRACKING: "Stop tracking",
-  PAUSE: "Pause",
-  RESUME: "Resume",
-  LOG_TIME: "Log",
-  APPEND_NOTE: "Add to"
-};
-function formatSpokenDuration(minutes) {
-  if (minutes < 1) {
-    const seconds = Math.round(minutes * 60);
-    return `${seconds} sec`;
-  }
-  const whole = Math.round(minutes);
-  const hours = Math.floor(whole / 60);
-  const rest = whole % 60;
-  if (hours === 0) return `${rest} min`;
-  if (rest === 0) return `${hours}h`;
-  return `${hours}h ${rest}m`;
-}
-function describeVoiceIntent(intent, resolvedName) {
-  if (!isActionableVoiceIntent(intent)) return "Unknown command";
-  const verb = INTENT_VERBS[intent.type];
-  const duration = intent.type === "LOG_TIME" ? ` ${formatSpokenDuration(intent.durationMinutes)}` : "";
-  const preposition = intent.type === "LOG_TIME" ? " to " : " ";
-  const name = resolvedName ?? (isNamedTarget(intent.target) ? intent.target.name : null);
-  return name === null ? `${verb}${duration}` : `${verb}${duration}${preposition}${name}`;
-}
 
 // src/voice/parse.ts
 var DEFAULT_KIND_WORDS = {
@@ -3601,13 +3532,10 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   DEFAULT_PAGE_SIZE,
   GOAL_STATUS_OPTIONS,
   INDENTATION_WIDTH,
-  LABEL_COLORS,
   MAX_MESSAGE_LENGTH,
-  MIN_DURATION,
   MessagingError,
   NO_TARGET,
   SHARED_PACKAGE_NAME,
-  SLOT_MIN,
   TARGET_KINDS,
   VOICE_INTENT_TYPES,
   applyMessageToConversations,
@@ -3672,7 +3600,6 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   currentCoachWeekScopeKey,
   deriveConversationPreview,
   deriveConversationTitle,
-  describeVoiceIntent,
   extractCoachProposals,
   findCounterpart,
   findNextScheduleBlock,
@@ -3684,7 +3611,6 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   formatCoachTokenCount,
   formatDayAnalysisPrompt,
   formatDuration,
-  formatSpokenDuration,
   formatTime12h,
   genId,
   getISOWeekKey,
@@ -3692,9 +3618,6 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   getLocalTimeString,
   getProjection,
   getReportingWeekDates,
-  getZonedDateString,
-  getZonedTimeString,
-  hasOverlap,
   hasResponse,
   insertArchivedConversationEntry,
   isActionableVoiceIntent,
@@ -3726,7 +3649,6 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   resetLiveConversationEntry,
   resolveActiveBlock,
   resolveSpokenTarget,
-  snapMinutes,
   sortConversationsByRecency,
   sortMessages,
   splitContentAndTarget,

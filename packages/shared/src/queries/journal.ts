@@ -61,5 +61,3 @@ export function createJournalQueries(journalApi: JournalApi) {
       }),
   }
 }
-
-export type JournalQueries = ReturnType<typeof createJournalQueries>

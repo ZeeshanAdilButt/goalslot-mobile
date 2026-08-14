@@ -48,21 +48,6 @@ export interface Task {
   pendingSync?: boolean
 }
 
-export interface CreateTaskForm {
-  title: string
-  description: string
-  category: string
-  estimatedMinutes: string
-  goalId: string
-  scheduleBlockId: string
-  dueDate: string
-  notes?: string
-}
-
-export type GroupBy = 'status' | 'day' | 'schedule'
-
-export type GroupedTasks = Array<[string, Task[]]>
-
 /** Query params accepted by GET /tasks (list-tasks-query.dto.ts on the API). */
 export interface TaskListFilters {
   status?: TaskStatus

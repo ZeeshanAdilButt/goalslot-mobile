@@ -36,5 +36,3 @@ export function createAuthApi(api: AxiosInstance) {
       api.post('/auth/change-password', data),
   }
 }
-
-export type AuthApi = ReturnType<typeof createAuthApi>

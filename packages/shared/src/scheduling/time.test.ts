@@ -6,7 +6,6 @@ import {
   getISOWeekKey,
   getLocalDateString,
   getLocalTimeString,
-  getZonedDateString,
   minutesToTime,
   timeToMinutes,
   todayKey,
@@ -65,16 +64,6 @@ describe('getLocalDateString / getLocalTimeString', () => {
     const date = new Date(2026, 2, 5, 4, 7, 0)
     expect(getLocalDateString(date)).toBe('2026-03-05')
     expect(getLocalTimeString(date)).toBe('04:07')
-  })
-})
-
-describe('getZonedDateString', () => {
-  it('formats a date string relative to an explicit timezone, not the device zone', () => {
-    // 2026-01-01T02:00:00Z is Dec 31 in New York (UTC-5 in January) even
-    // though it's already Jan 1st in UTC.
-    const instant = new Date('2026-01-01T02:00:00Z')
-    expect(getZonedDateString(instant, 'America/New_York')).toBe('2025-12-31')
-    expect(getZonedDateString(instant, 'UTC')).toBe('2026-01-01')
   })
 })
 

@@ -45,5 +45,3 @@ export function createCategoryQueries(categoriesApi: CategoriesApi) {
       }),
   }
 }
-
-export type CategoryQueries = ReturnType<typeof createCategoryQueries>

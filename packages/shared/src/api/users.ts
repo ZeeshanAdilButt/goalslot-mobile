@@ -46,5 +46,3 @@ export function createUsersApi(api: AxiosInstance) {
     deleteAccount: () => api.delete<{ success: boolean }>('/users/account'),
   }
 }
-
-export type UsersApi = ReturnType<typeof createUsersApi>

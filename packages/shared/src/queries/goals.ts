@@ -64,5 +64,3 @@ export function createGoalQueries(goalsApi: GoalsApi) {
       }),
   }
 }
-
-export type GoalQueries = ReturnType<typeof createGoalQueries>

@@ -38,5 +38,3 @@ export function createTaskQueries(tasksApi: TasksApi) {
       }),
   }
 }
-
-export type TaskQueries = ReturnType<typeof createTaskQueries>

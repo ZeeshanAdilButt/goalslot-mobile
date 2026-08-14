@@ -2,8 +2,6 @@
 // `cn`, `getProgressColor`, `COLOR_OPTIONS`, `TIME_OPTIONS` are UI-layer
 // concerns and stay on web/mobile app code, not this package).
 
-import { toZonedTime } from 'date-fns-tz'
-
 export function timeToMinutes(time: string): number {
   const [hoursStr, minutesStr] = time.split(':')
   const hours = Number(hoursStr)
@@ -63,20 +61,6 @@ export function getLocalTimeString(date: Date = new Date()): string {
   const hours = String(date.getHours()).padStart(2, '0')
   const minutes = String(date.getMinutes()).padStart(2, '0')
   return `${hours}:${minutes}`
-}
-
-/**
- * Same as getLocalDateString/getLocalTimeString, but for an explicit IANA
- * timezone instead of the device's own zone — e.g. rendering "today" for a
- * schedule that was configured in a different timezone than the device
- * currently sits in.
- */
-export function getZonedDateString(date: Date, timezone: string): string {
-  return getLocalDateString(toZonedTime(date, timezone))
-}
-
-export function getZonedTimeString(date: Date, timezone: string): string {
-  return getLocalTimeString(toZonedTime(date, timezone))
 }
 
 /**

@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import * as axios from 'axios';
 import { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
-export { AxiosInstance } from 'axios';
 import * as _tanstack_react_query from '@tanstack/react-query';
 import { QueryKey } from '@tanstack/react-query';
 import * as _tanstack_query_core from '@tanstack/query-core';
@@ -62,20 +61,6 @@ interface GoalSummary {
     category?: string;
     order?: number;
 }
-interface CreateGoalForm {
-    title: string;
-    description?: string;
-    category: string;
-    targetHours: number;
-    deadline?: string;
-    color: string;
-    status?: GoalStatus;
-    labels?: LabelInput[];
-}
-interface UpdateGoalForm extends Partial<CreateGoalForm> {
-    status?: GoalStatus;
-    loggedHours?: number;
-}
 interface GoalStats {
     active: number;
     completed: number;
@@ -86,43 +71,6 @@ interface GoalFilters {
     categories?: string[];
     labelIds?: string[];
 }
-declare const LABEL_COLORS: readonly [{
-    readonly name: "Red";
-    readonly value: "#FEE2E2";
-    readonly textColor: "#991B1B";
-}, {
-    readonly name: "Orange";
-    readonly value: "#FED7AA";
-    readonly textColor: "#9A3412";
-}, {
-    readonly name: "Yellow";
-    readonly value: "#FEF3C7";
-    readonly textColor: "#92400E";
-}, {
-    readonly name: "Green";
-    readonly value: "#D1FAE5";
-    readonly textColor: "#065F46";
-}, {
-    readonly name: "Cyan";
-    readonly value: "#CFFAFE";
-    readonly textColor: "#0E7490";
-}, {
-    readonly name: "Blue";
-    readonly value: "#DBEAFE";
-    readonly textColor: "#1E40AF";
-}, {
-    readonly name: "Purple";
-    readonly value: "#E9D5FF";
-    readonly textColor: "#6B21A8";
-}, {
-    readonly name: "Pink";
-    readonly value: "#FCE7F3";
-    readonly textColor: "#9D174D";
-}, {
-    readonly name: "Gray";
-    readonly value: "#E5E7EB";
-    readonly textColor: "#374151";
-}];
 declare const GOAL_STATUS_OPTIONS: {
     value: GoalStatus;
     label: string;
@@ -171,18 +119,6 @@ interface Task {
      */
     pendingSync?: boolean;
 }
-interface CreateTaskForm {
-    title: string;
-    description: string;
-    category: string;
-    estimatedMinutes: string;
-    goalId: string;
-    scheduleBlockId: string;
-    dueDate: string;
-    notes?: string;
-}
-type GroupBy = 'status' | 'day' | 'schedule';
-type GroupedTasks = Array<[string, Task[]]>;
 /** Query params accepted by GET /tasks (list-tasks-query.dto.ts on the API). */
 interface TaskListFilters {
     status?: TaskStatus;
@@ -236,17 +172,6 @@ interface ScheduleBlock {
  * accidentally cross the streams.
  */
 type WeekSchedule = Record<number, ScheduleBlock[]>;
-type SchedulePayload = {
-    title: string;
-    startTime: string;
-    endTime: string;
-    dayOfWeek: number;
-    category: string;
-    color: string;
-    goalId?: string;
-    seriesId?: string;
-    isPrivate?: boolean;
-};
 type ScheduleUpdateScope = 'single' | 'series';
 /**
  * How far a delete reaches. Mirrors `ScheduleUpdateScope`, but note the
@@ -258,36 +183,11 @@ type ScheduleUpdateScope = 'single' | 'series';
  * and the call site agree on it; it is never serialised.
  */
 type ScheduleDeleteScope = 'single' | 'series';
-type ScheduleUpdatePayload = Partial<Omit<SchedulePayload, 'seriesId'>> & {
-    updateScope?: ScheduleUpdateScope;
-};
-type DraftSelection = {
-    dayOfWeek: number;
-    start: number;
-    end: number;
-};
 
 interface TimeEntryScheduleBlockSummary {
     id: string;
     title: string;
     category?: string;
-}
-/**
- * Lightweight task projection embedded on a TimeEntry.
- * Reconciliation note: web's features/time-tracker/utils/types.ts defined its
- * own local `Task` (id, title, category?, goalId?, goalTitle?, goal?, status,
- * scheduleBlockId?) that collides with the canonical `Task` in ./task.
- * Renamed here to avoid the clash.
- */
-interface TimeEntryTaskSummary {
-    id: string;
-    title: string;
-    category?: string;
-    goalId?: string;
-    goalTitle?: string;
-    goal?: GoalSummary;
-    status: TaskStatus;
-    scheduleBlockId?: string;
 }
 interface TimeEntry {
     id: string;
@@ -302,28 +202,6 @@ interface TimeEntry {
     startedAt?: string;
     taskId?: string;
     taskTitle?: string;
-}
-interface CreateTimeEntryPayload {
-    taskName: string;
-    taskId?: string;
-    taskTitle?: string;
-    duration: number;
-    date: string;
-    notes?: string;
-    goalId?: string;
-    startedAt?: string;
-    scheduleBlockId?: string;
-}
-interface UpdateTimeEntryPayload {
-    taskName?: string;
-    taskId?: string;
-    taskTitle?: string;
-    duration?: number;
-    date?: string;
-    notes?: string;
-    goalId?: string;
-    startedAt?: string;
-    scheduleBlockId?: string;
 }
 
 type ActiveTimerSessionStatus = 'RUNNING' | 'PAUSED';
@@ -693,26 +571,26 @@ declare const createGoalSchema: z.ZodObject<{
     title: string;
     category: string;
     targetHours: number;
+    color?: string | undefined;
     description?: string | undefined;
     deadline?: string | undefined;
-    color?: string | undefined;
+    isPrivate?: boolean | undefined;
     labels?: {
         name: string;
         color?: string | undefined;
     }[] | undefined;
-    isPrivate?: boolean | undefined;
 }, {
     title: string;
     category: string;
     targetHours: number;
+    color?: string | undefined;
     description?: string | undefined;
     deadline?: string | undefined;
-    color?: string | undefined;
+    isPrivate?: boolean | undefined;
     labels?: {
         name: string;
         color?: string | undefined;
     }[] | undefined;
-    isPrivate?: boolean | undefined;
 }>;
 declare const updateGoalSchema: z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;
@@ -736,32 +614,32 @@ declare const updateGoalSchema: z.ZodObject<{
     status: z.ZodOptional<z.ZodEnum<["ACTIVE", "COMPLETED", "PAUSED"]>>;
     loggedHours: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
+    color?: string | undefined;
+    status?: "ACTIVE" | "COMPLETED" | "PAUSED" | undefined;
     title?: string | undefined;
     description?: string | undefined;
     category?: string | undefined;
     targetHours?: number | undefined;
     deadline?: string | undefined;
-    color?: string | undefined;
-    status?: "ACTIVE" | "COMPLETED" | "PAUSED" | undefined;
+    isPrivate?: boolean | undefined;
     labels?: {
         name: string;
         color?: string | undefined;
     }[] | undefined;
-    isPrivate?: boolean | undefined;
     loggedHours?: number | undefined;
 }, {
+    color?: string | undefined;
+    status?: "ACTIVE" | "COMPLETED" | "PAUSED" | undefined;
     title?: string | undefined;
     description?: string | undefined;
     category?: string | undefined;
     targetHours?: number | undefined;
     deadline?: string | undefined;
-    color?: string | undefined;
-    status?: "ACTIVE" | "COMPLETED" | "PAUSED" | undefined;
+    isPrivate?: boolean | undefined;
     labels?: {
         name: string;
         color?: string | undefined;
     }[] | undefined;
-    isPrivate?: boolean | undefined;
     loggedHours?: number | undefined;
 }>;
 type CreateGoalInput = z.infer<typeof createGoalSchema>;
@@ -780,21 +658,21 @@ declare const createTaskSchema: z.ZodObject<{
     notes: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     title: string;
+    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
     description?: string | undefined;
     category?: string | undefined;
-    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
-    goalId?: string | undefined;
     estimatedMinutes?: number | undefined;
+    goalId?: string | undefined;
     scheduleBlockId?: string | undefined;
     dueDate?: string | undefined;
     notes?: string | undefined;
 }, {
     title: string;
+    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
     description?: string | undefined;
     category?: string | undefined;
-    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
-    goalId?: string | undefined;
     estimatedMinutes?: number | undefined;
+    goalId?: string | undefined;
     scheduleBlockId?: string | undefined;
     dueDate?: string | undefined;
     notes?: string | undefined;
@@ -810,22 +688,22 @@ declare const updateTaskSchema: z.ZodObject<{
     dueDate: z.ZodOptional<z.ZodOptional<z.ZodString>>;
     notes: z.ZodOptional<z.ZodOptional<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
+    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
     title?: string | undefined;
     description?: string | undefined;
     category?: string | undefined;
-    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
-    goalId?: string | undefined;
     estimatedMinutes?: number | undefined;
+    goalId?: string | undefined;
     scheduleBlockId?: string | undefined;
     dueDate?: string | undefined;
     notes?: string | undefined;
 }, {
+    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
     title?: string | undefined;
     description?: string | undefined;
     category?: string | undefined;
-    status?: "BACKLOG" | "TODO" | "DOING" | "DONE" | undefined;
-    goalId?: string | undefined;
     estimatedMinutes?: number | undefined;
+    goalId?: string | undefined;
     scheduleBlockId?: string | undefined;
     dueDate?: string | undefined;
     notes?: string | undefined;
@@ -865,10 +743,10 @@ declare const createScheduleBlockSchema: z.ZodObject<{
     endTime: string;
     dayOfWeek: number;
     color?: string | undefined;
-    seriesId?: string | undefined;
-    goalId?: string | undefined;
     isPrivate?: boolean | undefined;
+    goalId?: string | undefined;
     isRecurring?: boolean | undefined;
+    seriesId?: string | undefined;
 }, {
     title: string;
     category: string;
@@ -876,10 +754,10 @@ declare const createScheduleBlockSchema: z.ZodObject<{
     endTime: string;
     dayOfWeek: number;
     color?: string | undefined;
-    seriesId?: string | undefined;
-    goalId?: string | undefined;
     isPrivate?: boolean | undefined;
+    goalId?: string | undefined;
     isRecurring?: boolean | undefined;
+    seriesId?: string | undefined;
 }>;
 declare const updateScheduleBlockSchema: z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;
@@ -895,28 +773,28 @@ declare const updateScheduleBlockSchema: z.ZodObject<{
 } & {
     updateScope: z.ZodOptional<z.ZodEnum<["single", "series"]>>;
 }, "strip", z.ZodTypeAny, {
+    color?: string | undefined;
     title?: string | undefined;
     category?: string | undefined;
-    color?: string | undefined;
-    seriesId?: string | undefined;
+    isPrivate?: boolean | undefined;
+    goalId?: string | undefined;
     startTime?: string | undefined;
     endTime?: string | undefined;
     dayOfWeek?: number | undefined;
-    goalId?: string | undefined;
-    isPrivate?: boolean | undefined;
     isRecurring?: boolean | undefined;
+    seriesId?: string | undefined;
     updateScope?: "single" | "series" | undefined;
 }, {
+    color?: string | undefined;
     title?: string | undefined;
     category?: string | undefined;
-    color?: string | undefined;
-    seriesId?: string | undefined;
+    isPrivate?: boolean | undefined;
+    goalId?: string | undefined;
     startTime?: string | undefined;
     endTime?: string | undefined;
     dayOfWeek?: number | undefined;
-    goalId?: string | undefined;
-    isPrivate?: boolean | undefined;
     isRecurring?: boolean | undefined;
+    seriesId?: string | undefined;
     updateScope?: "single" | "series" | undefined;
 }>;
 type CreateScheduleBlockInput = z.infer<typeof createScheduleBlockSchema>;
@@ -1026,14 +904,6 @@ declare function formatDuration(minutes: number): string;
 declare function getLocalDateString(date?: Date): string;
 declare function getLocalTimeString(date?: Date): string;
 /**
- * Same as getLocalDateString/getLocalTimeString, but for an explicit IANA
- * timezone instead of the device's own zone — e.g. rendering "today" for a
- * schedule that was configured in a different timezone than the device
- * currently sits in.
- */
-declare function getZonedDateString(date: Date, timezone: string): string;
-declare function getZonedTimeString(date: Date, timezone: string): string;
-/**
  * Canonical YYYY-MM-DD "day key" for a date, in local (device) time.
  * Dedupes what used to be five separate `todayKey()` implementations across
  * the web app (components/floating-journal-button.tsx,
@@ -1062,10 +932,6 @@ declare function getReportingWeekDates(date?: Date): {
 
 declare const DAY_START_MIN = 0;
 declare const DAY_END_MIN: number;
-declare const SLOT_MIN = 15;
-declare const MIN_DURATION = 15;
-declare function snapMinutes(minutes: number): number;
-declare function hasOverlap(weekSchedule: WeekSchedule, day: number, start: number, end: number, ignoreId?: string): boolean;
 
 /**
  * Percentage of a target that has been logged so far, clamped to [0, 100]
@@ -1807,7 +1673,6 @@ declare function createUsersApi(api: AxiosInstance): {
         success: boolean;
     }, any, {}, any>>;
 };
-type UsersApi = ReturnType<typeof createUsersApi>;
 
 interface AuthTokens {
     accessToken: string;
@@ -1884,10 +1749,9 @@ declare function createAuthApi(api: AxiosInstance): {
         newPassword: string;
     }, {}, any>>;
 };
-type AuthApi = ReturnType<typeof createAuthApi>;
 
 declare function createApiClient(config: ApiClientConfig): {
-    api: AxiosInstance;
+    api: axios.AxiosInstance;
     auth: {
         checkEmailExists: (email: string) => Promise<axios.AxiosResponse<any, any, {}, {
             email: string;
@@ -2125,7 +1989,6 @@ declare function createApiClient(config: ApiClientConfig): {
         voiceIntent: (transcript: string, context: CoachVoiceIntentContext) => Promise<axios.AxiosResponse<CoachVoiceIntentResponse, any, {}, any>>;
     };
 };
-type ApiClient = ReturnType<typeof createApiClient>;
 
 declare function createGoalsApi(api: AxiosInstance): {
     getAll: (params?: {
@@ -2266,7 +2129,6 @@ declare function createMessagingApi(api: AxiosInstance): {
      */
     createConversation: (input: CreateMessagingConversationInput) => Promise<axios.AxiosResponse<MessagingConversation, any, {}, any>>;
 };
-type MessagingApi = ReturnType<typeof createMessagingApi>;
 /**
  * Every failure mode jiffy-messaging documents (400/401/403/404/429), plus
  * the two the network gives us for free. Callers switch on `kind` instead of
@@ -2364,10 +2226,6 @@ interface OfflineOperation<TPayload = unknown, TResult = unknown> {
      */
     onDropped?: (payload: TPayload, error: unknown) => void;
 }
-interface OfflineMeta {
-    entityId: string;
-    idempotencyKey: string;
-}
 
 declare function genId(): string;
 
@@ -2436,7 +2294,6 @@ declare function createCoachQueries(coachApi: CoachApi): {
         };
     };
 };
-type CoachQueries = ReturnType<typeof createCoachQueries>;
 
 declare function createCoachSettingsQueries(coachSettingsApi: CoachSettingsApi): {
     coachSettingsQueries: {
@@ -2463,7 +2320,6 @@ declare function createCoachSettingsQueries(coachSettingsApi: CoachSettingsApi):
         };
     };
 };
-type CoachSettingsQueries = ReturnType<typeof createCoachSettingsQueries>;
 
 declare function createGoalQueries(goalsApi: GoalsApi): {
     goalQueries: {
@@ -2500,7 +2356,6 @@ declare function createGoalQueries(goalsApi: GoalsApi): {
         };
     };
 };
-type GoalQueries = ReturnType<typeof createGoalQueries>;
 
 declare function createNoteQueries(notesApi: NotesApi): {
     noteQueries: {
@@ -2527,7 +2382,6 @@ declare function createNoteQueries(notesApi: NotesApi): {
         };
     };
 };
-type NoteQueries = ReturnType<typeof createNoteQueries>;
 
 declare function createTaskQueries(tasksApi: TasksApi): {
     taskQueries: {
@@ -2554,7 +2408,6 @@ declare function createTaskQueries(tasksApi: TasksApi): {
         };
     };
 };
-type TaskQueries = ReturnType<typeof createTaskQueries>;
 
 declare function createScheduleQueries(scheduleApi: ScheduleApi): {
     scheduleQueries: {
@@ -2571,7 +2424,6 @@ declare function createScheduleQueries(scheduleApi: ScheduleApi): {
         };
     };
 };
-type ScheduleQueries = ReturnType<typeof createScheduleQueries>;
 
 declare function createTimeEntryQueries(timeEntriesApi: TimeEntriesApi): {
     timeEntryQueries: {
@@ -2600,7 +2452,6 @@ declare function createTimeEntryQueries(timeEntriesApi: TimeEntriesApi): {
         };
     };
 };
-type TimeEntryQueries = ReturnType<typeof createTimeEntryQueries>;
 
 declare function createTimerSessionQueries(timerSessionApi: TimerSessionApi): {
     timerSessionQueries: {
@@ -2617,7 +2468,6 @@ declare function createTimerSessionQueries(timerSessionApi: TimerSessionApi): {
         };
     };
 };
-type TimerSessionQueries = ReturnType<typeof createTimerSessionQueries>;
 
 declare function createCategoryQueries(categoriesApi: CategoriesApi): {
     categoryQueries: {
@@ -2644,7 +2494,6 @@ declare function createCategoryQueries(categoriesApi: CategoriesApi): {
         };
     };
 };
-type CategoryQueries = ReturnType<typeof createCategoryQueries>;
 
 declare function createLabelQueries(labelsApi: LabelsApi): {
     labelQueries: {
@@ -2671,7 +2520,6 @@ declare function createLabelQueries(labelsApi: LabelsApi): {
         };
     };
 };
-type LabelQueries = ReturnType<typeof createLabelQueries>;
 
 interface JournalDateRange {
     from?: string;
@@ -2702,7 +2550,6 @@ declare function createJournalQueries(journalApi: JournalApi): {
         };
     };
 };
-type JournalQueries = ReturnType<typeof createJournalQueries>;
 
 declare function createMessagingQueries(client: MessagingServiceClient, sharingApi: SharingApi): {
     messagingQueries: {
@@ -2749,7 +2596,6 @@ declare function createMessagingQueries(client: MessagingServiceClient, sharingA
         };
     };
 };
-type MessagingQueries = ReturnType<typeof createMessagingQueries>;
 
 interface ScheduledAlarm {
     id: string;
@@ -3384,13 +3230,6 @@ declare function isActionableVoiceIntent(intent: VoiceIntent): intent is Actiona
  * and does not. See apps/mobile/src/components/voice/TrackerVoiceButton.tsx.
  */
 declare function isReversibleVoiceIntent(intent: VoiceIntent): boolean;
-/** Whole minutes read as "1h 30m"; anything under a minute stays in seconds. */
-declare function formatSpokenDuration(minutes: number): string;
-/**
- * One line for a confirmation prompt or a screen-reader announcement. The
- * voice UI shows this before acting on something it only heard once.
- */
-declare function describeVoiceIntent(intent: VoiceIntent, resolvedName?: string): string;
 
 /**
  * The words English uses to say what type of thing was just named. The
@@ -3525,4 +3364,4 @@ declare function resolveSpokenTarget(target: NamedTarget, candidates: readonly T
 
 declare const SHARED_PACKAGE_NAME = "@goalslot/shared";
 
-export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClient, type ApiClientConfig, type AppendNoteIntent, type AuthApi, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CategoryQueries, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachQueries, type CoachReligiousContext, type CoachSettingsApi, type CoachSettingsQueries, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskForm, type CreateTaskInput, type CreateTimeEntryInput, type CreateTimeEntryPayload, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type DraftSelection, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalQueries, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, type GroupBy, type GroupedTasks, INDENTATION_WIDTH, type IncomingShare, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type JournalQueries, LABEL_COLORS, type Label, type LabelInput, type LabelQueries, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_MESSAGE_LENGTH, MIN_DURATION, type MessagingApi, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingQueries, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteQueries, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineMeta, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, SLOT_MIN, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type SchedulePayload, type ScheduleQueries, type ScheduleUpdatePayload, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskQueries, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryQueries, type TimeEntryScheduleBlockSummary, type TimeEntryTaskSummary, type TimerSessionApi, type TimerSessionQueries, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimeEntryPayload, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type User, type UsersApi, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, describeVoiceIntent, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatSpokenDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, getZonedDateString, getZonedTimeString, hasOverlap, hasResponse, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, snapMinutes, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };
+export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClientConfig, type AppendNoteIntent, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachReligiousContext, type CoachSettingsApi, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskInput, type CreateTimeEntryInput, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, INDENTATION_WIDTH, type IncomingShare, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type Label, type LabelInput, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_MESSAGE_LENGTH, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryScheduleBlockSummary, type TimerSessionApi, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type User, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, hasResponse, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };

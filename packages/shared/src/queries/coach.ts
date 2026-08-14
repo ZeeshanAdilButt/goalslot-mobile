@@ -32,5 +32,3 @@ export function createCoachQueries(coachApi: CoachApi) {
       }),
   }
 }
-
-export type CoachQueries = ReturnType<typeof createCoachQueries>
