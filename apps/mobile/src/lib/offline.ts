@@ -379,6 +379,28 @@ operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry
   onDropped: (payload) => notify(droppedTimeEntryMessage(payload), "error"),
 });
 
+// Removing an already-logged session (the Time Tracker's history rows — see
+// components/timer/SessionHistory.tsx). Queued like every other delete in
+// this app: the row is already gone from the list and there is no "pending"
+// version of gone to show, so unlike the edits above this one carries no
+// `pendingSync` tag on anything.
+//
+// Two invalidate keys, which none of the other deletes here need: the API
+// recomputes the entry's goal `loggedHours` when it removes the row
+// (dw-time-api's time-entries.service.ts), so a replayed delete leaves the
+// goal collection just as stale as the entry collection — and Goals, Today
+// and Reports all read the former without ever touching the latter.
+// Invalidating unconditionally rather than only for an attributed entry:
+// the outbox payload is a bare id by the time this replays, with no memory
+// of whether that entry had a goal, and an extra refetch is cheaper than
+// carrying a denormalised flag through the queue to avoid it.
+operationRegistry.registerOperation<EntityIdPayload, void>("time-entry-delete", {
+  execute: async (payload) => {
+    await apiClient.timeEntries.delete(payload.id);
+  },
+  invalidateKeys: [timeEntryQueries.timeEntryQueries.all, goalQueries.goalQueries.all],
+});
+
 // A message the user sent while offline.
 //
 // Unlike the creates above, this one patches a cache inside `execute` rather

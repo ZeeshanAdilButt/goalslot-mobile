@@ -14,76 +14,90 @@
 // filed" is a normal state a lot of entries will sit in. Such a row gets a
 // hollow dot rather than the brand-coloured one (a filled brand dot made it
 // look identical to a goal that happens to use the brand colour) and an
-// "Add goal" affordance that attaches one after the fact. Everything else
-// about the row is unchanged.
+// "Add goal" hint that attaches one after the fact.
+//
+// ROW ACTIONS. Until recently this list was read-only: a session logged by
+// mistake — and the 1-minute floor in timer.tsx's handleStop means a stray
+// Start/Stop always logs one — sat in the history for good, with nothing on
+// the row to remove it. Two actions now hang off each row, following the
+// convention tasks.tsx already set for a list of records:
+//
+//   - swipe left  -> Delete, behind a themed ConfirmDialog (never
+//                    `Alert.alert`; see ConfirmDialog.tsx's own header).
+//   - tap the row -> the tracking picker, to add or change the goal it's
+//                    filed under. `onAttachGoal` used to be offered only on
+//                    rows with no goal; the whole row is the affordance now,
+//                    so an entry filed against the wrong goal can be moved
+//                    rather than only an unfiled one being filled in.
+//
+// Both are reachable without the gesture: the row is one accessibility
+// element whose activation opens the picker, with Delete exposed as a custom
+// accessibility action (the same `accessibilityActions`/
+// `onAccessibilityAction` pairing notes.tsx uses for its own swipe actions).
+//
+// The delete mutation lives HERE rather than on the Timer screen even though
+// the screen owns the equivalent attach mutation. It needs nothing from the
+// screen's timer state — an entry id and the recent-entries cache is the
+// whole of it — and keeping it local means the Time Tracker screen didn't
+// have to grow a third piece of history-row plumbing. Mutating from a
+// component rather than a screen is already established here (see
+// components/voice/TrackerVoiceButton.tsx, which posts time entries and
+// queues them offline itself).
 
-import { memo, useMemo } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
+import {
+  AccessibilityInfo,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type AccessibilityActionEvent,
+  type AccessibilityActionInfo,
+} from "react-native";
+import { Swipeable } from "react-native-gesture-handler";
 import { FlashList } from "@shopify/flash-list";
 
-import { formatDuration, getLocalDateString, type TimeEntry } from "@goalslot/shared";
+import { formatDuration, type TimeEntry } from "@goalslot/shared";
 
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
+import {
+  buildSessionItems,
+  describeSessionDelete,
+  describeSessionEntry,
+  removeSessionEntry,
+  sessionEntryTitle,
+} from "@/components/timer/session-entries";
+import { apiClient, notify } from "@/lib/api-client";
+import { hapticCompletion } from "@/lib/haptics";
+import { queueOfflineEdit } from "@/lib/offline";
+import { goalQueries, timeEntryQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
-type SessionListItem =
-  | { kind: "header"; key: string; label: string; minutes: number }
-  | { kind: "entry"; key: string; entry: TimeEntry };
+/** Same width tasks.tsx gives its own swipe actions, so the two lists' panels match. */
+const SWIPE_ACTION_WIDTH = 92;
 
 /**
- * Formats a `YYYY-MM-DD` key as a day heading. Parsed via the date parts
- * rather than `new Date(dateStr)` — the bare-date form is parsed as UTC
- * midnight, which renders as the previous day for anyone behind UTC (the
- * same trap packages/shared/src/scheduling/time.ts's getLocalDateString
- * documents).
+ * Delete is a custom action rather than the built-in `magicTap`/`escape`
+ * vocabulary because it is genuinely app-specific, and it is declared once
+ * at module scope so every memoised row shares the same array identity.
+ * Activation (a plain double-tap under VoiceOver/TalkBack) is left as the
+ * row's own `onPress`, which is the attribution picker — the non-destructive
+ * of the two, and so the right thing to sit on the default gesture.
  */
-function formatDayHeading(dateKey: string, todayKey: string, yesterdayKey: string): string {
-  if (dateKey === todayKey) return "Today";
-  if (dateKey === yesterdayKey) return "Yesterday";
-  const [year, month, day] = dateKey.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function buildItems(entries: TimeEntry[]): SessionListItem[] {
-  const byDay = new Map<string, TimeEntry[]>();
-  for (const entry of entries) {
-    const key = entry.date.slice(0, 10);
-    const bucket = byDay.get(key);
-    if (bucket) bucket.push(entry);
-    else byDay.set(key, [entry]);
-  }
-
-  const todayKey = getLocalDateString();
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayKey = getLocalDateString(yesterday);
-
-  const items: SessionListItem[] = [];
-  // Newest day first — `YYYY-MM-DD` sorts correctly as a plain string.
-  for (const dayKey of [...byDay.keys()].sort().reverse()) {
-    const dayEntries = byDay.get(dayKey) ?? [];
-    items.push({
-      kind: "header",
-      key: `header-${dayKey}`,
-      label: formatDayHeading(dayKey, todayKey, yesterdayKey),
-      minutes: dayEntries.reduce((sum, entry) => sum + entry.duration, 0),
-    });
-    for (const entry of dayEntries) {
-      items.push({ kind: "entry", key: entry.id, entry });
-    }
-  }
-  return items;
-}
+const ROW_ACCESSIBILITY_ACTIONS: AccessibilityActionInfo[] = [
+  { name: "delete", label: "Delete session" },
+];
 
 export interface SessionHistoryProps {
   entries: TimeEntry[];
   refreshing: boolean;
   onRefresh: () => void;
-  /** Attaches a goal to an already-logged entry. Only offered on rows that have none. */
+  /**
+   * Opens the tracking picker for an already-logged entry. Offered on every
+   * row now, not just unattributed ones — see the ROW ACTIONS note above.
+   */
   onAttachGoal: (entry: TimeEntry) => void;
   /** Id of the entry currently being saved, so its row can show the in-flight state. */
   attachingEntryId?: string | null;
@@ -110,31 +124,130 @@ export function SessionHistory({
   attachingEntryId,
   ListHeaderComponent,
 }: SessionHistoryProps) {
-  const items = useMemo(() => buildItems(entries), [entries]);
+  const items = useMemo(() => buildSessionItems(entries), [entries]);
+
+  // The entry the confirmation is asking about. Held as the whole entry, not
+  // an id: the optimistic cache write below removes the row while the dialog
+  // is still on screen (busy, and possibly about to show an error), so an
+  // id would leave the dialog with nothing to render its own copy from.
+  const [pendingDelete, setPendingDelete] = useState<TimeEntry | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const requestDelete = useCallback((entry: TimeEntry) => {
+    setDeleteError(null);
+    setPendingDelete(entry);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
+
+  /**
+   * Snapshot -> optimistic removal -> live DELETE -> invalidate on success,
+   * the same shape every other destructive action in this app uses
+   * (tasks.tsx's handleDelete, notes.tsx's deleteNote).
+   *
+   * Two things are specific to a time entry:
+   *
+   *   - The goal collection is invalidated too when the entry had one. The
+   *     API recomputes that goal's loggedHours on delete, so Goals, Today
+   *     and Reports are all stale the moment this succeeds — and none of
+   *     them would notice from the time-entry keys alone.
+   *   - A network-looking failure queues to the outbox rather than rolling
+   *     back, and the row stays gone. There is no "pending" version of gone
+   *     to render (the same call schedule.tsx and notes.tsx's deleteNote
+   *     make), so unlike an optimistic *edit* this one gets no `pendingSync`
+   *     tag — the delete is going to happen once the outbox drains.
+   *
+   * A genuine server rejection is the only path that rolls back, and it
+   * reports inline inside the dialog that is already open rather than
+   * stacking a second popup on top of it.
+   */
+  const confirmDelete = useCallback(async () => {
+    const entry = pendingDelete;
+    if (!entry || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    const listKey = timeEntryQueries.timeEntryQueries.recent();
+    const previous = queryClient.getQueryData<TimeEntry[]>(listKey);
+    queryClient.setQueryData<TimeEntry[]>(listKey, (existing) => removeSessionEntry(existing ?? [], entry.id));
+
+    const announceRemoved = (suffix = "") => {
+      AccessibilityInfo.announceForAccessibility(
+        `Deleted ${formatDuration(entry.duration)} session "${sessionEntryTitle(entry)}"${suffix}`,
+      );
+    };
+
+    try {
+      await apiClient.timeEntries.delete(entry.id);
+      hapticCompletion();
+      void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+      if (entry.goalId) {
+        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      }
+      announceRemoved();
+      setPendingDelete(null);
+    } catch (err) {
+      const queued = await queueOfflineEdit("time-entry-delete", { id: entry.id }, err);
+      if (queued) {
+        announceRemoved(" — will sync when online");
+        notify("Queued — will sync when online", "offline");
+        setPendingDelete(null);
+      } else {
+        queryClient.setQueryData<TimeEntry[]>(listKey, previous);
+        setDeleteError("Couldn't delete that session. Please try again.");
+      }
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteBusy, pendingDelete]);
+
+  const confirmCopy = pendingDelete ? describeSessionDelete(pendingDelete) : null;
 
   return (
-    <FlashList
-      data={items}
-      ListHeaderComponent={ListHeaderComponent}
-      keyExtractor={(item) => item.key}
-      // Lets FlashList recycle headers and rows separately instead of
-      // reusing one cell shape for both.
-      getItemType={(item) => item.kind}
-      renderItem={({ item }) =>
-        item.kind === "header" ? (
-          <DayHeader label={item.label} minutes={item.minutes} />
-        ) : (
-          <SessionRow
-            entry={item.entry}
-            onAttachGoal={onAttachGoal}
-            attaching={attachingEntryId === item.entry.id}
-          />
-        )
-      }
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-      contentContainerStyle={styles.listContent}
-    />
+    <>
+      <FlashList
+        data={items}
+        ListHeaderComponent={ListHeaderComponent}
+        keyExtractor={(item) => item.key}
+        // Lets FlashList recycle headers and rows separately instead of
+        // reusing one cell shape for both.
+        getItemType={(item) => item.kind}
+        renderItem={({ item }) =>
+          item.kind === "header" ? (
+            <DayHeader label={item.label} minutes={item.minutes} />
+          ) : (
+            <SessionRow
+              entry={item.entry}
+              onAttachGoal={onAttachGoal}
+              onDelete={requestDelete}
+              attaching={attachingEntryId === item.entry.id}
+            />
+          )
+        }
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        contentContainerStyle={styles.listContent}
+      />
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title={confirmCopy?.title ?? "Delete this session?"}
+        description={confirmCopy?.description}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
+    </>
   );
 }
 
@@ -156,54 +269,97 @@ function DayHeader({ label, minutes }: { label: string; minutes: number }) {
 const SessionRow = memo(function SessionRow({
   entry,
   onAttachGoal,
+  onDelete,
   attaching,
 }: {
   entry: TimeEntry;
   onAttachGoal: (entry: TimeEntry) => void;
+  onDelete: (entry: TimeEntry) => void;
   attaching: boolean;
 }) {
+  const swipeableRef = useRef<Swipeable>(null);
   const goal = entry.goal;
-  const title = entry.taskTitle || entry.taskName;
+  const title = sessionEntryTitle(entry);
+
+  const renderRightActions = useCallback(
+    () => (
+      <Pressable
+        style={[styles.swipeAction, styles.deleteAction]}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete(entry);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete "${title}"`}
+      >
+        <Icon name="trash" size={18} color={colors.destructiveForeground} />
+        <Text style={styles.swipeActionText}>Delete</Text>
+      </Pressable>
+    ),
+    [entry, onDelete, title],
+  );
+
+  const handleAccessibilityAction = useCallback(
+    (event: AccessibilityActionEvent) => {
+      if (event.nativeEvent.actionName === "delete") onDelete(entry);
+    },
+    [entry, onDelete],
+  );
 
   return (
-    <View style={styles.row}>
-      {/* Hollow ring for an unattributed entry: a filled dot in the brand
-          colour was indistinguishable from a goal whose colour is the brand
-          colour, so "no goal" and "the yellow goal" looked the same. */}
-      <View
-        style={[
-          styles.rowDot,
-          goal ? { backgroundColor: goal.color } : styles.rowDotUnattributed,
-        ]}
-      />
-      <View style={styles.rowBody}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        {goal?.title ? (
-          <Text style={styles.rowSubtitle} numberOfLines={1}>
-            {goal.title}
-          </Text>
-        ) : (
-          <Pressable
-            style={({ pressed }) => [styles.attachButton, pressed && styles.attachButtonPressed]}
-            onPress={() => onAttachGoal(entry)}
-            disabled={attaching}
-            accessibilityRole="button"
-            accessibilityLabel={`Add a goal to "${title}", ${formatDuration(entry.duration)}`}
-            accessibilityState={{ disabled: attaching, busy: attaching }}
-            // The row is only ~64pt tall and this control sits inside it, so
-            // the 44pt minimum comes from hitSlop rather than from height.
-            hitSlop={spacing.sm}
-          >
-            <Icon name="add" size={13} color={colors.mutedForeground} />
-            <Text style={styles.attachText}>{attaching ? "Saving…" : "Add goal"}</Text>
-          </Pressable>
-        )}
-      </View>
-      <View style={styles.durationPill}>
-        <Text style={styles.durationText}>{formatDuration(entry.duration)}</Text>
-      </View>
+    // marginBottom lives on the wrapper, not the row, so the Swipeable's own
+    // height matches the row exactly and the revealed delete panel doesn't
+    // bleed into the gap between rows. `overflow: hidden` on the same
+    // wrapper clips that panel to the row's corner radius — without it a
+    // square red block sits flush against a rounded card.
+    <View style={styles.rowWrap}>
+      <Swipeable ref={swipeableRef} renderRightActions={renderRightActions} overshootRight={false}>
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => onAttachGoal(entry)}
+          disabled={attaching}
+          accessibilityRole="button"
+          accessibilityLabel={describeSessionEntry(entry)}
+          accessibilityHint={goal ? "Change the goal this is filed under" : "File this session under a goal"}
+          accessibilityState={{ disabled: attaching, busy: attaching }}
+          accessibilityActions={ROW_ACCESSIBILITY_ACTIONS}
+          onAccessibilityAction={handleAccessibilityAction}
+        >
+          {/* Hollow ring for an unattributed entry: a filled dot in the brand
+              colour was indistinguishable from a goal whose colour is the brand
+              colour, so "no goal" and "the yellow goal" looked the same. */}
+          <View
+            style={[
+              styles.rowDot,
+              goal ? { backgroundColor: goal.color } : styles.rowDotUnattributed,
+            ]}
+          />
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            {goal?.title ? (
+              <Text style={styles.rowSubtitle} numberOfLines={1}>
+                {goal.title}
+              </Text>
+            ) : (
+              // A hint, not a control: the whole row opens the same picker
+              // now, so a nested button here would be a second accessibility
+              // element competing with its own parent for the identical
+              // action. Marked as decoration for the same reason — the row's
+              // label already says "no goal" and its hint says what a tap
+              // does.
+              <View style={styles.attachHint} importantForAccessibility="no-hide-descendants">
+                <Icon name="add" size={13} color={colors.mutedForeground} />
+                <Text style={styles.attachText}>{attaching ? "Saving…" : "Add goal"}</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.durationPill}>
+            <Text style={styles.durationText}>{formatDuration(entry.duration)}</Text>
+          </View>
+        </Pressable>
+      </Swipeable>
     </View>
   );
 });
@@ -234,17 +390,27 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     color: colors.mutedForeground,
   },
+  rowWrap: {
+    marginBottom: spacing.sm,
+    borderRadius: radii.lg,
+    overflow: "hidden",
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    marginBottom: spacing.sm,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
     borderRadius: radii.lg,
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
+    // The row is a touch target now, so it has to clear 44pt on its own
+    // rather than relying on the content that happens to be inside it.
+    minHeight: minTouchTarget,
+  },
+  rowPressed: {
+    backgroundColor: colors.secondary,
   },
   rowDot: {
     width: 8,
@@ -256,15 +422,11 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: colors.border,
   },
-  attachButton: {
+  attachHint: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
     gap: spacing.xxs,
-    minHeight: minTouchTarget / 2,
-  },
-  attachButtonPressed: {
-    opacity: 0.6,
   },
   attachText: {
     ...typography.bodySmall,
@@ -294,5 +456,20 @@ const styles = StyleSheet.create({
     ...typography.caption,
     fontVariant: ["tabular-nums"],
     color: colors.foreground,
+  },
+  swipeAction: {
+    width: SWIPE_ACTION_WIDTH,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  deleteAction: {
+    backgroundColor: colors.destructive,
+  },
+  swipeActionText: {
+    ...typography.label,
+    color: colors.destructiveForeground,
+    textAlign: "center",
   },
 });
