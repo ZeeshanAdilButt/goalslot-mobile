@@ -54,18 +54,3 @@ export const shadows = {
   subtle: foundationShadows.subtle,
   fab: foundationShadows.fab,
 } as const
-
-export const theme = {
-  colors,
-  spacing,
-  radii,
-  typography,
-  textStyles,
-  shadows,
-  motion,
-  minTouchTarget,
-  iconSize,
-  controlHeight,
-} as const
-
-export type Theme = typeof theme

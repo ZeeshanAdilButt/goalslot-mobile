@@ -56,17 +56,3 @@ export const shadows = {
   subtle: foundationShadows.subtle,
   raised: foundationShadows.raised,
 } as const
-
-export const tokens = {
-  colors,
-  spacing,
-  radii,
-  typography,
-  shadows,
-  minTouchTarget,
-  motion,
-  iconSize,
-  controlHeight,
-} as const
-
-export type Tokens = typeof tokens
