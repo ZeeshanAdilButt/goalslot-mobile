@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "633803765672",
+    "project_id": "goalslot-mobile",
+    "storage_bucket": "goalslot-mobile.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:633803765672:android:39a3e303eaf429c8930f9d",
+        "android_client_info": {
+          "package_name": "io.goalslot.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDsdenJ1p1TvHv19KWqTMZ4DfUbZJLS2yQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
