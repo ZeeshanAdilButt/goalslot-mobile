@@ -983,7 +983,8 @@ var COACH_PROPOSAL_ACTION_TYPES = [
   "DELETE_TASK",
   "CREATE_PRACTICE",
   "START_TIMER",
-  "STOP_TIMER"
+  "STOP_TIMER",
+  "APPEND_JOURNAL_ENTRY"
 ];
 var COACH_VOICE_INTENT_TYPES = [
   "START_TRACKING",
@@ -2308,7 +2309,22 @@ var ACTION_TYPE_SYNONYMS = {
   BEGIN_TIMER: "START_TIMER",
   TRACK_TIME: "START_TIMER",
   STOP_TRACKING: "STOP_TIMER",
-  END_TIMER: "STOP_TIMER"
+  END_TIMER: "STOP_TIMER",
+  // The journal action is append-only, so every verb the model reaches for —
+  // create, add, update, write — maps onto the same canonical type. Mapping
+  // UPDATE_/SET_ here is deliberate and safe in one direction only: the
+  // executor appends, so a model that meant "replace today's entry" gets an
+  // extra paragraph instead, and nothing the user wrote is lost. The reverse
+  // (dropping the action because the model said UPDATE) is what the user
+  // spent two rounds reporting as "it still cannot add entries to my
+  // journal", so near-misses are spelled out generously here.
+  CREATE_JOURNAL_ENTRY: "APPEND_JOURNAL_ENTRY",
+  ADD_JOURNAL_ENTRY: "APPEND_JOURNAL_ENTRY",
+  UPDATE_JOURNAL_ENTRY: "APPEND_JOURNAL_ENTRY",
+  APPEND_JOURNAL: "APPEND_JOURNAL_ENTRY",
+  ADD_JOURNAL: "APPEND_JOURNAL_ENTRY",
+  WRITE_JOURNAL: "APPEND_JOURNAL_ENTRY",
+  JOURNAL_ENTRY: "APPEND_JOURNAL_ENTRY"
 };
 function normalizeCoachActionType(raw) {
   if (typeof raw !== "string") return null;
@@ -2388,6 +2404,17 @@ function collapseMultiDayBlocks(actions) {
   }
   return out;
 }
+var ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function fillJournalDates(actions) {
+  return actions.map((action) => {
+    if (action.type !== "APPEND_JOURNAL_ENTRY") return action;
+    const payload = action.payload ?? {};
+    const date = payload.date;
+    if (typeof date === "string" && ISO_DATE.test(date.trim())) return action;
+    if (date !== void 0 && date !== null && date !== "") return action;
+    return { ...action, payload: { ...payload, date: todayKey() } };
+  });
+}
 function extractCoachProposals(raw) {
   if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: false };
   const proposals = [];
@@ -2401,7 +2428,7 @@ function extractCoachProposals(raw) {
           const type = normalizeCoachActionType(a.type);
           return type ? { ...a, type } : null;
         }).filter((a) => a !== null);
-        const actions = collapseMultiDayBlocks(normalized);
+        const actions = fillJournalDates(collapseMultiDayBlocks(normalized));
         if (actions.length) {
           proposals.push({
             summary: typeof parsed.summary === "string" ? parsed.summary : void 0,

@@ -24,7 +24,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { CoachProposalAction, CoachProposalResult } from "@goalslot/shared";
 
 import { apiClient } from "@/lib/api-client";
-import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 
 export interface ApplyProposalsInput {
@@ -62,17 +62,23 @@ export function summariseProposalResults(results: readonly CoachProposalResult[]
 
 /**
  * Every domain a proposal action can touch. Invalidated wholesale rather
- * than surgically: the action types span goals, tasks, schedule blocks and
- * time entries, several of them cascade server-side (a time entry moves a
- * goal's logged hours), and one batch can carry a mix. Working out the
- * minimal set per batch would be a lot of care spent to avoid four refetches
- * the user is already waiting on a round trip for.
+ * than surgically: the action types span goals, tasks, schedule blocks, time
+ * entries and journal entries, several of them cascade server-side (a time
+ * entry moves a goal's logged hours), and one batch can carry a mix. Working
+ * out the minimal set per batch would be a lot of care spent to avoid five
+ * refetches the user is already waiting on a round trip for.
+ *
+ * The journal keys cover APPEND_JOURNAL_ENTRY, and the whole `['journal']`
+ * root is invalidated rather than just the one day: the action's date is not
+ * necessarily today (the user can ask for a past day), and the Journal tab
+ * reads both a by-date entry and a date-range list.
  */
 function invalidateEverythingAProposalCanTouch(): void {
   void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
   void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
   void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
   void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+  void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
 }
 
 export interface UseApplyCoachProposalsResult {

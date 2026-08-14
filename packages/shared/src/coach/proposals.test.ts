@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { extractCoachProposals, normalizeCoachActionType } from './proposals'
+import { todayKey } from '../scheduling/time'
 
 describe('normalizeCoachActionType', () => {
   it('accepts a canonical type as-is', () => {
@@ -36,6 +37,25 @@ describe('normalizeCoachActionType', () => {
     ['END_TIMER', 'STOP_TIMER'],
   ])('maps the near-miss %s to %s', (raw, expected) => {
     expect(normalizeCoachActionType(raw)).toBe(expected)
+  })
+
+  it('accepts the journal append type', () => {
+    expect(normalizeCoachActionType('APPEND_JOURNAL_ENTRY')).toBe('APPEND_JOURNAL_ENTRY')
+  })
+
+  // The action the user reported twice as not working. The model reaches for
+  // all of these names, and an unmapped one is dropped silently — which is
+  // exactly what "it still cannot add entries to my journal" looked like.
+  it.each([
+    'CREATE_JOURNAL_ENTRY',
+    'ADD_JOURNAL_ENTRY',
+    'UPDATE_JOURNAL_ENTRY',
+    'APPEND_JOURNAL',
+    'ADD_JOURNAL',
+    'WRITE_JOURNAL',
+    'JOURNAL_ENTRY',
+  ])('maps the journal near-miss %s to APPEND_JOURNAL_ENTRY', (raw) => {
+    expect(normalizeCoachActionType(raw)).toBe('APPEND_JOURNAL_ENTRY')
   })
 
   it('maps a lowercase timer near-miss, as dictated input tends to arrive', () => {
@@ -118,16 +138,17 @@ describe('extractCoachProposals', () => {
     expect(unrenderable).toBe(false)
   })
 
-  it('flags unrenderable when every action in the block is an unknown type (the journal-entry bug)', () => {
-    // This is the shape of the real bug: the model claims it prepared a
-    // proposal for something with no corresponding action type (journal
-    // entries aren't a coach-proposal action at all), so every action in the
-    // block fails to normalize and the block would otherwise vanish with no
-    // trace, leaving the assistant's "I've prepared a proposal" text as the
-    // only thing on screen.
+  it('flags unrenderable when every action in the block is an unknown type', () => {
+    // This is the shape of the original journal bug: the model claims it
+    // prepared a proposal for something with no corresponding action type, so
+    // every action fails to normalize and the block would otherwise vanish
+    // with no trace, leaving the assistant's "I've prepared a proposal" text
+    // as the only thing on screen. Journal entries ARE an action now
+    // (APPEND_JOURNAL_ENTRY), so this uses a type that genuinely isn't one —
+    // the flag has to keep working for whatever the model invents next.
     const raw = [
       '```coach-proposal',
-      '{"summary":"Add journal entry","actions":[{"type":"CREATE_JOURNAL_ENTRY","payload":{"content":"Great workout"}}]}',
+      '{"summary":"Archive it","actions":[{"type":"ARCHIVE_GOAL","payload":{"id":"g1"}}]}',
       '```',
     ].join('\n')
 
@@ -213,5 +234,86 @@ describe('extractCoachProposals', () => {
     const { unrenderable, pending } = extractCoachProposals(raw)
     expect(pending).toBe(true)
     expect(unrenderable).toBe(false)
+  })
+})
+
+describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
+  it('renders a journal append as a real proposal instead of dropping it', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"summary":"Add to today\'s journal","actions":[{"type":"APPEND_JOURNAL_ENTRY","payload":{"content":"Felt scattered all afternoon."}}]}',
+      '```',
+      "I've put that in today's journal for you to approve.",
+    ].join('\n')
+
+    const { proposals, unrenderable, cleaned } = extractCoachProposals(raw)
+    expect(unrenderable).toBe(false)
+    expect(proposals).toHaveLength(1)
+    expect(proposals[0].actions[0].type).toBe('APPEND_JOURNAL_ENTRY')
+    expect(proposals[0].actions[0].payload?.content).toBe('Felt scattered all afternoon.')
+    expect(cleaned).toBe("I've put that in today's journal for you to approve.")
+  })
+
+  it("fills in the device's local day when the model omitted the date", () => {
+    // The server's own fallback is UTC, which is the wrong calendar day for a
+    // user far enough east or west — see fillJournalDates.
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"APPEND_JOURNAL_ENTRY","payload":{"content":"No date given."}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0].actions[0].payload?.date).toBe(todayKey())
+  })
+
+  it('leaves a date the model explicitly named alone', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"APPEND_JOURNAL_ENTRY","payload":{"content":"Monday was better.","date":"2026-08-10"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0].actions[0].payload?.date).toBe('2026-08-10')
+  })
+
+  it('leaves a malformed date alone so the server rejects it loudly', () => {
+    // Quietly rewriting "yesterday" to today would put the paragraph on a day
+    // the user did not ask for, which is worse than a visible failure.
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"APPEND_JOURNAL_ENTRY","payload":{"content":"Hi","date":"yesterday"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0].actions[0].payload?.date).toBe('yesterday')
+  })
+
+  it('normalizes the model near-miss type and still fills the date', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"CREATE_JOURNAL_ENTRY","payload":{"content":"Great workout"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBe(false)
+    expect(proposals[0].actions[0]).toEqual({
+      type: 'APPEND_JOURNAL_ENTRY',
+      payload: { content: 'Great workout', date: todayKey() },
+    })
+  })
+
+  it('does not touch the payload of any other action type', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"CREATE_TASK","payload":{"title":"Ship it"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0].actions[0].payload).toEqual({ title: 'Ship it' })
   })
 })

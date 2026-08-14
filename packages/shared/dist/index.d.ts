@@ -1314,7 +1314,7 @@ interface CoachStreamChunk {
     };
     error?: string;
 }
-type CoachProposalActionType = 'RENAME_GOAL' | 'UPDATE_GOAL' | 'CREATE_GOAL' | 'DELETE_GOAL' | 'CREATE_SCHEDULE_BLOCK' | 'UPDATE_SCHEDULE_BLOCK' | 'DELETE_SCHEDULE_BLOCK' | 'CREATE_TIME_ENTRY' | 'UPDATE_TIME_ENTRY' | 'DELETE_TIME_ENTRY' | 'CREATE_TASK' | 'UPDATE_TASK' | 'DELETE_TASK' | 'CREATE_PRACTICE' | 'START_TIMER' | 'STOP_TIMER';
+type CoachProposalActionType = 'RENAME_GOAL' | 'UPDATE_GOAL' | 'CREATE_GOAL' | 'DELETE_GOAL' | 'CREATE_SCHEDULE_BLOCK' | 'UPDATE_SCHEDULE_BLOCK' | 'DELETE_SCHEDULE_BLOCK' | 'CREATE_TIME_ENTRY' | 'UPDATE_TIME_ENTRY' | 'DELETE_TIME_ENTRY' | 'CREATE_TASK' | 'UPDATE_TASK' | 'DELETE_TASK' | 'CREATE_PRACTICE' | 'START_TIMER' | 'STOP_TIMER' | 'APPEND_JOURNAL_ENTRY';
 /**
  * Runtime source-of-truth for the action types the API accepts (mirrors
  * dw-time-api's COACH_ACTION_TYPES in
@@ -2945,15 +2945,17 @@ interface ExtractedCoachProposals {
      * zero renderable proposals: malformed/non-JSON content, no `actions`
      * array, an empty one, or every action's `type` failing to normalize to a
      * known CoachProposalActionType (e.g. the model hallucinating a type like
-     * "CREATE_JOURNAL_ENTRY" that has no client- or server-side handling).
+     * "ARCHIVE_GOAL" that has no client- or server-side handling).
      *
      * Without this flag that case is indistinguishable from "no proposal was
      * ever intended" — the block is stripped from `cleaned` either way, so the
      * assistant's prose can say "I've prepared a proposal" while nothing
-     * renders for the user to review or apply. A real user hit exactly this
-     * (asking the Coach to add a journal entry, a proposal action type that
-     * doesn't exist). Callers should surface this as a visible inline notice
-     * instead of the previous silent no-op.
+     * renders for the user to review or apply. A real user hit exactly this by
+     * asking the Coach to add a journal entry back when journal writes were not
+     * a proposal action at all; they now are (APPEND_JOURNAL_ENTRY, mapped from
+     * the model's usual near-misses in ACTION_TYPE_SYNONYMS above), but the flag
+     * still has to exist for the next type the model invents. Callers should
+     * surface it as a visible inline notice instead of a silent no-op.
      */
     unrenderable: boolean;
 }

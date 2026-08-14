@@ -29,6 +29,7 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
+import { todayKey } from "@goalslot/shared";
 import type {
   CoachProposalAction,
   CoachProposalActionType,
@@ -62,6 +63,11 @@ const ACTION_LABELS: Record<CoachProposalActionType, string> = {
   CREATE_PRACTICE: "Add active practice",
   START_TIMER: "Start live timer",
   STOP_TIMER: "Stop live timer",
+  // "Add to", not "Write" or "Update" — the label is the user's only summary
+  // of what Apply does, and this action can only ever append (see the API's
+  // CoachJournalService.appendContent). A label implying a replace would
+  // promise something the backend deliberately refuses to do.
+  APPEND_JOURNAL_ENTRY: "Add to journal",
 };
 
 const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>([
@@ -94,6 +100,18 @@ function readString(payload: Record<string, unknown>, key: string): string | nul
 
 function readDayName(value: unknown): string | null {
   return typeof value === "number" ? DAY_NAMES[((value % 7) + 7) % 7] ?? null : null;
+}
+
+/**
+ * Cap a piece of model-authored prose so one dictated paragraph can't run the
+ * detail line to several hundred characters. The row is line-clamped in the
+ * UI anyway, but the same string is reused in the destructive-batch alert
+ * (see describeDeletions), where nothing clamps it.
+ */
+const DETAIL_TEXT_LIMIT = 140;
+
+function clamp(text: string): string {
+  return text.length <= DETAIL_TEXT_LIMIT ? text : `${text.slice(0, DETAIL_TEXT_LIMIT - 1).trimEnd()}…`;
 }
 
 /**
@@ -235,6 +253,21 @@ function describeProposalAction(
     return target
       ? `Stops the running timer and logs the time to "${target}"`
       : "Stops the running timer and saves the elapsed time as an entry";
+  }
+
+  // The journal append also carries none of the fields the generic path looks
+  // for — its payload is a paragraph of prose and a date, no title and no id.
+  // Show the words themselves: this is a card asking permission to write in
+  // the user's own diary, in their own voice, and the only question they can
+  // meaningfully answer is "is that what I meant to say". The date is always
+  // present by the time a card renders (extractCoachProposals fills in the
+  // device's local day when the model omitted it), but the fallback below
+  // still reads as a sentence if it somehow isn't.
+  if (action.type === "APPEND_JOURNAL_ENTRY") {
+    const content = readString(payload, "content");
+    const date = readString(payload, "date");
+    const day = date === null || date === todayKey() ? "today's entry" : `your ${date} entry`;
+    return content === null ? `Adds a paragraph to ${day}` : `Adds to ${day}: "${clamp(content)}"`;
   }
 
   const bits: string[] = [];

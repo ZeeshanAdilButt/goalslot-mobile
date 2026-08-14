@@ -64,6 +64,16 @@ export type CoachProposalActionType =
   // where the duration isn't known until the user stops.
   | 'START_TIMER'
   | 'STOP_TIMER'
+  // Adds a paragraph to a day's journal entry — payload
+  // `{ content: string; date?: 'YYYY-MM-DD' }`, no id. APPEND-ONLY: the
+  // backend joins `content` onto whatever the entry already holds rather
+  // than replacing it, matching the voice fast-path's APPEND_JOURNAL intent
+  // (see ../voice/intent.ts and apps/mobile's voice.tsx) so a line dictated
+  // into the microphone and a line the Coach adds from chat are
+  // indistinguishable once they land. `date` is normally filled in by
+  // extractCoachProposals from the DEVICE's local day — see
+  // ../coach/proposals.ts — because the server's own fallback is UTC.
+  | 'APPEND_JOURNAL_ENTRY'
 
 /**
  * Runtime source-of-truth for the action types the API accepts (mirrors
@@ -93,6 +103,7 @@ export const COACH_PROPOSAL_ACTION_TYPES: readonly CoachProposalActionType[] = [
   'CREATE_PRACTICE',
   'START_TIMER',
   'STOP_TIMER',
+  'APPEND_JOURNAL_ENTRY',
 ]
 
 export interface CoachProposalAction {

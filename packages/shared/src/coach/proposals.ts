@@ -21,6 +21,7 @@ import {
   type CoachProposalActionType,
   type CoachProposalBlock,
 } from '../api/coach'
+import { todayKey } from '../scheduling/time'
 
 const VALID_ACTION_TYPES = new Set<string>(COACH_PROPOSAL_ACTION_TYPES)
 
@@ -60,6 +61,21 @@ const ACTION_TYPE_SYNONYMS: Record<string, CoachProposalActionType> = {
   TRACK_TIME: 'START_TIMER',
   STOP_TRACKING: 'STOP_TIMER',
   END_TIMER: 'STOP_TIMER',
+  // The journal action is append-only, so every verb the model reaches for —
+  // create, add, update, write — maps onto the same canonical type. Mapping
+  // UPDATE_/SET_ here is deliberate and safe in one direction only: the
+  // executor appends, so a model that meant "replace today's entry" gets an
+  // extra paragraph instead, and nothing the user wrote is lost. The reverse
+  // (dropping the action because the model said UPDATE) is what the user
+  // spent two rounds reporting as "it still cannot add entries to my
+  // journal", so near-misses are spelled out generously here.
+  CREATE_JOURNAL_ENTRY: 'APPEND_JOURNAL_ENTRY',
+  ADD_JOURNAL_ENTRY: 'APPEND_JOURNAL_ENTRY',
+  UPDATE_JOURNAL_ENTRY: 'APPEND_JOURNAL_ENTRY',
+  APPEND_JOURNAL: 'APPEND_JOURNAL_ENTRY',
+  ADD_JOURNAL: 'APPEND_JOURNAL_ENTRY',
+  WRITE_JOURNAL: 'APPEND_JOURNAL_ENTRY',
+  JOURNAL_ENTRY: 'APPEND_JOURNAL_ENTRY',
 }
 
 /**
@@ -162,6 +178,38 @@ function collapseMultiDayBlocks(actions: CoachProposalAction[]): CoachProposalAc
   return out
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Stamp the DEVICE's local day onto any APPEND_JOURNAL_ENTRY that didn't name
+ * one, so the Coach writes to the same entry the Journal tab and the
+ * microphone button consider "today".
+ *
+ * This is not belt-and-braces — it decides which day gets written. The model
+ * is told to omit `date` for today (it is not reliably given today's date in
+ * its context, so a guess would be worse), and the API's own fallback is
+ * `new Date().toISOString().slice(0, 10)`, i.e. UTC. For a user far enough
+ * east or west that is a different calendar day from the one their Journal
+ * tab is showing, and "the Coach said it added it, but my journal is empty"
+ * is precisely the complaint this whole feature exists to fix. `todayKey()`
+ * is the same local-day function journal.tsx and voice.tsx both use.
+ *
+ * A `date` the model DID send is left exactly as it is (that is the user
+ * naming a specific past day), and so is a malformed one — the server
+ * validates the format and failing the action loudly beats quietly
+ * rewriting the user's intent to "today".
+ */
+function fillJournalDates(actions: CoachProposalAction[]): CoachProposalAction[] {
+  return actions.map((action) => {
+    if (action.type !== 'APPEND_JOURNAL_ENTRY') return action
+    const payload = (action.payload ?? {}) as Record<string, unknown>
+    const date = payload.date
+    if (typeof date === 'string' && ISO_DATE.test(date.trim())) return action
+    if (date !== undefined && date !== null && date !== '') return action
+    return { ...action, payload: { ...payload, date: todayKey() } }
+  })
+}
+
 export interface ExtractedCoachProposals {
   /** The assistant's message text with all ```coach-proposal blocks removed. */
   cleaned: string
@@ -174,15 +222,17 @@ export interface ExtractedCoachProposals {
    * zero renderable proposals: malformed/non-JSON content, no `actions`
    * array, an empty one, or every action's `type` failing to normalize to a
    * known CoachProposalActionType (e.g. the model hallucinating a type like
-   * "CREATE_JOURNAL_ENTRY" that has no client- or server-side handling).
+   * "ARCHIVE_GOAL" that has no client- or server-side handling).
    *
    * Without this flag that case is indistinguishable from "no proposal was
    * ever intended" — the block is stripped from `cleaned` either way, so the
    * assistant's prose can say "I've prepared a proposal" while nothing
-   * renders for the user to review or apply. A real user hit exactly this
-   * (asking the Coach to add a journal entry, a proposal action type that
-   * doesn't exist). Callers should surface this as a visible inline notice
-   * instead of the previous silent no-op.
+   * renders for the user to review or apply. A real user hit exactly this by
+   * asking the Coach to add a journal entry back when journal writes were not
+   * a proposal action at all; they now are (APPEND_JOURNAL_ENTRY, mapped from
+   * the model's usual near-misses in ACTION_TYPE_SYNONYMS above), but the flag
+   * still has to exist for the next type the model invents. Callers should
+   * surface it as a visible inline notice instead of a silent no-op.
    */
   unrenderable: boolean
 }
@@ -225,8 +275,9 @@ export function extractCoachProposals(raw: string): ExtractedCoachProposals {
           })
           .filter((a): a is CoachProposalAction => a !== null)
         // Fold per-day repeats into compact multi-day actions so a full week
-        // fits under the apply cap even when the model emits one block per day.
-        const actions = collapseMultiDayBlocks(normalized)
+        // fits under the apply cap even when the model emits one block per day,
+        // then pin any dateless journal append to the device's local day.
+        const actions = fillJournalDates(collapseMultiDayBlocks(normalized))
         if (actions.length) {
           proposals.push({
             summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
@@ -234,9 +285,9 @@ export function extractCoachProposals(raw: string): ExtractedCoachProposals {
           })
         } else {
           // Every action in the block failed to normalize (e.g. all of them
-          // were an unknown type like "CREATE_JOURNAL_ENTRY"). The model
-          // believed it emitted a real proposal; the user must be told
-          // nothing came of it rather than seeing silence.
+          // were an unknown type like "ARCHIVE_GOAL"). The model believed it
+          // emitted a real proposal; the user must be told nothing came of it
+          // rather than seeing silence.
           unrenderable = true
         }
       } else {
