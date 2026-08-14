@@ -51,15 +51,36 @@ const SKELETON_CARDS_PER_COLUMN = 3;
 
 export interface TaskBoardProps {
   tasks: Task[];
-  onComplete: (task: Task) => void;
+  /**
+   * Completes a live task, or restores a DONE one — the board's cards carry
+   * the same two-way checkbox the list rows do, so a card sitting in the Done
+   * column can be un-ticked in place instead of only through the Move sheet.
+   */
+  onToggleComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onMove: (task: Task) => void;
+  /**
+   * Opens the screen's delete confirmation. The board had no delete route at
+   * all before this — delete existed only on the list view's swipe — so the
+   * two views disagreed about what you could do to a task depending on which
+   * toggle you happened to be on. The screen owns the dialog and the mutation
+   * (app/(app)/tasks.tsx's `requestDelete`), so both routes are one flow.
+   */
+  onDelete: (task: Task) => void;
   /** Pull-to-refresh, wired onto every column's list. */
   refreshing: boolean;
   onRefresh: () => void;
 }
 
-export function TaskBoard({ tasks, onComplete, onEdit, onMove, refreshing, onRefresh }: TaskBoardProps) {
+export function TaskBoard({
+  tasks,
+  onToggleComplete,
+  onEdit,
+  onMove,
+  onDelete,
+  refreshing,
+  onRefresh,
+}: TaskBoardProps) {
   const columnWidth = useColumnWidth();
   const columns = useMemo(() => buildBoardColumns(tasks), [tasks]);
 
@@ -91,9 +112,10 @@ export function TaskBoard({ tasks, onComplete, onEdit, onMove, refreshing, onRef
               column={column}
               width={columnWidth}
               height={boardHeight}
-              onComplete={onComplete}
+              onToggleComplete={onToggleComplete}
               onEdit={onEdit}
               onMove={onMove}
+              onDelete={onDelete}
               refreshing={refreshing}
               onRefresh={onRefresh}
             />
@@ -108,9 +130,10 @@ interface BoardColumnProps {
   column: BoardColumnData;
   width: number;
   height: number;
-  onComplete: (task: Task) => void;
+  onToggleComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onMove: (task: Task) => void;
+  onDelete: (task: Task) => void;
   refreshing: boolean;
   onRefresh: () => void;
 }
@@ -119,9 +142,10 @@ function BoardColumn({
   column,
   width,
   height,
-  onComplete,
+  onToggleComplete,
   onEdit,
   onMove,
+  onDelete,
   refreshing,
   onRefresh,
 }: BoardColumnProps) {
@@ -133,13 +157,14 @@ function BoardColumn({
           tone={column.tone}
           columnTitle={column.title}
           index={index}
-          onComplete={onComplete}
+          onToggleComplete={onToggleComplete}
           onEdit={onEdit}
           onMove={onMove}
+          onDelete={onDelete}
         />
       </View>
     ),
-    [column.title, column.tone, onComplete, onEdit, onMove],
+    [column.title, column.tone, onDelete, onEdit, onMove, onToggleComplete],
   );
 
   return (

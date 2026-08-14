@@ -3,10 +3,27 @@
 // (src/features/tasks/components/tasks-view.tsx:100 and :151-176, a
 // Board/List toggle over one `tasks` array):
 //
-//   LIST  — swipe-left-to-reveal-complete, swipe-right-to-reveal
-//           reschedule/delete, tap-the-row-to-edit, grouped by status.
+//   LIST  — swipe-left-to-reveal-complete (Restore on a DONE row),
+//           swipe-right-to-reveal reschedule/delete, tap-the-row-to-edit,
+//           grouped by status.
 //   BOARD — the four status columns as a horizontal pager. See
 //           src/components/tasks/TaskBoard.tsx.
+//
+// COMPLETION IS A TWO-WAY TOGGLE on both views. It used not to be: the
+// checkbox was `disabled` once a task was DONE, the complete-swipe rendered
+// nothing, and EditTaskSheet has no status field — so the only route back from
+// DONE was switching to Board and using the Move sheet. Both directions are
+// real API operations (POST /complete, POST /restore), and a control whose
+// `accessibilityRole` is "checkbox" promises a two-way toggle, so both the
+// checkbox and the left-swipe now flip whichever way the task's status calls
+// for. See `handleToggleComplete` and components/tasks/task-actions.ts.
+//
+// DELETE IS CONFIRMED, from either view, through one screen-level themed
+// `ConfirmDialog` (never `Alert.alert` — see ConfirmDialog.tsx's own header).
+// `DELETE /tasks/:id` is a HARD delete and `POST /restore` only un-completes,
+// so a swipe plus a tap used to destroy a task outright with nothing to undo
+// it. The dialog lives here rather than in the row/card so the list swipe and
+// the board card's Delete button are literally the same flow.
 //
 // List is the default rather than web's Board: it's the view this screen has
 // always opened on, it's the one that carries the swipe gestures, and a
@@ -74,12 +91,15 @@ import {
 } from "@/components/lists";
 import {
   BOARD_COLUMNS,
+  describeTaskDelete,
+  taskCompletionAction,
   TaskBoard,
   TaskBoardSkeleton,
   TaskGoalFilter,
   TaskMetaChips,
   type GoalFilterOption,
 } from "@/components/tasks";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { offlineSync, outbox, queueOfflineEdit } from "@/lib/offline";
@@ -322,33 +342,70 @@ export default function TasksScreen() {
     [analytics, patchTask, restoreSnapshot],
   );
 
-  const handleDelete = useCallback(
-    async (task: Task) => {
-      const previous = removeTask(task.id);
+  // The task the delete confirmation is asking about. Held as the whole task,
+  // not an id: `confirmDelete` removes the row from the cache optimistically
+  // while the dialog is still on screen (busy, and possibly about to show an
+  // error), so an id would leave the dialog with nothing to render its copy
+  // from. Same construction as components/timer/SessionHistory.tsx.
+  const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-      try {
-        await apiClient.tasks.delete(task.id);
-        void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
-        analytics.track({ name: "taskDeleted", payload: { taskId: task.id } });
-      } catch (err) {
-        const queued = await queueOfflineEdit("task-delete", { id: task.id }, err);
-        if (queued) {
-          // Reappears rather than staying gone — a delete that hasn't
-          // happened yet shouldn't look like it already did — tagged
-          // pending so it's clear the removal is only queued.
-          queryClient.setQueryData<Task[]>(
-            listQueryKey,
-            (previous ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
-          );
-          notify("Queued — will sync when online", "offline");
-        } else {
-          restoreSnapshot(previous);
-          Alert.alert("Couldn't delete task", "Please try again.");
-        }
+  /** Both the list swipe and the board card's Delete button land here. */
+  const requestDelete = useCallback((task: Task) => {
+    setDeleteError(null);
+    setPendingDelete(task);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
+
+  /**
+   * Snapshot -> optimistic removal -> live DELETE -> invalidate on success,
+   * the same shape as every other mutation on this screen. The one difference
+   * from what this used to be (an unconfirmed `handleDelete` wired straight to
+   * the swipe button) is where a genuine server rejection reports: inline,
+   * inside the dialog that is already open, with the primary button back at
+   * idle so the user can just try again — rather than an `Alert.alert` landing
+   * on a row that has already vanished.
+   */
+  const confirmDelete = useCallback(async () => {
+    const task = pendingDelete;
+    if (!task || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    const previous = removeTask(task.id);
+
+    try {
+      await apiClient.tasks.delete(task.id);
+      void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
+      analytics.track({ name: "taskDeleted", payload: { taskId: task.id } });
+      setPendingDelete(null);
+    } catch (err) {
+      const queued = await queueOfflineEdit("task-delete", { id: task.id }, err);
+      if (queued) {
+        // Reappears rather than staying gone — a delete that hasn't
+        // happened yet shouldn't look like it already did — tagged
+        // pending so it's clear the removal is only queued.
+        queryClient.setQueryData<Task[]>(
+          listQueryKey,
+          (previous ?? []).map((t) => (t.id === task.id ? { ...t, pendingSync: true } : t)),
+        );
+        notify("Queued — will sync when online", "offline");
+        setPendingDelete(null);
+      } else {
+        restoreSnapshot(previous);
+        setDeleteError("Couldn't delete that task. Please try again.");
       }
-    },
-    [analytics, listQueryKey, removeTask, restoreSnapshot],
-  );
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [analytics, deleteBusy, listQueryKey, pendingDelete, removeTask, restoreSnapshot]);
 
   const handleReschedule = useCallback(
     async (task: Task, dueDate: string) => {
@@ -464,6 +521,30 @@ export default function TasksScreen() {
     [handleComplete, patchTask, restoreSnapshot],
   );
 
+  /**
+   * The checkbox and the left-swipe, in whichever direction the task's status
+   * calls for (components/tasks/task-actions.ts decides the copy for the same
+   * split).
+   *
+   * Un-completing routes through `handleMoveToStatus(task, "TODO")` rather
+   * than calling `apiClient.tasks.restore` directly, so the list view inherits
+   * that function's whole DONE-boundary contract for free — the optimistic
+   * clearing of `completedAt`/`actualMinutes`, the offline `task-restore`
+   * queueing, the rollback — instead of a second, subtly different copy of it
+   * living here. TODO is not a choice this makes: `POST /restore` always lands
+   * the task there.
+   */
+  const handleToggleComplete = useCallback(
+    (task: Task) => {
+      if (task.status === "DONE") {
+        void handleMoveToStatus(task, "TODO");
+        return;
+      }
+      void handleComplete(task);
+    },
+    [handleComplete, handleMoveToStatus],
+  );
+
   const openReschedule = useCallback((task: Task) => {
     setRescheduleTarget(task);
     rescheduleSheetRef.current?.present();
@@ -537,14 +618,14 @@ export default function TasksScreen() {
         <TaskRow
           task={item.task}
           index={item.indexInGroup}
-          onComplete={handleComplete}
-          onDelete={handleDelete}
+          onToggleComplete={handleToggleComplete}
+          onDelete={requestDelete}
           onReschedule={openReschedule}
           onEdit={openEdit}
         />
       );
     },
-    [handleComplete, handleDelete, openEdit, openReschedule],
+    [handleToggleComplete, openEdit, openReschedule, requestDelete],
   );
 
   // `isPending`, never `isLoading`: with the persisted query cache, a warm
@@ -613,9 +694,10 @@ export default function TasksScreen() {
     content = (
       <TaskBoard
         tasks={filteredTasks}
-        onComplete={handleComplete}
+        onToggleComplete={handleToggleComplete}
         onEdit={openEdit}
         onMove={openMove}
+        onDelete={requestDelete}
         refreshing={isFetching && !isPending}
         onRefresh={refetch}
       />
@@ -635,6 +717,8 @@ export default function TasksScreen() {
       />
     );
   }
+
+  const deleteCopy = pendingDelete ? describeTaskDelete(pendingDelete) : null;
 
   return (
     // edges={["top"]} — the layout renders `headerShown: false` for every
@@ -768,6 +852,24 @@ export default function TasksScreen() {
           })}
         </BottomSheetView>
       </BottomSheetModal>
+
+      {/* One dialog for both views — the list's Delete swipe and the board
+          card's Delete button both call `requestDelete`, so the two paths
+          can't drift apart. Rendered outside the two BottomSheetModals
+          because it is a Modal of its own and has no relationship to either
+          sheet's lifecycle. */}
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title={deleteCopy?.title ?? "Delete this task?"}
+        description={deleteCopy?.description}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
     </SafeAreaView>
   );
 }
@@ -779,7 +881,9 @@ function renderBackdrop(props: BottomSheetBackdropProps) {
 interface TaskRowProps {
   task: Task;
   index: number;
-  onComplete: (task: Task) => void;
+  /** Completes a live task, or sends a DONE one back to To Do — see `taskCompletionAction`. */
+  onToggleComplete: (task: Task) => void;
+  /** Opens the confirmation; the screen owns the dialog and the mutation. */
   onDelete: (task: Task) => void;
   onReschedule: (task: Task) => void;
   onEdit: (task: Task) => void;
@@ -789,28 +893,35 @@ interface TaskRowProps {
 // handlers, so without this every card re-rendered on every list-view
 // re-render (a status change elsewhere in the list, a background refetch)
 // rather than only when its own task/index changed.
-const TaskRow = memo(function TaskRow({ task, index, onComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
+const TaskRow = memo(function TaskRow({ task, index, onToggleComplete, onDelete, onReschedule, onEdit }: TaskRowProps) {
   const swipeableRef = useRef<Swipeable>(null);
   const isDone = task.status === "DONE";
   const tone = taskStatusTone(task.status);
+  const completion = taskCompletionAction(task);
 
-  const renderLeftActions = useCallback(() => {
-    if (isDone) return null;
-    return (
+  // A DONE row used to render NOTHING here, which left the gesture dead: the
+  // row still swiped open and then sat there with a blank panel. It now
+  // reveals Restore instead, so the left swipe means one consistent thing —
+  // "flip this task's done-ness" — in both directions, and matches what the
+  // checkbox on the same row does.
+  const renderLeftActions = useCallback(
+    () => (
       <Pressable
-        style={[styles.swipeAction, styles.completeAction]}
+        style={[styles.swipeAction, isDone ? styles.restoreAction : styles.completeAction]}
         onPress={() => {
           swipeableRef.current?.close();
-          onComplete(task);
+          onToggleComplete(task);
         }}
         accessibilityRole="button"
-        accessibilityLabel={`Complete "${task.title}"`}
+        accessibilityLabel={completion.accessibilityLabel}
+        accessibilityHint={completion.accessibilityHint}
       >
-        <Icon name="check" size={18} color={colors.successForeground} />
-        <Text style={styles.swipeActionText}>Complete</Text>
+        <Icon name={completion.icon} size={18} color={colors.white} />
+        <Text style={styles.swipeActionText}>{completion.label}</Text>
       </Pressable>
-    );
-  }, [isDone, onComplete, task]);
+    ),
+    [completion, isDone, onToggleComplete, task],
+  );
 
   const renderRightActions = useCallback(
     () => (
@@ -859,11 +970,14 @@ const TaskRow = memo(function TaskRow({ task, index, onComplete, onDelete, onRes
           contentStyle={styles.cardContent}
         >
           <View style={styles.rowTop}>
+            {/* No `disabled={isDone}` any more: the box is a checkbox, and a
+                checkbox that can only ever be ticked has no way back and
+                mis-announces itself to a screen reader. Unticking it restores
+                the task to To Do. */}
             <CompleteCheckbox
               checked={isDone}
-              disabled={isDone}
-              onPress={() => onComplete(task)}
-              accessibilityLabel={`Complete "${task.title}"`}
+              onPress={() => onToggleComplete(task)}
+              accessibilityLabel={completion.accessibilityLabel}
             />
 
             {/* No status pill on the row itself: the group header above
@@ -967,6 +1081,14 @@ const styles = StyleSheet.create({
   },
   completeAction: {
     backgroundColor: colors.success,
+  },
+  // Restore is the same swipe as Complete, going the other way, so it takes
+  // the same panel — just not the green one, which on a row that is already
+  // ticked would read as "complete it again". Neutral zinc says "put this
+  // back" without the alarm of the destructive red sitting on the opposite
+  // swipe.
+  restoreAction: {
+    backgroundColor: colors.mutedForeground,
   },
   rescheduleAction: {
     backgroundColor: colors.foreground,

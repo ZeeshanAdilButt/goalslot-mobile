@@ -8,10 +8,13 @@
 //   1. Web's action cluster is a hover-revealed toolbar of five icon buttons
 //      (`sm:opacity-0 sm:group-hover:opacity-100`, task-board.tsx:386). There
 //      is no hover on a phone, and five 12px glyphs are not five tap targets.
-//      What survives is the two actions a board is actually for — complete
-//      (the same springy `CompleteCheckbox` the list rows use) and change
-//      column — as full-size controls, with edit on the card body tap exactly
-//      as it already works in the list view.
+//      What survives is the three actions a board is actually for — complete
+//      (the same springy `CompleteCheckbox` the list rows use, two-way here as
+//      it is there), change column, and delete — as full-size controls, with
+//      edit on the card body tap exactly as it already works in the list view.
+//      Delete is here because it was previously reachable ONLY from the list
+//      view's swipe, so what you could do to a task depended on which view
+//      toggle you happened to be on.
 //   2. Web moves a card between columns by dragging it. Dragging a card
 //      across horizontally-paged columns on a 390pt screen fights the pager
 //      for the same gesture, so "Move" opens an explicit column picker. Same
@@ -28,6 +31,7 @@ import { CompleteCheckbox, ListCard, TONES, type Tone } from "@/components/lists
 import { Icon } from "@/components/ui/Icon";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
+import { taskCompletionAction } from "./task-actions";
 import { TaskMetaChips } from "./TaskMetaChips";
 
 /**
@@ -47,9 +51,12 @@ export interface TaskBoardCardProps {
   columnTitle: string;
   /** Position within the column; drives ListCard's entrance stagger only. */
   index: number;
-  onComplete: (task: Task) => void;
+  /** Completes a live task, or restores a DONE one — see `taskCompletionAction`. */
+  onToggleComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onMove: (task: Task) => void;
+  /** Opens the screen's delete confirmation — the same one the list swipe uses. */
+  onDelete: (task: Task) => void;
 }
 
 // Memoised: BoardColumn already hands this stable (useCallback) handlers via
@@ -62,11 +69,13 @@ export const TaskBoardCard = memo(function TaskBoardCard({
   tone,
   columnTitle,
   index,
-  onComplete,
+  onToggleComplete,
   onEdit,
   onMove,
+  onDelete,
 }: TaskBoardCardProps) {
   const isDone = task.status === "DONE";
+  const completion = taskCompletionAction(task);
 
   return (
     <ListCard
@@ -79,11 +88,12 @@ export const TaskBoardCard = memo(function TaskBoardCard({
       contentStyle={styles.content}
     >
       <View style={styles.titleRow}>
+        {/* Two-way, same as the list row's: a card in the Done column can be
+            un-ticked in place rather than only via the Move sheet. */}
         <CompleteCheckbox
           checked={isDone}
-          disabled={isDone}
-          onPress={() => onComplete(task)}
-          accessibilityLabel={`Complete "${task.title}"`}
+          onPress={() => onToggleComplete(task)}
+          accessibilityLabel={completion.accessibilityLabel}
         />
         <Text style={[styles.title, isDone && styles.titleDone]} numberOfLines={3}>
           {task.title}
@@ -102,17 +112,36 @@ export const TaskBoardCard = memo(function TaskBoardCard({
           <View style={styles.footerSpacer} />
         )}
 
-        <Pressable
-          style={styles.moveButton}
-          onPress={() => onMove(task)}
-          hitSlop={6}
-          accessibilityRole="button"
-          accessibilityLabel={`Move "${task.title}" out of ${columnTitle}`}
-          accessibilityHint="Opens the column picker"
-        >
-          <Text style={styles.moveLabel}>Move</Text>
-          <Icon name="arrow-right" size={14} color={colors.foreground} />
-        </Pressable>
+        <View style={styles.actions}>
+          {/* Icon-only, and the quieter of the two: Move is what a board is
+              for and keeps its word, while Delete gets the colour instead of
+              the width. It opens the screen's ConfirmDialog — a board card
+              has no swipe to make destructive intent explicit the way the
+              list row does, so the confirmation is the whole of the guard
+              here. */}
+          <Pressable
+            style={styles.deleteButton}
+            onPress={() => onDelete(task)}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete "${task.title}"`}
+            accessibilityHint="Asks for confirmation first"
+          >
+            <Icon name="trash" size={16} color={colors.destructive} />
+          </Pressable>
+
+          <Pressable
+            style={styles.moveButton}
+            onPress={() => onMove(task)}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Move "${task.title}" out of ${columnTitle}`}
+            accessibilityHint="Opens the column picker"
+          >
+            <Text style={styles.moveLabel}>Move</Text>
+            <Icon name="arrow-right" size={14} color={colors.foreground} />
+          </Pressable>
+        </View>
       </View>
     </ListCard>
   );
@@ -159,6 +188,26 @@ const styles = StyleSheet.create({
     ...typography.label,
     color: colors.mutedForeground,
     flexShrink: 1,
+  },
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  deleteButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    // Same 44pt floor as Move — a destructive control is the last one that
+    // should be harder to hit accurately than the thing beside it.
+    minHeight: minTouchTarget,
+    minWidth: minTouchTarget,
+    borderRadius: radii.lg,
+    // A soft rose chip rather than Move's bordered secondary one: the fill is
+    // what makes an icon-only target visible (an unfilled 44pt hit area has no
+    // edge to aim at), and dropping the border keeps it from reading as a
+    // second equally-weighted primary action beside the one a board is
+    // actually for.
+    backgroundColor: colors.destructiveMuted,
   },
   moveButton: {
     flexDirection: "row",

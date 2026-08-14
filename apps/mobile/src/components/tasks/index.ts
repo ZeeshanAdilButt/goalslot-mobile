@@ -5,6 +5,7 @@
 // Each file's header comment cites the dw-time-web file it mirrors.
 
 export * from "./board-columns";
+export * from "./task-actions";
 export * from "./TaskBoard";
 export * from "./TaskBoardCard";
 export * from "./TaskGoalFilter";
