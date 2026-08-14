@@ -685,12 +685,22 @@ export default function JournalScreen() {
           </Text>
           <Text style={styles.dateSubline} numberOfLines={1}>
             {formatDisplayDate(selectedDate)}
-            {/* The whole block above is already the tap target that jumps
-                back to today (onPress={goToToday}, disabled when already on
-                today) — this makes that affordance visible instead of
-                silent. */}
-            {!isToday ? <Text style={styles.dateSublineLink}>  ·  Jump to today</Text> : null}
           </Text>
+          {/* The whole block above is already the tap target that jumps back
+              to today (onPress={goToToday}, disabled when already on today)
+              — this makes that affordance visible instead of silent. Its own
+              Text node, not appended inline after the full date string:
+              `dateSubline` above is numberOfLines={1}, and a long locale date
+              ("Thursday, August 13, 2026") plus "  ·  Jump to today" on one
+              line regularly overflows a phone's width, so RN's own ellipsis
+              truncation was silently eating this text before it ever
+              rendered — "shows nothing" was accurate, not a bug report about
+              tapping. A second, short line can't hit that same limit. */}
+          {!isToday ? (
+            <Text style={styles.dateSublineLink} numberOfLines={1}>
+              Jump to today
+            </Text>
+          ) : null}
         </Pressable>
 
         <PressableScale

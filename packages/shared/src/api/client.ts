@@ -32,6 +32,28 @@ interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean
 }
 
+/**
+ * Neither `axios.create()` below nor the raw `axios.post` refresh call ever
+ * had a `timeout` — a request that the backend never responds to (no error,
+ * no success, just silence) left the returned promise pending forever, with
+ * nothing on the client able to notice or recover. Confirmed live: a
+ * paused, unattributed `ActiveTimerSession` (no taskId/goalId) made both
+ * POST /timer/session/stop and PATCH /timer/session hang indefinitely for
+ * one specific account, which froze the Timer screen's Stop button (and,
+ * because `stopping.current` in timer.tsx never got its `finally` to run,
+ * left it permanently disabled) with no visible error. 20s is generous for
+ * anything this API does — long enough that a slow-but-alive connection
+ * still succeeds, short enough that a genuinely stuck request surfaces as a
+ * normal, retryable network error instead of a silent, permanent hang.
+ *
+ * The refresh call gets the same timeout for a second reason: it runs
+ * inside `isRefreshing`/`failedQueue` below, and every request queued
+ * behind a 401 only ever settles when that refresh call itself settles. An
+ * unbounded refresh call would therefore wedge every other in-flight
+ * request through this same client instance, not just its own caller.
+ */
+const REQUEST_TIMEOUT_MS = 20_000
+
 interface QueuedRequest {
   resolve: (token: string | null) => void
   reject: (error: unknown) => void
@@ -46,6 +68,7 @@ export function createApiClient(config: ApiClientConfig) {
 
   const api = axios.create({
     baseURL: `${baseUrl}/api`,
+    timeout: REQUEST_TIMEOUT_MS,
     headers: {
       'Content-Type': 'application/json',
     },
@@ -132,6 +155,7 @@ export function createApiClient(config: ApiClientConfig) {
           `${baseUrl}/api/auth/refresh`,
           { refreshToken },
           {
+            timeout: REQUEST_TIMEOUT_MS,
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${refreshToken}`,
