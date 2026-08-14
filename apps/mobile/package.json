@@ -33,7 +33,6 @@
     "expo-secure-store": "~57.0.1",
     "expo-speech-recognition": "~56.0.1",
     "expo-splash-screen": "~57.0.5",
-    "expo-status-bar": "~57.0.1",
     "expo-updates": "~57.0.12",
     "lucide-react-native": "^1.30.0",
     "react": "19.2.3",

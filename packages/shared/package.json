@@ -21,8 +21,7 @@
     "axios": "^1.6.5",
     "date-fns": "^3.6.0",
     "date-fns-tz": "^3.2.0",
-    "zod": "^3.23.8",
-    "zustand": "^4.5.5"
+    "zod": "^3.23.8"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.101.0"

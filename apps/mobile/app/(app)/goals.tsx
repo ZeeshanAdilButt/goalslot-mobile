@@ -36,7 +36,9 @@ import {
   type GoalStatus,
 } from "@goalslot/shared";
 
-import { EditGoalSheet, ErrorState, QuickAddSheet, Skeleton, SkeletonCard, type EditGoalSheetRef } from "@/components";
+import { ErrorState, Skeleton, SkeletonCard } from "@/components";
+import { EditGoalSheet, type EditGoalSheetRef } from "@/components/EditGoalSheet";
+import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { Icon } from "@/components/ui/Icon";
 import { GoalCard, GoalsSummary, summariseGoals, SUMMARY_HEIGHT } from "@/components/goals";
 import { ListEmptyState, ScreenHeader, SegmentedControl, type SegmentOption } from "@/components/lists";

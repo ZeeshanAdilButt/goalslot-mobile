@@ -38,17 +38,6 @@ function deriveWsUrl(httpUrl: string | null): string | null {
 const httpUrl = readExtra("messagingUrl");
 const wsUrl = readExtra("messagingWsUrl") ?? deriveWsUrl(httpUrl);
 
-export const messagingConfig = {
-  /** Origin of the jiffy-messaging REST API, or null when unconfigured. */
-  httpUrl,
-  /**
-   * Origin of its WebSocket. Can legitimately be null while `httpUrl` is set
-   * (a deployment behind a proxy that doesn't pass upgrades) — the feature
-   * then works, just without live delivery, falling back to refetch-on-focus.
-   */
-  wsUrl,
-} as const;
-
 /** Whether the Messages feature exists at all in this build. */
 export const messagingEnabled = httpUrl !== null;
 
