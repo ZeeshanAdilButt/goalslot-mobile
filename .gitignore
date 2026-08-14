@@ -1,5 +1,12 @@
 node_modules/
 dist/
+# EAS Build packages the project straight from git (no npm-hooks run in time
+# to fix this — its fingerprint/eager-bundle step resolves @goalslot/shared
+# before any hook gets a chance to run), so this one dist/ has to actually be
+# committed or every cloud build 404s trying to resolve the workspace
+# package's `main` entry. Keep it in sync: rebuild (`cd packages/shared &&
+# npx tsup`) and commit dist/ alongside any packages/shared/src change.
+!packages/shared/dist/
 .expo/
 .turbo/
 *.log
