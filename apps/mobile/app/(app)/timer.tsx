@@ -675,8 +675,17 @@ export default function TimerScreen() {
   // Puts a persistent entry in the notification shade for the life of the
   // session, so a running timer is visible from outside the app. Degrades to
   // nothing at all if notification permission is refused.
+  //
+  // A dormant local session is deliberately still shown on THIS screen (see
+  // localDormant's own comment: honest Resume/Stop controls, costs nothing).
+  // The shade is a different cost — a "Paused · Untitled session · 0m" entry
+  // that outlives the screen and never clears itself reads as a real stuck
+  // session even though nothing is actually running. So the notification
+  // treats local dormancy as idle regardless of what the screen shows,
+  // matching how a dormant SERVER session is already fully hidden above.
+  const suppressDormantNotification = !hasServerSession && localDormant;
   useTimerNotification({
-    status: effectiveStatus,
+    status: suppressDormantNotification ? "idle" : effectiveStatus,
     startedAt: effectiveStartedAt,
     pausedElapsedMs: effectivePausedElapsedMs,
     label: activeLabel,
