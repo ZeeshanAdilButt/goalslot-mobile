@@ -10,7 +10,11 @@
 //     the same three as a segmented control, because hiding a short fixed
 //     list behind a tap is pointless on a phone. PAUSED used to be missing
 //     here entirely, which meant a goal paused on web simply vanished from
-//     the phone with no tab showing it and no control to bring it back.
+//     the phone with no tab showing it and no control to bring it back. The
+//     category and label filters that file also carries are the chip row
+//     under the header — see `GoalFilterRow` below; without them the
+//     Categories screen produced colors and tags nothing on this screen
+//     could be narrowed by.
 //   - src/features/goals/components/goals-stats.tsx — the StatCard strip
 //     above the list, reproduced as a scroll-away summary row, and the
 //     Active/Paused/Completed counts, which ride on the segments themselves
@@ -21,7 +25,7 @@
 //     src/components/goals/GoalCard.tsx.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -33,6 +37,7 @@ import {
   getLocalDateString,
   updateGoalSchema,
   type Goal,
+  type GoalFilters,
   type GoalStatus,
 } from "@goalslot/shared";
 
@@ -41,11 +46,18 @@ import { EditGoalSheet, type EditGoalSheetRef } from "@/components/EditGoalSheet
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { Icon } from "@/components/ui/Icon";
 import { GoalCard, GoalsSummary, summariseGoals, SUMMARY_HEIGHT } from "@/components/goals";
-import { ListEmptyState, ScreenHeader, SegmentedControl, type SegmentOption } from "@/components/lists";
+import {
+  ListEmptyState,
+  safeColor,
+  ScreenHeader,
+  SegmentedControl,
+  withAlpha,
+  type SegmentOption,
+} from "@/components/lists";
 import { apiClient, notify } from "@/lib/api-client";
 import { hapticCompletion } from "@/lib/haptics";
 import { queueOfflineEdit } from "@/lib/offline";
-import { goalQueries } from "@/lib/queries";
+import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -72,6 +84,25 @@ const EMPTY_DESCRIPTION: Record<GoalStatus, string> = {
 
 const SKELETON_ROWS = 5;
 
+/**
+ * Keys for the category/label filter row. One selection across BOTH axes
+ * rather than one per axis: `GET /goals` does accept `categories` and
+ * `labelIds` together, but a phone-width chip row is a poor place to compose
+ * an intersection, and "show me this one slice" is what the Categories
+ * screen's two lists are for. A namespaced key per chip then keeps "which
+ * axis is this" out of a second piece of state.
+ */
+const FILTER_ALL = "all";
+const CATEGORY_PREFIX = "category:";
+const LABEL_PREFIX = "label:";
+
+interface GoalFilterOption {
+  key: string;
+  label: string;
+  /** The entity's own color, tinted into the chip when it's selected. */
+  color?: string | null;
+}
+
 export default function GoalsScreen() {
   const [tab, setTab] = useState<GoalStatus>("ACTIVE");
   const analytics = useAnalytics();
@@ -93,7 +124,51 @@ export default function GoalsScreen() {
     }, [analytics]),
   );
 
-  const filters = useMemo(() => ({ status: tab }), [tab]);
+  // The Categories screen's two lists, read here only to build the filter row
+  // below. Both share their cache entries with that screen.
+  const categoriesQuery = useQuery(categoryQueries.list());
+  const labelsQuery = useQuery(labelQueries.list());
+
+  const categoryOptions = useMemo<GoalFilterOption[]>(
+    () =>
+      (categoriesQuery.data ?? []).map((category) => ({
+        // `value`, not `name`: a goal stores its category's slug (see
+        // resolveDefaultCategory in src/hooks/useQuickAdd.ts), and that is
+        // what `GET /goals?categories=` matches on.
+        key: `${CATEGORY_PREFIX}${category.value}`,
+        label: category.name,
+        color: category.color,
+      })),
+    [categoriesQuery.data],
+  );
+  const labelOptions = useMemo<GoalFilterOption[]>(
+    () =>
+      (labelsQuery.data ?? []).map((label) => ({
+        key: `${LABEL_PREFIX}${label.id}`,
+        label: label.name,
+        color: label.color,
+      })),
+    [labelsQuery.data],
+  );
+
+  const [filter, setFilter] = useState<string>(FILTER_ALL);
+  // A category or label deleted while it was the active filter would otherwise
+  // leave this screen filtering by something that no longer exists, with no
+  // chip lit to say so. Same guard tasks.tsx applies to its own goal filter.
+  const activeFilter =
+    filter === FILTER_ALL || [...categoryOptions, ...labelOptions].some((option) => option.key === filter)
+      ? filter
+      : FILTER_ALL;
+
+  const filters = useMemo<GoalFilters>(() => {
+    if (activeFilter.startsWith(CATEGORY_PREFIX)) {
+      return { status: tab, categories: [activeFilter.slice(CATEGORY_PREFIX.length)] };
+    }
+    if (activeFilter.startsWith(LABEL_PREFIX)) {
+      return { status: tab, labelIds: [activeFilter.slice(LABEL_PREFIX.length)] };
+    }
+    return { status: tab };
+  }, [activeFilter, tab]);
   // `isPending` (no cached data yet) drives the skeleton; a screen returning
   // to this tab with data already in the query cache renders instantly with
   // `isPending: false`, so no blocking skeleton flashes on cached-first loads.
@@ -253,11 +328,12 @@ export default function GoalsScreen() {
   // reports the failure instead.
   const showError = isError && !data;
   const showEmpty = !isPending && !showError && goals.length === 0;
+  const isFiltered = activeFilter !== FILTER_ALL;
   // Only the Active tab's empty state carries a CTA (web does the same —
-  // goals-list.tsx:44-52), and where it does, the FAB is hidden: both do the
-  // exact same thing and the FAB's fixed bottom-right position lands on top
+  // goals-list.tsx:44-52) — plus any filtered empty state, whose CTA clears
+  // the filter. Where there is one, the FAB is hidden: it would land on top
   // of the centred CTA. Same fix as commit 2d1806c on the Schedule tab.
-  const emptyStateHasCta = showEmpty && tab === "ACTIVE";
+  const emptyStateHasCta = showEmpty && (isFiltered || tab === "ACTIVE");
 
   let content: React.ReactNode;
   if (isPending) {
@@ -277,6 +353,18 @@ export default function GoalsScreen() {
     );
   } else if (showError) {
     content = <ErrorState message="Couldn't load goals." onRetry={() => void refetch()} />;
+  } else if (showEmpty && isFiltered) {
+    // The unfiltered copy ("Create your first goal") would be a lie here —
+    // there may be plenty of goals, just none in this category or label.
+    content = (
+      <ListEmptyState
+        variant="goals"
+        title="Nothing here"
+        description={`No ${STATUS_WORD[tab]} goals match this filter.`}
+        actionLabel="Clear filter"
+        onAction={() => setFilter(FILTER_ALL)}
+      />
+    );
   } else if (showEmpty) {
     content = (
       <ListEmptyState
@@ -319,6 +407,18 @@ export default function GoalsScreen() {
         action={<SegmentedControl options={tabOptions} value={tab} onChange={setTab} />}
       />
 
+      {/* Hidden below two chips, the same rule tasks.tsx applies to its goal
+          filter: with a single category (every account has at least one) and
+          no labels, every goal on screen is already that one bucket. */}
+      {categoryOptions.length + labelOptions.length > 1 ? (
+        <GoalFilterRow
+          categories={categoryOptions}
+          labels={labelOptions}
+          value={activeFilter}
+          onChange={setFilter}
+        />
+      ) : null}
+
       <View style={styles.listArea}>{content}</View>
 
       {emptyStateHasCta ? null : (
@@ -337,6 +437,108 @@ export default function GoalsScreen() {
       <QuickAddSheet ref={quickAddRef} kind="goal" />
       <EditGoalSheet ref={editGoalRef} />
     </SafeAreaView>
+  );
+}
+
+/**
+ * The category/label filter, sat under the screen header — the same
+ * scrolling chip row src/components/tasks/TaskGoalFilter.tsx introduced for
+ * tasks, and for the same reason: the count of buckets is "however many the
+ * user made", which a `SegmentedControl` can't lay out. Chips are local to
+ * this screen rather than reusing that component because filtering here is
+ * done SERVER-side (`GET /goals?categories=&labelIds=`), so there are no
+ * per-bucket counts to render, and because the two entity types need the
+ * divider below to stay legible as two groups.
+ *
+ * Categories and labels sit in one row, in that order: they're both "which
+ * slice of my goals", and a second row of chips would cost more header than
+ * the distinction is worth.
+ */
+function GoalFilterRow({
+  categories,
+  labels,
+  value,
+  onChange,
+}: {
+  categories: GoalFilterOption[];
+  labels: GoalFilterOption[];
+  value: string;
+  onChange: (key: string) => void;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.filterRow}
+      contentContainerStyle={styles.filterRowContent}
+      accessibilityRole="tablist"
+    >
+      <FilterChip
+        option={{ key: FILTER_ALL, label: "All goals" }}
+        selected={value === FILTER_ALL}
+        onPress={() => onChange(FILTER_ALL)}
+      />
+      {categories.map((option) => (
+        <FilterChip
+          key={option.key}
+          option={option}
+          selected={option.key === value}
+          onPress={() => onChange(option.key)}
+        />
+      ))}
+      {categories.length > 0 && labels.length > 0 ? <View style={styles.filterDivider} /> : null}
+      {labels.map((option) => (
+        <FilterChip
+          key={option.key}
+          option={option}
+          selected={option.key === value}
+          onPress={() => onChange(option.key)}
+        />
+      ))}
+    </ScrollView>
+  );
+}
+
+/**
+ * Selected chips tint off the entity's OWN color (MetaChip's trick, also used
+ * by TaskGoalFilter) so a picked filter matches the color the goals it lets
+ * through are wearing. Unselected chips stay neutral — the color is what
+ * selecting reveals.
+ */
+function FilterChip({
+  option,
+  selected,
+  onPress,
+}: {
+  option: GoalFilterOption;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const accent = option.color ? safeColor(option.color, colors.foreground) : null;
+
+  return (
+    <Pressable
+      style={[
+        styles.filterChip,
+        {
+          backgroundColor: selected ? withAlpha(accent, 0.14, colors.foreground) : colors.secondary,
+          borderColor: selected ? withAlpha(accent, 0.5, colors.foreground) : colors.border,
+        },
+      ]}
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityLabel={option.label}
+      accessibilityState={{ selected }}
+      hitSlop={4}
+    >
+      <View style={[styles.filterDot, { backgroundColor: accent ?? colors.mutedForeground }]} />
+      <Text
+        style={[styles.filterChipText, selected ? styles.filterChipTextSelected : styles.filterChipTextMuted]}
+        numberOfLines={1}
+      >
+        {option.label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -376,6 +578,49 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     // Clears the tab bar and the FAB.
     paddingBottom: spacing.xxxl * 3,
+  },
+
+  // --- Category/label filter row (tasks.tsx styles its own the same way) ---
+  filterRow: {
+    flexGrow: 0,
+    marginBottom: spacing.sm,
+  },
+  filterRowContent: {
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    alignItems: "center",
+  },
+  filterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs + 1,
+    minHeight: minTouchTarget - spacing.sm,
+    paddingVertical: spacing.xs + 1,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    borderWidth: 1,
+  },
+  filterDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  filterChipText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    maxWidth: 140,
+  },
+  filterChipTextMuted: {
+    color: colors.mutedForeground,
+  },
+  filterChipTextSelected: {
+    color: colors.foreground,
+  },
+  /** Keeps the label chips reading as a second group rather than more categories. */
+  filterDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: colors.border,
   },
   skeletonWrap: {
     paddingHorizontal: spacing.xl,

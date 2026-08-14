@@ -1,22 +1,29 @@
 // Categories & Labels management screen. Neither has a screen anywhere in
 // the app today — useQuickAdd.ts silently resolves a "default" category
 // behind the scenes (see resolveDefaultCategory there) but the user has no
-// way to see, create, or delete their own categories/labels. This screen is
-// the first one.
+// way to see, create, edit or delete their own categories/labels. This screen
+// is the first one.
 //
 // Two independent sections, each following the same optimistic-update ->
 // live call -> invalidate-or-rollback shape as goals.tsx/tasks.tsx: snapshot
 // the list before mutating, patch the cache, invalidate on success, roll
-// back + Alert.alert on failure. No offline outbox here (unlike
-// useQuickAdd's three domains) — this screen isn't in that task's scope and
-// create/delete here isn't part of the quick-add flow.
+// back + report on failure. No offline outbox here (unlike useQuickAdd's
+// three domains) — this screen isn't in that task's scope and create/edit/
+// delete here isn't part of the quick-add flow.
 //
-// Create forms are intentionally minimal: `CreateCategoryForm`/
-// `CreateLabelForm` (packages/shared/src/types/{category,label}.ts) are the
-// only fields collected — name, plus a fixed preset-swatch color picker (no
-// color-picker dependency). Category.color is required by the type;
-// Label.color is optional, so an unpicked label color is simply omitted
-// from the payload.
+// Forms are intentionally minimal: `CreateCategoryForm`/`CreateLabelForm`
+// (packages/shared/src/types/{category,label}.ts) are the only fields
+// collected — name, plus a fixed preset-swatch color picker (no color-picker
+// dependency). Category.color is required by the type; Label.color is
+// optional, so an unpicked label color is simply omitted from the payload.
+//
+// EDIT uses the SAME form component as create (`EntityForm`), rendered in
+// place of the row it belongs to rather than below the list, so the fields
+// sit exactly where the values they're changing were. `UpdateCategoryForm`/
+// `UpdateLabelForm` carry the same name+color pair the create forms do, which
+// is why one component serves both. Until this existed the only way to fix a
+// typo in a category name was delete-and-recreate — which orphans every goal
+// grouped under it, since goals store the category's `value`, not its id.
 //
 // `isDefault` is surfaced read-only for both types. `UpdateCategoryForm`
 // technically has an optional `isDefault` field, but there's no dedicated
@@ -35,14 +42,33 @@
 // tints that row's left accent stripe.
 
 import { useCallback, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { genId, type Category, type CreateCategoryForm, type CreateLabelForm, type Label } from "@goalslot/shared";
+import {
+  genId,
+  type Category,
+  type CreateCategoryForm,
+  type CreateLabelForm,
+  type Label,
+  type UpdateCategoryForm,
+} from "@goalslot/shared";
 
 import { QueryErrorState, SkeletonListItem } from "@/components";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import {
   ColorSwatch,
@@ -57,12 +83,20 @@ import {
   withAlpha,
 } from "@/components/lists";
 import { apiClient } from "@/lib/api-client";
-import { categoryQueries, labelQueries } from "@/lib/queries";
+import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 const SKELETON_ROWS = 3;
+
+/**
+ * Which form (if any) is open in a section. One slot, not an `isAdding`
+ * boolean beside an `editing` entity: only ever one form is on screen, and a
+ * single piece of state makes that unrepresentable-otherwise rather than a
+ * rule two setters have to remember.
+ */
+type FormState<T> = { mode: "create" } | { mode: "edit"; entity: T };
 
 /**
  * Pulls a server-side error message out of an axios-shaped error (the API
@@ -80,6 +114,28 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 export default function CategoriesScreen() {
   const analytics = useAnalytics();
 
+  // Both lists are read again inside the two sections below. Mounting the
+  // same query options here costs no extra request — react-query serves both
+  // observers from one cache entry and dedupes concurrent fetches — and it's
+  // what lets the screen's single pull-to-refresh drive both sections at
+  // once without either having to hand its `refetch` back up.
+  const categoriesQuery = useQuery(categoryQueries.list());
+  const labelsQuery = useQuery(labelQueries.list());
+
+  const onRefresh = useCallback(() => {
+    void categoriesQuery.refetch();
+    void labelsQuery.refetch();
+  }, [categoriesQuery, labelsQuery]);
+
+  // Derived from the queries rather than a local boolean the handler flips —
+  // same reasoning as reports.tsx: a refetch started anywhere else (a focus
+  // revalidation, a reconnect) should spin the same control. The `!isPending`
+  // half keeps the spinner off a genuine first load, which is the skeletons'
+  // job.
+  const isRefreshing =
+    (categoriesQuery.isFetching && !categoriesQuery.isPending) ||
+    (labelsQuery.isFetching && !labelsQuery.isPending);
+
   useFocusEffect(
     useCallback(() => {
       analytics.track({ name: "screenViewed", payload: { screenName: "categories" } });
@@ -95,7 +151,17 @@ export default function CategoriesScreen() {
         title="Categories"
         subtitle="The colors your goals, tasks and reports are grouped by."
       />
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={onRefresh}
+            accessibilityLabel="Pull to refresh categories and labels"
+          />
+        }
+      >
         <CategoriesSection />
         <LabelsSection />
       </ScrollView>
@@ -107,90 +173,135 @@ function CategoriesSection() {
   const { data, isPending, isError, error, refetch } = useQuery(categoryQueries.list());
   const listKey = categoryQueries.categoryQueries.listKey();
 
-  const [isAdding, setIsAdding] = useState(false);
+  const [form, setForm] = useState<FormState<Category> | null>(null);
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(DEFAULT_SWATCH);
   const [isSaving, setIsSaving] = useState(false);
 
-  const resetForm = useCallback(() => {
+  const [pendingDelete, setPendingDelete] = useState<Category | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const closeForm = useCallback(() => {
     setName("");
     setColor(DEFAULT_SWATCH);
-    setIsAdding(false);
+    setForm(null);
   }, []);
 
-  const handleCreate = useCallback(async () => {
+  const openCreate = useCallback(() => {
+    setName("");
+    setColor(DEFAULT_SWATCH);
+    setForm({ mode: "create" });
+  }, []);
+
+  const openEdit = useCallback((category: Category) => {
+    setName(category.name);
+    // A category coloured on web may hold a hex outside PRESET_COLORS, in
+    // which case no swatch renders as selected — but the value is still
+    // seeded here, so saving without touching the picker keeps the color it
+    // already had rather than silently reassigning one of the presets.
+    setColor(safeColor(category.color, DEFAULT_SWATCH));
+    setForm({ mode: "edit", entity: category });
+  }, []);
+
+  const handleSave = useCallback(async () => {
     const trimmed = name.trim();
-    if (!trimmed || isSaving) return;
+    if (!form || !trimmed || isSaving) return;
 
-    const payload: CreateCategoryForm = { name: trimmed, color };
-    const optimisticId = genId();
     const previous = queryClient.getQueryData<Category[]>(listKey);
-    const optimistic: Category = {
-      id: optimisticId,
-      userId: "",
-      name: payload.name,
-      value: payload.name.toLowerCase(),
-      color: payload.color,
-      isDefault: false,
-      order: previous?.length ?? 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
     setIsSaving(true);
-    queryClient.setQueryData<Category[]>(listKey, (existing) => [...(existing ?? []), optimistic]);
+
+    if (form.mode === "create") {
+      const payload: CreateCategoryForm = { name: trimmed, color };
+      const optimistic: Category = {
+        id: genId(),
+        userId: "",
+        name: payload.name,
+        value: payload.name.toLowerCase(),
+        color: payload.color,
+        isDefault: false,
+        order: previous?.length ?? 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      queryClient.setQueryData<Category[]>(listKey, (existing) => [...(existing ?? []), optimistic]);
+
+      try {
+        await apiClient.categories.create(payload);
+        void queryClient.invalidateQueries({ queryKey: categoryQueries.categoryQueries.all() });
+        closeForm();
+      } catch (err) {
+        queryClient.setQueryData(listKey, previous);
+        Alert.alert("Couldn't add category", extractErrorMessage(err, "Please try again."));
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
+
+    const target = form.entity;
+    const payload: UpdateCategoryForm = { name: trimmed, color };
+    // `value` is deliberately NOT patched alongside the name: the slug is
+    // derived server-side, and guessing at that derivation would flash a slug
+    // the API may never agree with. The invalidate below brings back whatever
+    // it actually chose.
+    queryClient.setQueryData<Category[]>(listKey, (existing) =>
+      (existing ?? []).map((c) => (c.id === target.id ? { ...c, ...payload } : c)),
+    );
 
     try {
-      await apiClient.categories.create(payload);
+      await apiClient.categories.update(target.id, payload);
       void queryClient.invalidateQueries({ queryKey: categoryQueries.categoryQueries.all() });
-      resetForm();
+      closeForm();
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't add category", extractErrorMessage(err, "Please try again."));
+      Alert.alert("Couldn't save category", extractErrorMessage(err, "Please try again."));
     } finally {
       setIsSaving(false);
     }
-  }, [color, listKey, name, isSaving, resetForm]);
+  }, [closeForm, color, form, isSaving, listKey, name]);
 
-  const handleDelete = useCallback(
-    (category: Category) => {
-      Alert.alert("Delete category?", `"${category.name}" will be permanently removed.`, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              const previous = queryClient.getQueryData<Category[]>(listKey);
-              queryClient.setQueryData<Category[]>(listKey, (existing) =>
-                (existing ?? []).filter((c) => c.id !== category.id),
-              );
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
 
-              try {
-                await apiClient.categories.delete(category.id);
-                void queryClient.invalidateQueries({ queryKey: categoryQueries.categoryQueries.all() });
-              } catch (err) {
-                queryClient.setQueryData(listKey, previous);
-                Alert.alert("Couldn't delete category", extractErrorMessage(err, "Please try again."));
-              }
-            })();
-          },
-        },
-      ]);
-    },
-    [listKey],
-  );
+  /**
+   * Snapshot -> optimistic removal -> live DELETE -> invalidate on success.
+   * A rejection rolls back and reports INSIDE the dialog that's already open
+   * (ConfirmDialog's `error` slot) rather than stacking a second popup on it.
+   */
+  const confirmDelete = useCallback(async () => {
+    const target = pendingDelete;
+    if (!target || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    const previous = queryClient.getQueryData<Category[]>(listKey);
+    queryClient.setQueryData<Category[]>(listKey, (existing) =>
+      (existing ?? []).filter((c) => c.id !== target.id),
+    );
+
+    try {
+      await apiClient.categories.delete(target.id);
+      void queryClient.invalidateQueries({ queryKey: categoryQueries.categoryQueries.all() });
+      setPendingDelete(null);
+    } catch (err) {
+      queryClient.setQueryData(listKey, previous);
+      setDeleteError(extractErrorMessage(err, "Please try again."));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteBusy, listKey, pendingDelete]);
 
   return (
     <View>
       <SectionHeader
         label="Categories"
         count={data?.length}
-        action={
-          !isAdding ? (
-            <AddButton label="Add category" onPress={() => setIsAdding(true)} />
-          ) : undefined
-        }
+        action={form === null ? <AddButton label="Add category" onPress={openCreate} /> : undefined}
       />
 
       {isPending ? (
@@ -212,27 +323,47 @@ function CategoriesSection() {
           title="No categories yet"
           description="Categories are the colors your goals and tasks group by. Add your first one."
           actionLabel="Add category"
-          onAction={() => setIsAdding(true)}
+          onAction={openCreate}
         />
       ) : (
         <View style={styles.rows}>
-          {data.map((category, index) => (
-            <EntityRow
-              key={category.id}
-              index={index}
-              color={category.color}
-              name={category.name}
-              slug={category.value}
-              isDefault={category.isDefault}
-              onDelete={() => handleDelete(category)}
-              deleteAccessibilityLabel={`Delete "${category.name}" category`}
-            />
-          ))}
+          {data.map((category, index) =>
+            form?.mode === "edit" && form.entity.id === category.id ? (
+              <EntityForm
+                key={category.id}
+                placeholder="Category name"
+                accessibilityLabel="Category name"
+                name={name}
+                onChangeName={setName}
+                color={color}
+                onSelectColor={(next) => setColor(next ?? DEFAULT_SWATCH)}
+                isSaving={isSaving}
+                onCancel={closeForm}
+                onSave={() => void handleSave()}
+                cancelAccessibilityLabel="Cancel editing category"
+                saveAccessibilityLabel="Save category changes"
+              />
+            ) : (
+              <EntityRow
+                key={category.id}
+                index={index}
+                color={category.color}
+                name={category.name}
+                slug={category.value}
+                isDefault={category.isDefault}
+                onEdit={() => openEdit(category)}
+                editAccessibilityLabel={`Edit "${category.name}" category`}
+                onDelete={() => setPendingDelete(category)}
+                deleteAccessibilityLabel={`Delete "${category.name}" category`}
+              />
+            ),
+          )}
         </View>
       )}
 
-      {isAdding ? (
-        <CreateForm
+      {form?.mode === "create" ? (
+        <EntityForm
+          style={styles.formSpaced}
           placeholder="Category name"
           accessibilityLabel="Category name"
           name={name}
@@ -240,12 +371,27 @@ function CategoriesSection() {
           color={color}
           onSelectColor={(next) => setColor(next ?? DEFAULT_SWATCH)}
           isSaving={isSaving}
-          onCancel={resetForm}
-          onSave={() => void handleCreate()}
+          onCancel={closeForm}
+          onSave={() => void handleSave()}
           cancelAccessibilityLabel="Cancel adding category"
           saveAccessibilityLabel="Save category"
         />
       ) : null}
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete category?"
+        description={
+          pendingDelete ? `"${pendingDelete.name}" will be permanently removed.` : undefined
+        }
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
     </View>
   );
 }
@@ -254,83 +400,128 @@ function LabelsSection() {
   const { data, isPending, isError, error, refetch } = useQuery(labelQueries.list());
   const listKey = labelQueries.labelQueries.listKey();
 
-  const [isAdding, setIsAdding] = useState(false);
+  const [form, setForm] = useState<FormState<Label> | null>(null);
   const [name, setName] = useState("");
   const [color, setColor] = useState<string | undefined>(undefined);
   const [isSaving, setIsSaving] = useState(false);
 
-  const resetForm = useCallback(() => {
+  const [pendingDelete, setPendingDelete] = useState<Label | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const closeForm = useCallback(() => {
     setName("");
     setColor(undefined);
-    setIsAdding(false);
+    setForm(null);
   }, []);
 
-  const handleCreate = useCallback(async () => {
+  const openCreate = useCallback(() => {
+    setName("");
+    setColor(undefined);
+    setForm({ mode: "create" });
+  }, []);
+
+  const openEdit = useCallback((label: Label) => {
+    setName(label.name);
+    // `|| undefined`, not the muted-ink fallback the row renders: a label
+    // saved without a color must reopen with the picker genuinely empty, so
+    // saving doesn't invent one.
+    setColor(label.color || undefined);
+    setForm({ mode: "edit", entity: label });
+  }, []);
+
+  const handleSave = useCallback(async () => {
     const trimmed = name.trim();
-    if (!trimmed || isSaving) return;
+    if (!form || !trimmed || isSaving) return;
 
-    const payload: CreateLabelForm = color ? { name: trimmed, color } : { name: trimmed };
-    const optimisticId = genId();
     const previous = queryClient.getQueryData<Label[]>(listKey);
-    const optimistic: Label = {
-      id: optimisticId,
-      name: payload.name,
-      value: payload.name.toLowerCase(),
-      color: payload.color ?? DEFAULT_SWATCH,
-      isDefault: false,
-      order: previous?.length ?? 0,
-    };
-
+    // One payload serves both calls — `CreateLabelForm`'s {name, color?} is
+    // structurally an `UpdateLabelForm` too. Color is omitted rather than
+    // nulled when unpicked: both types make it optional and there's no wire
+    // shape for "clear this color", so an edit that clears it keeps whatever
+    // was already stored.
+    const payload: CreateLabelForm = color ? { name: trimmed, color } : { name: trimmed };
     setIsSaving(true);
-    queryClient.setQueryData<Label[]>(listKey, (existing) => [...(existing ?? []), optimistic]);
+
+    if (form.mode === "create") {
+      const optimistic: Label = {
+        id: genId(),
+        name: payload.name,
+        value: payload.name.toLowerCase(),
+        color: payload.color ?? DEFAULT_SWATCH,
+        isDefault: false,
+        order: previous?.length ?? 0,
+      };
+      queryClient.setQueryData<Label[]>(listKey, (existing) => [...(existing ?? []), optimistic]);
+
+      try {
+        await apiClient.labels.create(payload);
+        void queryClient.invalidateQueries({ queryKey: labelQueries.labelQueries.all() });
+        closeForm();
+      } catch (err) {
+        queryClient.setQueryData(listKey, previous);
+        Alert.alert("Couldn't add label", extractErrorMessage(err, "Please try again."));
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
+
+    const target = form.entity;
+    // `value` left alone for the same reason as a category's — see there.
+    queryClient.setQueryData<Label[]>(listKey, (existing) =>
+      (existing ?? []).map((l) => (l.id === target.id ? { ...l, ...payload } : l)),
+    );
 
     try {
-      await apiClient.labels.create(payload);
+      await apiClient.labels.update(target.id, payload);
       void queryClient.invalidateQueries({ queryKey: labelQueries.labelQueries.all() });
-      resetForm();
+      closeForm();
     } catch (err) {
       queryClient.setQueryData(listKey, previous);
-      Alert.alert("Couldn't add label", extractErrorMessage(err, "Please try again."));
+      Alert.alert("Couldn't save label", extractErrorMessage(err, "Please try again."));
     } finally {
       setIsSaving(false);
     }
-  }, [color, listKey, name, isSaving, resetForm]);
+  }, [closeForm, color, form, isSaving, listKey, name]);
 
-  const handleDelete = useCallback(
-    (label: Label) => {
-      Alert.alert("Delete label?", `"${label.name}" will be permanently removed.`, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              const previous = queryClient.getQueryData<Label[]>(listKey);
-              queryClient.setQueryData<Label[]>(listKey, (existing) =>
-                (existing ?? []).filter((l) => l.id !== label.id),
-              );
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
 
-              try {
-                await apiClient.labels.delete(label.id);
-                void queryClient.invalidateQueries({ queryKey: labelQueries.labelQueries.all() });
-              } catch (err) {
-                queryClient.setQueryData(listKey, previous);
-                Alert.alert("Couldn't delete label", extractErrorMessage(err, "Please try again."));
-              }
-            })();
-          },
-        },
-      ]);
-    },
-    [listKey],
-  );
+  const confirmDelete = useCallback(async () => {
+    const target = pendingDelete;
+    if (!target || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    const previous = queryClient.getQueryData<Label[]>(listKey);
+    queryClient.setQueryData<Label[]>(listKey, (existing) => (existing ?? []).filter((l) => l.id !== target.id));
+
+    try {
+      await apiClient.labels.delete(target.id);
+      void queryClient.invalidateQueries({ queryKey: labelQueries.labelQueries.all() });
+      // A label that's gone can't stay attached to a goal — the goal cards
+      // and the Goals screen's label filter both read that join.
+      void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+      setPendingDelete(null);
+    } catch (err) {
+      queryClient.setQueryData(listKey, previous);
+      setDeleteError(extractErrorMessage(err, "Please try again."));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteBusy, listKey, pendingDelete]);
 
   return (
     <View>
       <SectionHeader
         label="Labels"
         count={data?.length}
-        action={!isAdding ? <AddButton label="Add label" onPress={() => setIsAdding(true)} /> : undefined}
+        action={form === null ? <AddButton label="Add label" onPress={openCreate} /> : undefined}
       />
 
       {isPending ? (
@@ -349,29 +540,50 @@ function LabelsSection() {
           title="No labels yet"
           description="Labels are the free-form tags you can stack on a goal alongside its category."
           actionLabel="Add label"
-          onAction={() => setIsAdding(true)}
+          onAction={openCreate}
         />
       ) : (
         <View style={styles.rows}>
-          {data.map((label, index) => (
-            <EntityRow
-              key={label.id}
-              index={index}
-              // Label.color is optional in the shared type; fall back to the
-              // theme's muted ink rather than inventing a color for it.
-              color={label.color || colors.mutedForeground}
-              name={label.name}
-              slug={label.value}
-              isDefault={label.isDefault}
-              onDelete={() => handleDelete(label)}
-              deleteAccessibilityLabel={`Delete "${label.name}" label`}
-            />
-          ))}
+          {data.map((label, index) =>
+            form?.mode === "edit" && form.entity.id === label.id ? (
+              <EntityForm
+                key={label.id}
+                placeholder="Label name"
+                accessibilityLabel="Label name"
+                name={name}
+                onChangeName={setName}
+                color={color}
+                onSelectColor={setColor}
+                allowClearColor
+                isSaving={isSaving}
+                onCancel={closeForm}
+                onSave={() => void handleSave()}
+                cancelAccessibilityLabel="Cancel editing label"
+                saveAccessibilityLabel="Save label changes"
+              />
+            ) : (
+              <EntityRow
+                key={label.id}
+                index={index}
+                // Label.color is optional in the shared type; fall back to the
+                // theme's muted ink rather than inventing a color for it.
+                color={label.color || colors.mutedForeground}
+                name={label.name}
+                slug={label.value}
+                isDefault={label.isDefault}
+                onEdit={() => openEdit(label)}
+                editAccessibilityLabel={`Edit "${label.name}" label`}
+                onDelete={() => setPendingDelete(label)}
+                deleteAccessibilityLabel={`Delete "${label.name}" label`}
+              />
+            ),
+          )}
         </View>
       )}
 
-      {isAdding ? (
-        <CreateForm
+      {form?.mode === "create" ? (
+        <EntityForm
+          style={styles.formSpaced}
           placeholder="Label name"
           accessibilityLabel="Label name"
           name={name}
@@ -380,20 +592,34 @@ function LabelsSection() {
           onSelectColor={setColor}
           allowClearColor
           isSaving={isSaving}
-          onCancel={resetForm}
-          onSave={() => void handleCreate()}
+          onCancel={closeForm}
+          onSave={() => void handleSave()}
           cancelAccessibilityLabel="Cancel adding label"
           saveAccessibilityLabel="Save label"
         />
       ) : null}
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete label?"
+        description={pendingDelete ? `"${pendingDelete.name}" will be permanently removed.` : undefined}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
     </View>
   );
 }
 
 /**
  * One category or label row. Both types render identically — same swatch,
- * name, slug, Default pill and delete affordance — which is exactly how the
- * web treats them, so they share a component rather than being copy-pasted.
+ * name, slug, Default pill and edit/delete affordances — which is exactly how
+ * the web treats them, so they share a component rather than being
+ * copy-pasted.
  */
 function EntityRow({
   index,
@@ -401,6 +627,8 @@ function EntityRow({
   name,
   slug,
   isDefault,
+  onEdit,
+  editAccessibilityLabel,
   onDelete,
   deleteAccessibilityLabel,
 }: {
@@ -409,6 +637,8 @@ function EntityRow({
   name: string;
   slug: string;
   isDefault: boolean;
+  onEdit: () => void;
+  editAccessibilityLabel: string;
   onDelete: () => void;
   deleteAccessibilityLabel: string;
 }) {
@@ -427,6 +657,16 @@ function EntityRow({
       </View>
 
       {isDefault ? <StatusPill label="Default" tone="brand" showDot={false} /> : null}
+
+      <Pressable
+        style={styles.iconButton}
+        onPress={onEdit}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={editAccessibilityLabel}
+      >
+        <Icon name="edit" size={16} color={colors.mutedForeground} />
+      </Pressable>
 
       <Pressable
         style={styles.iconButton}
@@ -450,7 +690,7 @@ function AddButton({ label, onPress }: { label: string; onPress: () => void }) {
   );
 }
 
-interface CreateFormProps {
+interface EntityFormProps {
   placeholder: string;
   accessibilityLabel: string;
   name: string;
@@ -463,9 +703,16 @@ interface CreateFormProps {
   onSave: () => void;
   cancelAccessibilityLabel: string;
   saveAccessibilityLabel: string;
+  /** Create mode renders below the list and needs its own top gap; an edit form sits inside the list's own gap. */
+  style?: StyleProp<ViewStyle>;
 }
 
-function CreateForm({
+/**
+ * The name + color editor, shared by create and edit. Both
+ * `Create*Form`/`Update*Form` pairs collect exactly these two fields, so
+ * there's nothing for an edit-specific variant to add.
+ */
+function EntityForm({
   placeholder,
   accessibilityLabel,
   name,
@@ -478,11 +725,12 @@ function CreateForm({
   onSave,
   cancelAccessibilityLabel,
   saveAccessibilityLabel,
-}: CreateFormProps) {
+  style,
+}: EntityFormProps) {
   const disabled = !name.trim() || isSaving;
 
   return (
-    <View style={styles.form}>
+    <View style={[styles.form, style]}>
       <TextInput
         style={styles.input}
         placeholder={placeholder}
@@ -612,15 +860,17 @@ const styles = StyleSheet.create({
     color: colors.primaryForeground,
   },
 
-  // --- Create form ---
+  // --- Create/edit form ---
   form: {
     gap: spacing.md,
-    marginTop: spacing.md,
     padding: spacing.lg,
     borderRadius: radii.xl,
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
+  },
+  formSpaced: {
+    marginTop: spacing.md,
   },
   formLabel: {
     ...typography.label,

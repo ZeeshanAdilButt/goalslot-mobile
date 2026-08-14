@@ -7,12 +7,20 @@
 // small custom imperative handle: present(goal) seeds the form from that
 // goal and opens the sheet, dismiss() closes it without saving.
 //
-// Field set matches dw-time-web's goal-modal.tsx column layout, minus the two
-// things that need editors mobile doesn't have yet (rich-text description,
-// label autocomplete) — see the handover. Status is included because
-// goal-modal.tsx renders that select whenever it is editing rather than
-// creating, and it's the only way to pause or un-pause a goal; without it
-// the Paused tab on goals.tsx would be a read-only dead end.
+// Field set matches dw-time-web's goal-modal.tsx column layout, minus the one
+// thing that needs an editor mobile doesn't have yet (rich-text description)
+// — see the handover. Status is included because goal-modal.tsx renders that
+// select whenever it is editing rather than creating, and it's the only way
+// to pause or un-pause a goal; without it the Paused tab on goals.tsx would
+// be a read-only dead end.
+//
+// LABELS are a plain multi-select over the user's existing labels rather than
+// web's create-as-you-type autocomplete. Until this existed, labels created
+// on the Categories screen could never be attached to anything — the section
+// wrote records the user had no way to use, and `labelsApi.assignToGoal` had
+// no call site in the app at all. Picking from what exists (with a pointer to
+// the Categories screen when nothing does) keeps this sheet to one new
+// control and leaves label creation in the one place that already owns it.
 //
 // Submit follows the same optimistic-patch -> apiClient.goals.update() ->
 // invalidate-on-success shape as goals.tsx's handleComplete/deleteGoal. On a
@@ -21,9 +29,16 @@
 // outbox via the already-registered "goal-update" operation — see
 // src/lib/offline.ts's `queueOfflineEdit`. Only a genuine rejection (the
 // server answered and said no) rolls the patch back.
+//
+// The label assignment is a SECOND call (POST /labels/goals/:id/assign) that
+// only runs once the goal update has landed, and only when the selection
+// actually changed. It has no outbox operation registered for it, so it is
+// deliberately not attempted on the queued path — the toast says so rather
+// than letting the user believe a label change synced when it can't.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -32,16 +47,23 @@ import {
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
 
-import { GOAL_STATUS_OPTIONS, updateGoalSchema, type Goal, type GoalStatus, type UpdateGoalInput } from "@goalslot/shared";
+import {
+  GOAL_STATUS_OPTIONS,
+  updateGoalSchema,
+  type Goal,
+  type GoalStatus,
+  type Label,
+  type UpdateGoalInput,
+} from "@goalslot/shared";
 
 import { apiClient, notify } from "../lib/api-client";
 import { queueOfflineEdit } from "../lib/offline";
-import { goalQueries } from "../lib/queries";
+import { goalQueries, labelQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { formatDeadlineLong, GoalColorPicker, toDeadlineKey } from "@/components/goals";
-import { DEFAULT_SWATCH, SegmentedControl } from "@/components/lists";
+import { DEFAULT_SWATCH, safeColor, SegmentedControl, withAlpha } from "@/components/lists";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 
@@ -64,6 +86,8 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const [deadline, setDeadline] = useState("");
   const [status, setStatus] = useState<GoalStatus>("ACTIVE");
   const [color, setColor] = useState<string>(DEFAULT_SWATCH);
+  /** Ids of the labels currently ticked — the full desired set, not a delta. */
+  const [labelIds, setLabelIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | null>(null);
@@ -80,6 +104,24 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
    * the notice below) apart from "the user cleared a pick they hadn't saved".
    */
   const savedDeadlineKey = useMemo(() => toDeadlineKey(goal?.deadline), [goal?.deadline]);
+
+  // `enabled` so the Goals screen doesn't pay for a /labels request just by
+  // mounting this sheet — it only fetches once a goal is actually being
+  // edited. Shares its cache entry with the Categories screen's own list.
+  const labelsQuery = useQuery({ ...labelQueries.list(), enabled: goal !== null });
+  const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
+
+  /** The label ids PERSISTED on this goal, from its expanded join rows. */
+  const savedLabelIds = useMemo(() => (goal?.labels ?? []).map((entry) => entry.labelId), [goal]);
+
+  // Order is irrelevant to the API (it takes a set), so compare as sets —
+  // otherwise merely reordering by untick/retick would look like a change and
+  // cost a pointless second request.
+  const labelsChanged = useMemo(() => {
+    if (labelIds.length !== savedLabelIds.length) return true;
+    const saved = new Set(savedLabelIds);
+    return labelIds.some((id) => !saved.has(id));
+  }, [labelIds, savedLabelIds]);
 
   useImperativeHandle(
     ref,
@@ -99,6 +141,9 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
         setDeadline(toDeadlineKey(g.deadline) ?? "");
         setStatus(g.status);
         setColor(g.color || DEFAULT_SWATCH);
+        // `labelId` (the label's own id), not `id` — the latter is the join
+        // row's, which is not what /labels/goals/:id/assign takes.
+        setLabelIds((g.labels ?? []).map((entry) => entry.labelId));
         setError(null);
         setDeadlinePickerOpen(false);
         sheetRef.current?.present();
@@ -147,6 +192,16 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   /** Editing any field clears a stale validation message. */
   const clearError = useCallback(() => setError(null), []);
 
+  const toggleLabel = useCallback(
+    (labelId: string) => {
+      setError(null);
+      setLabelIds((current) =>
+        current.includes(labelId) ? current.filter((id) => id !== labelId) : [...current, labelId],
+      );
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(async () => {
     if (!goal || !canSubmit) return;
 
@@ -176,7 +231,12 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     // updateGoalSchema's `labels` field (LabelInput[] — {name, color}) is a
     // write-only shape for the create/label-attach flow, structurally
     // incompatible with Goal.labels (GoalLabel[], the server's expanded
-    // join-row shape) — and this form only ever edits the fields below anyway.
+    // join-row shape). The label picker below does NOT ride on it: attaching
+    // by name would create a second label record for an existing name, so it
+    // goes through /labels/goals/:id/assign by id after this call instead.
+    // Nothing here patches `labels` optimistically for the same reason — the
+    // join rows' own ids are the server's to mint, and the invalidate right
+    // after the assign brings the real ones back.
     const goalPatch: Partial<Goal> = {
       title: payload.title,
       category: payload.category,
@@ -208,6 +268,21 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     setError(null);
     try {
       await apiClient.goals.update(goal.id, payload);
+      if (labelsChanged) {
+        try {
+          // The full desired set, not a delta — the endpoint takes the goal's
+          // whole label list, so an unticked label is removed by its absence.
+          await apiClient.labels.assignToGoal(goal.id, labelIds);
+        } catch {
+          // The goal itself saved; only the labels didn't. Reporting in place
+          // and holding the sheet open beats dismissing on a half-applied
+          // save — Save again re-sends the (idempotent) PUT and the
+          // assignment together.
+          void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+          setError("Saved, but the labels couldn't be updated. Please try again.");
+          return;
+        }
+      }
       void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
       sheetRef.current?.dismiss();
     } catch (err) {
@@ -223,7 +298,14 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
           listKey,
           (previous ?? []).map((g) => (g.id === goal.id ? { ...g, ...goalPatch, pendingSync: true } : g)),
         );
-        notify("Queued — will sync when online", "offline");
+        // Label assignment has no outbox operation registered for it (the
+        // outbox's kinds are fixed in src/lib/offline.ts), so it genuinely
+        // cannot follow the rest of this edit offline. Say so rather than
+        // letting the generic "will sync" toast imply otherwise.
+        notify(
+          labelsChanged ? "Queued — label changes need a connection" : "Queued — will sync when online",
+          "offline",
+        );
         sheetRef.current?.dismiss();
       } else {
         queryClient.setQueryData(listKey, previous);
@@ -232,7 +314,7 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     } finally {
       setIsSubmitting(false);
     }
-  }, [canSubmit, category, color, deadline, goal, parsedTargetHours, status, title]);
+  }, [canSubmit, category, color, deadline, goal, labelIds, labelsChanged, parsedTargetHours, status, title]);
 
   return (
     <BottomSheetModal
@@ -395,6 +477,34 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
           <GoalColorPicker value={color} onChange={setColor} />
         </View>
 
+        <View style={styles.field}>
+          <Text style={styles.label}>Labels</Text>
+          {labelsQuery.isPending ? (
+            <Text style={styles.labelsHint}>Loading labels…</Text>
+          ) : labels.length === 0 ? (
+            // No CTA to the Categories screen: this sheet has unsaved edits in
+            // it, and navigating away from a modal form to create a label
+            // would throw them away.
+            <Text style={styles.labelsHint}>
+              No labels yet. Create them on the Categories screen, then attach them here.
+            </Text>
+          ) : (
+            // Wraps rather than scrolling horizontally like tasks.tsx's goal
+            // filter: a nested horizontal scroller inside a bottom sheet fights
+            // the sheet's own pan gesture, and there's room to wrap here.
+            <View style={styles.labelRow}>
+              {labels.map((label) => (
+                <LabelChip
+                  key={label.id}
+                  label={label}
+                  selected={labelIds.includes(label.id)}
+                  onToggle={() => toggleLabel(label.id)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+
         {error ? (
           <Text style={styles.error} accessibilityRole="alert">
             {error}
@@ -426,6 +536,39 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
     </BottomSheetModal>
   );
 });
+
+/**
+ * One label in the multi-select. Selected chips tint off the LABEL's own
+ * color, the same trick MetaChip and tasks.tsx's goal filter use, so a ticked
+ * label here matches the chip GoalCard will render for it on the list.
+ * `checkbox` rather than `button`, because that is what a multi-select entry
+ * is — VoiceOver/TalkBack then announce the ticked state on their own.
+ */
+function LabelChip({ label, selected, onToggle }: { label: Label; selected: boolean; onToggle: () => void }) {
+  const accent = safeColor(label.color, colors.mutedForeground);
+
+  return (
+    <TouchableOpacity
+      style={[
+        styles.labelChip,
+        {
+          backgroundColor: selected ? withAlpha(accent, 0.14, colors.secondary) : colors.card,
+          borderColor: selected ? withAlpha(accent, 0.5, colors.border) : colors.border,
+        },
+      ]}
+      onPress={onToggle}
+      accessibilityRole="checkbox"
+      accessibilityLabel={label.name}
+      accessibilityState={{ checked: selected }}
+    >
+      <View style={[styles.labelDot, { backgroundColor: accent }]} />
+      <Text style={[styles.labelChipText, selected && styles.labelChipTextSelected]} numberOfLines={1}>
+        {label.name}
+      </Text>
+      {selected ? <Icon name="check" size={14} color={colors.foreground} /> : null}
+    </TouchableOpacity>
+  );
+}
 
 const styles = StyleSheet.create({
   sheetBackground: {
@@ -531,6 +674,40 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     fontWeight: "600",
     color: colors.destructive,
+  },
+  labelsHint: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
+    lineHeight: 18,
+  },
+  labelRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  labelChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs + 1,
+    minHeight: minTouchTarget - spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.full,
+    borderWidth: 1,
+  },
+  labelDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  labelChipText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.mutedForeground,
+    maxWidth: 160,
+  },
+  labelChipTextSelected: {
+    color: colors.foreground,
   },
   error: {
     ...typography.bodySmall,
