@@ -1297,6 +1297,14 @@ function createTasksApi(api) {
   };
 }
 
+// src/api/idempotency.ts
+var IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+function idempotentConfig(options) {
+  const key = options?.idempotencyKey;
+  if (!key) return void 0;
+  return { headers: { [IDEMPOTENCY_KEY_HEADER]: key } };
+}
+
 // src/api/time-entries.ts
 function createTimeEntriesApi(api) {
   return {
@@ -1305,7 +1313,31 @@ function createTimeEntriesApi(api) {
     getToday: () => api.get("/time-entries/today"),
     getWeeklyTotal: () => api.get("/time-entries/weekly-total"),
     getRecent: (params) => api.get("/time-entries/recent", { params }),
-    create: (data) => api.post("/time-entries", data),
+    /**
+     * `options.idempotencyKey` is what stops a timed-out create from being
+     * logged twice, and it is the one call in this file that genuinely needs
+     * it — see ./idempotency for the server contract.
+     *
+     * This endpoint is both the slowest write the API has (the handler runs
+     * several sequential Prisma round-trips: relation ownership checks, an
+     * optional task-title lookup, a same-day entry count, a plan-limit user
+     * fetch, the insert, then a goal-progress recompute) and the only one
+     * whose payload cannot be reconstructed if it is lost — elapsed time that
+     * was measured and then dropped is gone. Those two facts together are why
+     * every caller wraps it in "queue the payload if no response came back",
+     * and a cold-start request that exceeds the client's 20s timeout hits
+     * exactly that path having ALREADY committed its row. Without a key held
+     * constant across the live attempt and its replays, each replay inserts
+     * another copy — bounded in practice only by whatever eventually returns
+     * a real response (on the FREE plan, the daily entry cap 403, which is
+     * why the duplicates arrived in threes).
+     *
+     * Callers must mint the key once per stopped session / spoken log, pass
+     * it here, and reuse that same value as the outbox entry's
+     * `idempotencyKey` so the replay carries it too. Minting a fresh key per
+     * attempt reintroduces the bug in full.
+     */
+    create: (data, options) => api.post("/time-entries", data, idempotentConfig(options)),
     update: (id, data) => api.put(`/time-entries/${id}`, data),
     delete: (id) => api.delete(`/time-entries/${id}`)
   };
@@ -3406,6 +3438,7 @@ export {
   DEFAULT_KIND_WORDS,
   DEFAULT_PAGE_SIZE,
   GOAL_STATUS_OPTIONS,
+  IDEMPOTENCY_KEY_HEADER,
   INDENTATION_WIDTH,
   MAX_MESSAGE_LENGTH,
   MessagingError,
@@ -3495,6 +3528,7 @@ export {
   getProjection,
   getReportingWeekDates,
   hasResponse,
+  idempotentConfig,
   insertArchivedConversationEntry,
   isActionableVoiceIntent,
   isCoachBudgetExceededError,

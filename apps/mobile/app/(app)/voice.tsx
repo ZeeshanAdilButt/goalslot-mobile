@@ -432,8 +432,15 @@ export default function VoiceScreen() {
       date: getLocalDateString(),
     });
 
+    // One key for this stopped session, shared by the live attempt and the
+    // queued replay below — see timer.tsx's handleStop for the full
+    // reasoning. Short version: a create that times out may well have
+    // committed, and `hasResponse` cannot tell that from "never sent", so the
+    // replay has to be recognisable to the server as the same create.
+    const idempotencyKey = genId();
+
     try {
-      await apiClient.timeEntries.create(payload);
+      await apiClient.timeEntries.create(payload, { idempotencyKey });
       void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
       if (goalId) void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
       return { kind: "done", message: "Stopped and saved" };
@@ -445,7 +452,7 @@ export default function VoiceScreen() {
           id: genId(),
           kind: "time-entry-create",
           payload,
-          idempotencyKey: genId(),
+          idempotencyKey,
           createdAt: Date.now(),
           retries: 0,
         });
@@ -569,8 +576,12 @@ export default function VoiceScreen() {
       date: getLocalDateString(),
     });
 
+    // Same single-key-per-logical-log rule as every other time-entry create
+    // in the app; see timer.tsx's handleStop.
+    const idempotencyKey = genId();
+
     try {
-      await apiClient.timeEntries.create(payload);
+      await apiClient.timeEntries.create(payload, { idempotencyKey });
       void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
       if (target?.kind === "goal") void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
       return `Logged ${minutes} min${target === null ? "" : ` to ${target.name}`}`;
@@ -580,7 +591,7 @@ export default function VoiceScreen() {
           id: genId(),
           kind: "time-entry-create",
           payload,
-          idempotencyKey: genId(),
+          idempotencyKey,
           createdAt: Date.now(),
           retries: 0,
         });

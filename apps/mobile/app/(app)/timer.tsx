@@ -1125,8 +1125,22 @@ export default function TimerScreen() {
       setSelectedGoal(null);
     };
 
+    // Minted ONCE for this stopped session, then reused by every attempt to
+    // persist it: the first `submit()` below, each Retry from the failure
+    // alerts, and the outbox replay if it ends up queued. That shared
+    // identity is the entire mechanism — this endpoint is slow enough (cold
+    // start plus several sequential round-trips) to blow the client's 20s
+    // timeout while still committing the row, and a timeout is
+    // indistinguishable from "never sent" to the `hasResponse` check below.
+    // Carrying one key across all of them lets the server recognise the retry
+    // and the replay as the SAME create and answer with the original
+    // response, instead of inserting the session again. Regenerating it per
+    // attempt — which is what the queued entry used to do — is precisely what
+    // produced the duplicate "Untitled session" rows in Timer history.
+    const idempotencyKey = genId();
+
     const submit = async () => {
-      await apiClient.timeEntries.create(payload);
+      await apiClient.timeEntries.create(payload, { idempotencyKey });
       hapticCompletion();
       analytics.track({
         name: "timerStopped",
@@ -1210,7 +1224,11 @@ export default function TimerScreen() {
           id: genId(),
           kind: "time-entry-create",
           payload,
-          idempotencyKey: genId(),
+          // The SAME key the live attempt above already sent — not a fresh
+          // one. If that attempt reached the server before timing out, this
+          // replay is answered with its stored response instead of creating
+          // a second entry.
+          idempotencyKey,
           createdAt: Date.now(),
           retries: 0,
         });

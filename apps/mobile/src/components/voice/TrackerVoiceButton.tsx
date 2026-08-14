@@ -140,8 +140,13 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
         date: getLocalDateString(),
       });
 
+      // One key per spoken log, shared by the live attempt and the queued
+      // replay below — see timer.tsx's handleStop for why a fresh key per
+      // attempt is what let a timed-out create be logged more than once.
+      const idempotencyKey = genId();
+
       try {
-        await apiClient.timeEntries.create(payload);
+        await apiClient.timeEntries.create(payload, { idempotencyKey });
         hapticCompletion();
         void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
         if (target?.kind === "goal") {
@@ -157,7 +162,7 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
             id: genId(),
             kind: "time-entry-create",
             payload,
-            idempotencyKey: genId(),
+            idempotencyKey,
             createdAt: Date.now(),
             retries: 0,
           });

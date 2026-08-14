@@ -373,8 +373,30 @@ operationRegistry.registerOperation<NoteFavoritePayload, Note>("note-favorite", 
 // to its own definite rejections inline inside `execute` because it needs to
 // patch a cache entry synchronously with the throw; this one has no cache
 // entry to patch, so it uses the engine's generic hook instead.
+//
+// The `idempotencyKey` the sync engine hands `execute` is forwarded to the
+// API as the `idempotency-key` header, and that is load-bearing rather than
+// tidy: it is the only thing keeping a replay from logging the session a
+// SECOND time. This registration used to drop that argument on the floor,
+// which produced the three-identical-rows bug — a slow create (cold start
+// plus this endpoint's several sequential round-trips) blows the client's 20s
+// timeout AFTER the server has committed the row; the timeout carries no
+// `.response`, so the `hasResponse` check above reads it as "never sent" and
+// banks the identical payload here; every drain then replayed it into a fresh
+// row, and the only thing that ever stopped the bleeding was the FREE plan's
+// 3-entries-per-day cap finally answering with a real 403, which is what got
+// the entry dropped. With the key threaded, the first replay is recognised by
+// the server's IdempotencyInterceptor and answered with the ORIGINAL create's
+// response, so the entry syncs cleanly and leaves the outbox with no second
+// row behind it.
+//
+// This is also why a replay that times out AGAIN is now harmless, and why the
+// sync engine is right to leave such an entry queued without counting it as a
+// retry: repeated replays of the same key converge on one row rather than
+// accumulating.
 operationRegistry.registerOperation<CreateTimeEntryInput, TimeEntry>("time-entry-create", {
-  execute: async (payload) => (await apiClient.timeEntries.create(payload)).data,
+  execute: async (payload, idempotencyKey) =>
+    (await apiClient.timeEntries.create(payload, { idempotencyKey })).data,
   invalidateKeys: [timeEntryQueries.timeEntryQueries.all],
   onDropped: (payload) => notify(droppedTimeEntryMessage(payload), "error"),
 });

@@ -1,5 +1,6 @@
 export * from './types'
 export * from './client'
+export * from './idempotency'
 export * from './auth'
 export * from './coach'
 export * from './coach-settings'
