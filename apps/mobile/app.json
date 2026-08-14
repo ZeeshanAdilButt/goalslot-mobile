@@ -137,9 +137,9 @@
       "policy": "appVersion"
     },
     "updates": {
-      "_comment": "NON-FUNCTIONAL PLACEHOLDER. `url` needs a real EAS project ID, which only exists after running `eas init`/`eas update:configure` against an Expo account — explicitly out of scope for this change. `enabled: false` keeps expo-updates from trying to check this placeholder URL at runtime (it would otherwise fail every launch). Flip `enabled` to true and swap in the real https://u.expo.dev/<project-id> URL once EAS is set up.",
+      "_comment": "The EAS project (2522a293-1bc4-45b3-aba7-9a1054967145, owner zeeabutt) now exists, so `url` points at the real project rather than a placeholder. `enabled` stays false: turning on OTA updates for real needs build-profile `channel` values in eas.json plus a tested publish workflow, which is a separate, deliberate change from just fixing this URL.",
       "enabled": false,
-      "url": "https://u.expo.dev/REPLACE-WITH-REAL-EAS-PROJECT-ID"
+      "url": "https://u.expo.dev/2522a293-1bc4-45b3-aba7-9a1054967145"
     },
     "owner": "zeeabutt"
   }
