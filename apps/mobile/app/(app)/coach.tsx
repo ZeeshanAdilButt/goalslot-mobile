@@ -46,7 +46,7 @@
 // fit a phone-width chat screen in this pass.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -268,6 +268,10 @@ export default function CoachScreen() {
   );
 
   const openHistory = useCallback(() => {
+    // The composer's TextInput can be focused (keyboard up) when this fires
+    // — CoachHistorySheet has no input of its own, so nothing else tells the
+    // keyboard to lower, and it was rendering the sheet underneath it.
+    Keyboard.dismiss();
     historySheetRef.current?.present();
   }, []);
 

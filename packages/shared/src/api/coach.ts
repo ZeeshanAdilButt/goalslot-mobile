@@ -99,6 +99,17 @@ export interface CoachProposalAction {
   type: CoachProposalActionType
   id?: string
   payload?: Record<string, unknown>
+  /**
+   * For UPDATE_SCHEDULE_BLOCK/DELETE_SCHEDULE_BLOCK: the block's title as the
+   * Coach currently believes it to be, BEFORE this action's changes are
+   * applied — mirrors `expectedTitle` on the API's `CoachProposedAction` DTO
+   * (goal-slot-api/src/modules/coach-proposals/dto/apply-proposals.dto.ts).
+   * The backend requires the model to set this whenever the user identified
+   * the target block by name, purely as an identity check; the UI reuses it
+   * to describe an id-only action (e.g. "move it 30 minutes later") without
+   * a raw id or a cache lookup that might miss.
+   */
+  expectedTitle?: string
 }
 
 export interface CoachProposalResult {

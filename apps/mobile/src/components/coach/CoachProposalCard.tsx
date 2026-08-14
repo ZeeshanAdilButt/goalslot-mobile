@@ -27,10 +27,21 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import type { CoachProposalAction, CoachProposalActionType, CoachProposalBlock } from "@goalslot/shared";
+import type {
+  CoachProposalAction,
+  CoachProposalActionType,
+  CoachProposalBlock,
+  Goal,
+  ScheduleBlock,
+  Task,
+  TimeEntry,
+  WeekSchedule,
+} from "@goalslot/shared";
 
 import { Icon } from "@/components/ui/Icon";
+import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 /** Human label per action type. Kept exhaustive by the Record's key type. */
@@ -86,20 +97,126 @@ function readDayName(value: unknown): string | null {
 }
 
 /**
- * Summary of a proposed action's payload. Shows the fields the model
- * actually sent (title, times, date, duration) rather than resolving ids
- * against the query cache the way web's `describeAction` does — an id
- * lookup that misses would render an empty row on the one card whose whole
- * job is telling the user what they are agreeing to.
- *
- * The field list is deliberately wide. The narrow version this replaced only
- * looked at title/startTime/endTime/date/deadline/duration, so an
- * update-or-delete-by-id batch — the single most common shape, and exactly
- * what "link all Work blocks to the OloStep goal" produces — described
- * nothing at all and the card rendered a column of identical bare labels
- * with no way to tell one row from the next.
+ * Id -> human name/record lookups against whatever this app's own screens
+ * have already pulled into the react-query cache. Every method is
+ * best-effort: a cache miss (the item hasn't been fetched yet, or the id is
+ * stale) returns null, and every caller MUST treat null as "say something
+ * generic instead" — never fall through to printing the id itself. That
+ * boundary is what makes it safe to use here at all: this is the one card
+ * in the app whose whole job is telling the user what they're agreeing to,
+ * so a wrong guess is worse than no guess, but a raw database id is worse
+ * than either (see the "Update time entry / #9789e9e2" bug report this
+ * exists to fix).
  */
-function describeProposalAction(action: CoachProposalAction): string | null {
+interface ProposalCacheLookups {
+  goalName: (id: string) => string | null;
+  taskName: (id: string) => string | null;
+  scheduleBlockTitle: (id: string) => string | null;
+  timeEntry: (id: string) => TimeEntry | null;
+}
+
+function findInCachedLists<T>(lists: readonly (T[] | undefined)[], predicate: (item: T) => boolean): T | null {
+  for (const list of lists) {
+    const hit = list?.find(predicate);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * Builds the lookups above from whatever is currently in `queryClient`'s
+ * cache — a scan over already-fetched pages (goals/tasks/schedule/recent
+ * time entries), never a network request of its own. Cheap enough to build
+ * fresh on every render: the lists involved are a single user's data, not
+ * something worth memoizing against staleness.
+ */
+function buildProposalCacheLookups(queryClient: QueryClient): ProposalCacheLookups {
+  const goalLists = queryClient
+    .getQueriesData<Goal[]>({ queryKey: [...goalQueries.goalQueries.all, "list"] })
+    .map(([, data]) => data);
+  const taskLists = queryClient
+    .getQueriesData<Task[]>({ queryKey: [...taskQueries.taskQueries.all, "list"] })
+    .map(([, data]) => data);
+  const timeEntryLists = queryClient
+    .getQueriesData<TimeEntry[]>({ queryKey: timeEntryQueries.timeEntryQueries.all })
+    .map(([, data]) => data);
+  const scheduleBlockLists = queryClient
+    .getQueriesData<WeekSchedule>({ queryKey: scheduleQueries.scheduleQueries.root() })
+    .map(([, week]) => (week ? Object.values(week).flat() : undefined)) as (ScheduleBlock[] | undefined)[];
+
+  return {
+    goalName: (id) => findInCachedLists(goalLists, (g) => g.id === id)?.title ?? null,
+    taskName: (id) => findInCachedLists(taskLists, (t) => t.id === id)?.title ?? null,
+    scheduleBlockTitle: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id)?.title ?? null,
+    timeEntry: (id) => findInCachedLists(timeEntryLists, (e) => e.id === id),
+  };
+}
+
+/** A `goalId` value, resolved to a human name — handling both a real id (via the cache) and a same-batch "$ref:N" pointing at a not-yet-created CREATE_GOAL action (see collapseMultiDayBlocks / apply-proposals.dto.ts for the token format). */
+function resolveGoalIdName(
+  value: unknown,
+  allActions: readonly CoachProposalAction[],
+  lookups: ProposalCacheLookups,
+): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const ref = /^\$ref:(\d+)$/.exec(value);
+  if (ref) {
+    const target = allActions[Number(ref[1])];
+    if (!target || target.type !== "CREATE_GOAL") return null;
+    const targetPayload = target.payload ?? {};
+    return readString(targetPayload, "title") ?? readString(targetPayload, "name");
+  }
+  return lookups.goalName(value);
+}
+
+/** What the cache knows about the entity THIS action's own id/type targets — the "before" snapshot the payload itself never carries, since UPDATE_* payloads are partial (only the field actually changing). */
+function resolveCachedTarget(
+  action: CoachProposalAction,
+  lookups: ProposalCacheLookups,
+): { name: string | null; duration?: number; date?: string } | null {
+  const id = action.id;
+  if (!id) return null;
+  switch (action.type) {
+    case "RENAME_GOAL":
+    case "UPDATE_GOAL":
+    case "DELETE_GOAL":
+      return { name: lookups.goalName(id) };
+    case "UPDATE_SCHEDULE_BLOCK":
+    case "DELETE_SCHEDULE_BLOCK":
+      // The Coach is required to send the block's current title as
+      // `expectedTitle` whenever the user named it — check that (free, no
+      // cache dependency) before a lookup that could miss.
+      return { name: action.expectedTitle ?? lookups.scheduleBlockTitle(id) };
+    case "UPDATE_TASK":
+    case "DELETE_TASK":
+      return { name: lookups.taskName(id) };
+    case "UPDATE_TIME_ENTRY":
+    case "DELETE_TIME_ENTRY": {
+      const entry = lookups.timeEntry(id);
+      return entry ? { name: entry.taskName, duration: entry.duration, date: entry.date } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Summary of a proposed action's payload. Shows the fields the model
+ * actually sent (title, times, date, duration) plus, when the payload alone
+ * has nothing to show, whatever the cache already knows about the id being
+ * targeted — an id-only edit like `{ goalId }` (the entire content of a
+ * "link these to that goal" batch) otherwise describes nothing at all.
+ *
+ * A cache miss never falls back to printing the id itself — see
+ * ProposalCacheLookups' doc comment. Worst case, a row shows only the action
+ * label with no detail line, same as it always could for a genuinely empty
+ * payload.
+ */
+function describeProposalAction(
+  action: CoachProposalAction,
+  lookups: ProposalCacheLookups,
+  allActions: readonly CoachProposalAction[],
+): string | null {
   const payload = action.payload ?? {};
 
   // The timer actions carry none of the fields the generic path below looks
@@ -121,20 +238,26 @@ function describeProposalAction(action: CoachProposalAction): string | null {
   }
 
   const bits: string[] = [];
+  const cached = resolveCachedTarget(action, lookups);
 
   // What the thing is called. Models are inconsistent about which key holds
-  // it, so take the first that is actually present.
+  // it, so take the first that is actually present; failing that, fall back
+  // to whatever the cache knows the target was already called.
   const name =
     readString(payload, "title") ??
     readString(payload, "name") ??
     readString(payload, "taskName") ??
-    readString(payload, "goalName");
+    readString(payload, "goalName") ??
+    cached?.name ??
+    null;
   if (name !== null) bits.push(`"${name}"`);
 
   // The goal a block/task/entry is being attached to, when that isn't
   // already the name above — this is the whole content of a "link these to
-  // that goal" batch, and it used to be dropped on the floor.
-  const goalName = readString(payload, "goalName");
+  // that goal" batch. `goalName` (a readable string) is rare; the model
+  // almost always sends `goalId` instead, which used to be dropped on the
+  // floor entirely because nothing resolved it to a name.
+  const goalName = readString(payload, "goalName") ?? resolveGoalIdName(payload.goalId, allActions, lookups);
   if (goalName !== null && goalName !== name) bits.push(`goal "${goalName}"`);
 
   const start = readString(payload, "startTime");
@@ -151,34 +274,29 @@ function describeProposalAction(action: CoachProposalAction): string | null {
     if (day !== null) bits.push(day);
   }
 
-  const date = readString(payload, "date");
+  const date = readString(payload, "date") ?? cached?.date ?? null;
   if (date !== null) bits.push(date);
 
   const deadline = readString(payload, "deadline");
   if (deadline !== null) bits.push(`due ${deadline}`);
 
-  if (typeof payload.duration === "number") bits.push(`${payload.duration} min`);
+  const duration = typeof payload.duration === "number" ? payload.duration : cached?.duration;
+  if (duration !== undefined) bits.push(`${duration} min`);
 
   const status = readString(payload, "status");
   if (status !== null) bits.push(status.toLowerCase());
 
-  // Last resort so two rows in a by-id batch are never indistinguishable.
-  // `id` lives on the action for some models and inside the payload for
-  // others; both are checked because a row that says nothing is worse than a
-  // row that says a short hash.
-  if (bits.length === 0) {
-    const id = action.id ?? (typeof payload.id === "string" ? payload.id : null);
-    if (id !== null && id.length > 0) bits.push(`#${id.slice(0, 8)}`);
-  }
-
+  // No raw id fallback here, ever — see this function's doc comment. A row
+  // with nothing to say beyond its action label is a strictly better
+  // outcome than one that leaks a database primary key.
   return bits.length > 0 ? bits.join(" · ") : null;
 }
 
 /** One line naming everything a destructive batch will remove. */
-function describeDeletions(block: CoachProposalBlock): string {
+function describeDeletions(block: CoachProposalBlock, lookups: ProposalCacheLookups): string {
   const deletions = block.actions.filter((action) => DESTRUCTIVE_TYPES.has(action.type));
   const named = deletions
-    .map((action) => describeProposalAction(action))
+    .map((action) => describeProposalAction(action, lookups, block.actions))
     .filter((description): description is string => description !== null);
   if (named.length === 0) return "This removes data that can't be brought back.";
   return `This permanently removes ${named.join(", ")}.`;
@@ -206,10 +324,12 @@ type CardState =
 interface ActionRowProps {
   action: CoachProposalAction;
   destructive: boolean;
+  lookups: ProposalCacheLookups;
+  allActions: readonly CoachProposalAction[];
 }
 
-function ActionRow({ action, destructive }: ActionRowProps) {
-  const detail = describeProposalAction(action);
+function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps) {
+  const detail = describeProposalAction(action, lookups, allActions);
   return (
     <View style={styles.row}>
       <View style={[styles.rowMarker, destructive && styles.rowMarkerDestructive]} />
@@ -237,6 +357,11 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
   const [state, setState] = useState<CardState>({ phase: "idle" });
   const [expanded, setExpanded] = useState(false);
   const destructive = useMemo(() => isDestructiveProposal(block), [block]);
+  // Rebuilt fresh each render (not memoized against `block`) — it's a cheap
+  // scan over whatever's already in cache, and staleness here would mean
+  // showing a name that's a render behind rather than one that's wrong.
+  const queryClient = useQueryClient();
+  const lookups = buildProposalCacheLookups(queryClient);
 
   const run = useCallback(async () => {
     if (onApply === undefined) return;
@@ -260,11 +385,11 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
     // Second gate, and the platform's own alert rather than an in-card
     // confirm: a delete should look like every other delete in the OS, and
     // the destructive button style is what a user reads before the words.
-    Alert.alert("Apply this change?", describeDeletions(block), [
+    Alert.alert("Apply this change?", describeDeletions(block, lookups), [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: () => void run() },
     ]);
-  }, [block, destructive, run]);
+  }, [block, destructive, lookups, run]);
 
   const applying = state.phase === "applying";
   const applied = state.phase === "applied";
@@ -319,6 +444,8 @@ export function CoachProposalCard({ block, onApply, onDismiss }: CoachProposalCa
           key={`${action.type}-${index}`}
           action={action}
           destructive={DESTRUCTIVE_TYPES.has(action.type)}
+          lookups={lookups}
+          allActions={block.actions}
         />
       ))}
 
