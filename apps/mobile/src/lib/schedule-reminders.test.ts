@@ -63,7 +63,7 @@ function createQueue() {
 }
 
 describe("scheduleBlockReminder", () => {
-  it("asks for an ALARM, not a quiet notice", async () => {
+  it("defaults to an ALARM, not a quiet notice", async () => {
     const { queue, capability } = createQueue();
 
     await scheduleBlockReminder(block("a"), capability);
@@ -71,6 +71,29 @@ describe("scheduleBlockReminder", () => {
     // Without this flag the platform layer produces a silent shade entry —
     // the original "alarms not working" bug. See notifications.ts.
     expect(queue.get(reminderIdFor({ id: "a" }))?.alarm).toBe(true);
+    expect(queue.get(reminderIdFor({ id: "a" }))?.notify).toBeUndefined();
+  });
+
+  it("asks for the gentler 'notify' tier when given one, not alarm", async () => {
+    const { queue, capability } = createQueue();
+
+    await scheduleBlockReminder(block("a"), capability, "notify");
+
+    const request = queue.get(reminderIdFor({ id: "a" }));
+    expect(request?.notify).toBe(true);
+    // Mutually exclusive on the wire — a "notify" reminder must not also ask
+    // for alarm-grade delivery.
+    expect(request?.alarm).toBeUndefined();
+  });
+
+  it("asks for 'alarm' explicitly the same way the default does", async () => {
+    const { queue, capability } = createQueue();
+
+    await scheduleBlockReminder(block("a"), capability, "alarm");
+
+    const request = queue.get(reminderIdFor({ id: "a" }));
+    expect(request?.alarm).toBe(true);
+    expect(request?.notify).toBeUndefined();
   });
 
   it("repeats weekly on the block's own day and start time", async () => {
@@ -97,16 +120,26 @@ describe("scheduleBlockReminder", () => {
 });
 
 describe("reconcileBlockReminders", () => {
-  it("CANCELS a block that is switched off, rather than just not scheduling it", async () => {
+  it("CANCELS a block resolved to 'off', rather than just not scheduling it", async () => {
     const { queue, capability } = createQueue();
     const blocks = [block("a"), block("b")];
-    await reconcileBlockReminders(blocks, () => true, capability);
+    await reconcileBlockReminders(blocks, () => "alarm", capability);
     expect(queue.size).toBe(2);
 
     // "b" is now switched off.
-    await reconcileBlockReminders(blocks, (b) => b.id !== "b", capability);
+    await reconcileBlockReminders(blocks, (b) => (b.id === "b" ? "off" : "alarm"), capability);
 
     expect(Array.from(queue.keys())).toEqual([reminderIdFor({ id: "a" })]);
+  });
+
+  it("schedules a block resolved to 'notify' at the notify tier, not alarm", async () => {
+    const { queue, capability } = createQueue();
+
+    await reconcileBlockReminders([block("a")], () => "notify", capability);
+
+    const request = queue.get(reminderIdFor({ id: "a" }));
+    expect(request?.notify).toBe(true);
+    expect(request?.alarm).toBeUndefined();
   });
 
   it("keeps going after one block fails, so a single bad id can't silence the week", async () => {
@@ -119,7 +152,7 @@ describe("reconcileBlockReminders", () => {
       },
     };
 
-    await reconcileBlockReminders([block("a"), block("b"), block("c")], () => true, failing);
+    await reconcileBlockReminders([block("a"), block("b"), block("c")], () => "alarm", failing);
 
     expect(Array.from(queue.keys())).toEqual([reminderIdFor({ id: "a" }), reminderIdFor({ id: "c" })]);
   });
@@ -128,7 +161,7 @@ describe("reconcileBlockReminders", () => {
 describe("cancelBlockReminders", () => {
   it("empties the queue for exactly the blocks given", async () => {
     const { queue, capability } = createQueue();
-    await reconcileBlockReminders([block("a"), block("b"), block("c")], () => true, capability);
+    await reconcileBlockReminders([block("a"), block("b"), block("c")], () => "alarm", capability);
 
     await cancelBlockReminders([block("a"), block("c")], capability);
 
@@ -151,7 +184,7 @@ describe("cancelBlockReminders", () => {
 describe("pruneOrphanReminders", () => {
   it("cancels a reminder whose block no longer exists", async () => {
     const { queue, capability } = createQueue();
-    await reconcileBlockReminders([block("a"), block("deleted")], () => true, capability);
+    await reconcileBlockReminders([block("a"), block("deleted")], () => "alarm", capability);
 
     // "deleted" is gone — removed here, or on the web, or on another device.
     await pruneOrphanReminders([block("a")], capability);
@@ -161,7 +194,7 @@ describe("pruneOrphanReminders", () => {
 
   it("leaves notifications belonging to other features strictly alone", async () => {
     const { queue, capability } = createQueue();
-    await reconcileBlockReminders([block("a")], () => true, capability);
+    await reconcileBlockReminders([block("a")], () => "alarm", capability);
     // The timer's ongoing entry and a tracking reminder share the queue.
     await capability.scheduleNotification({
       id: "goalslot-timer-session",
@@ -187,7 +220,7 @@ describe("pruneOrphanReminders", () => {
 
   it("degrades to leaving the queue alone when the OS can't be listed", async () => {
     const { queue, capability } = createQueue();
-    await reconcileBlockReminders([block("a")], () => true, capability);
+    await reconcileBlockReminders([block("a")], () => "alarm", capability);
     const blind: NotificationCapability = {
       ...capability,
       async listScheduledIds() {

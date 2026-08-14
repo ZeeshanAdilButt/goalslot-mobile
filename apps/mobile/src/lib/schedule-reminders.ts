@@ -6,6 +6,8 @@
 import { formatTime12h, type ScheduleBlock } from "@goalslot/shared";
 import type { NotificationCapability } from "@goalslot/shared";
 
+import type { ReminderTier } from "./schedule-reminders-store";
+
 /**
  * Namespace every schedule-block alarm shares. Used both to mint ids and, in
  * `pruneOrphanReminders`, to recognise our own entries in the OS queue
@@ -18,9 +20,15 @@ export function reminderIdFor(block: Pick<ScheduleBlock, "id">): string {
   return `${REMINDER_ID_PREFIX}${block.id}`;
 }
 
+/**
+ * Arms a block's reminder at the given tier. "off" is not this function's
+ * job — a caller resolving "off" should call `cancelBlockReminder` instead,
+ * same as `reconcileBlockReminders` does below.
+ */
 export async function scheduleBlockReminder(
   block: ScheduleBlock,
   notifications: NotificationCapability,
+  tier: Exclude<ReminderTier, "off"> = "alarm",
 ): Promise<void> {
   const [hour, minute] = block.startTime.split(":").map(Number);
 
@@ -29,10 +37,14 @@ export async function scheduleBlockReminder(
     title: block.title,
     body: `Starting now · ${formatTime12h(block.startTime)}`,
     repeat: { weekday: block.dayOfWeek, hour, minute },
-    // The whole point of the feature: this must be audible and interrupt,
-    // not settle quietly into the shade. See NotificationInput.alarm and
-    // src/lib/notifications.ts for what this maps onto per platform.
-    alarm: true,
+    // The whole point of the "alarm" tier: this must be audible and
+    // interrupt, not settle quietly into the shade. See NotificationInput.alarm
+    // and src/lib/notifications.ts for what this maps onto per platform.
+    // "notify" is the gentler counterpart — audible, but not alarm-grade —
+    // and the two are mutually exclusive on the wire, so only one is ever
+    // set here.
+    alarm: tier === "alarm" ? true : undefined,
+    notify: tier === "notify" ? true : undefined,
     // Reuses the existing schedule-day route (deep-links.ts already resolves
     // this exact shape) rather than inventing a new notification-data case.
     data: { type: "schedule", dayOfWeek: block.dayOfWeek },
@@ -48,7 +60,8 @@ export async function cancelBlockReminder(
 
 /**
  * Brings the OS's queue in line with what the store says, for every block
- * given. Enabled blocks are (re)scheduled, disabled ones are cancelled.
+ * given. Blocks resolving to "notify" or "alarm" are (re)scheduled at that
+ * tier; "off" blocks are cancelled.
  *
  * The cancel half is not optional bookkeeping — it is the difference between
  * a switch that works and one that lies. Notifications already handed to the
@@ -62,15 +75,16 @@ export async function cancelBlockReminder(
  */
 export async function reconcileBlockReminders(
   blocks: readonly ScheduleBlock[],
-  isEnabled: (block: ScheduleBlock) => boolean,
+  tierFor: (block: ScheduleBlock) => ReminderTier,
   notifications: NotificationCapability,
 ): Promise<void> {
   for (const block of blocks) {
     try {
-      if (isEnabled(block)) {
-        await scheduleBlockReminder(block, notifications);
-      } else {
+      const tier = tierFor(block);
+      if (tier === "off") {
         await cancelBlockReminder(block, notifications);
+      } else {
+        await scheduleBlockReminder(block, notifications, tier);
       }
     } catch (error) {
       console.warn(`[schedule-reminders] could not reconcile reminder for block ${block.id}`, error);

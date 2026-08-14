@@ -1,26 +1,27 @@
-// Keeps OS-scheduled alarms in sync with the week's schedule blocks and the
-// reminders store, and exposes the on/off actions the Schedule screen calls.
+// Keeps OS-scheduled reminders in sync with the week's schedule blocks and
+// the reminders store, and exposes the tier-setting actions the Schedule
+// screen calls.
 //
-// WHY reconcile on every blocks change rather than only on explicit toggles:
-// alarms are on by default (schedule-reminders-store.ts), so a block that was
-// just created needs its notification scheduled without the user ever
-// touching a toggle — that's the whole point of "alerts for those who don't
-// turn on the alarms". expo-notifications' scheduleNotificationAsync with a
-// stable identifier (reminderIdFor) replaces any existing entry for that id
-// rather than stacking a duplicate, so re-running this for blocks that
-// haven't actually changed is a harmless no-op, not a bug.
+// WHY reconcile on every blocks change rather than only on explicit tier
+// changes: reminders are on ("alarm") by default (schedule-reminders-store.ts),
+// so a block that was just created needs its notification scheduled without
+// the user ever touching a control — that's the whole point of "alerts for
+// those who don't turn on the alarms". expo-notifications' scheduleNotificationAsync
+// with a stable identifier (reminderIdFor) replaces any existing entry for
+// that id rather than stacking a duplicate, so re-running this for blocks
+// that haven't actually changed is a harmless no-op, not a bug.
 //
 // WHY THE RECONCILER IS SPLIT OUT of the actions hook. It used to live in the
 // same hook the Schedule screen calls, which meant the app only ever armed
-// alarms while that one screen was mounted. That is fine right up until
+// reminders while that one screen was mounted. That is fine right up until
 // something empties the OS queue behind the app's back — and something does:
 // session-reset.ts calls `clearAllNotifications()` on sign-IN as well as
 // sign-out (deliberately, so a crash between the two can't leak the previous
-// account's reminders). After a normal sign-in every alarm was therefore
+// account's reminders). After a normal sign-in every reminder was therefore
 // cancelled, and nothing re-armed them until the user happened to open the
-// Schedule tab. A user who signs in and goes to Today gets no alarms, ever,
-// with no way to tell. `useScheduleReminderSync` is mounted once for the
-// whole authenticated app instead (see ScheduleRemindersSync.tsx).
+// Schedule tab. A user who signs in and goes to Today gets no reminders,
+// ever, with no way to tell. `useScheduleReminderSync` is mounted once for
+// the whole authenticated app instead (see ScheduleRemindersSync.tsx).
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
@@ -28,9 +29,11 @@ import type { ScheduleBlock } from "@goalslot/shared";
 
 import { useCapabilities } from "@/providers/capabilities-provider";
 import {
-  resolveReminderEnabled,
+  resolveReminderTier,
   useScheduleRemindersStore,
   type ReminderTarget,
+  type ReminderTier,
+  type ScheduleRemindersPersistedState,
 } from "./schedule-reminders-store";
 import {
   cancelBlockReminders,
@@ -40,8 +43,8 @@ import {
 } from "./schedule-reminders";
 
 /**
- * Serialises notification work so a reconcile pass and a manual toggle can't
- * race and leave the OS one step behind the store. Same guard
+ * Serialises notification work so a reconcile pass and a manual tier change
+ * can't race and leave the OS one step behind the store. Same guard
  * useTimerNotification.ts uses.
  */
 function useSerialQueue() {
@@ -57,29 +60,42 @@ function toTargets(blocks: readonly ScheduleBlock[]): ReminderTarget[] {
   return blocks.map((b) => ({ id: b.id, seriesId: b.seriesId }));
 }
 
+/** Arms a block at its resolved tier, or cancels it if that tier is "off". */
+async function armOrCancel(
+  block: ScheduleBlock,
+  tier: ReminderTier,
+  notifications: Parameters<typeof scheduleBlockReminder>[1],
+): Promise<void> {
+  if (tier === "off") {
+    await cancelBlockReminders([block], notifications);
+    return;
+  }
+  await scheduleBlockReminder(block, notifications, tier);
+}
+
 /**
  * The single owner of "what the OS should currently have queued". Mount once,
  * app-wide, for the whole authenticated session.
  */
 export function useScheduleReminderSync(blocks: readonly ScheduleBlock[]): void {
   const { notifications } = useCapabilities();
-  const masterEnabled = useScheduleRemindersStore((s) => s.masterEnabled);
-  const disabledSeriesIds = useScheduleRemindersStore((s) => s.disabledSeriesIds);
-  const disabledBlockIds = useScheduleRemindersStore((s) => s.disabledBlockIds);
+  const masterTier = useScheduleRemindersStore((s) => s.masterTier);
+  const seriesTierOverrides = useScheduleRemindersStore((s) => s.seriesTierOverrides);
+  const blockTierOverrides = useScheduleRemindersStore((s) => s.blockTierOverrides);
   const runQueued = useSerialQueue();
 
   // `blocks` is a fresh array on every render (query data / positionBlocks),
   // so this keys off what's actually in it rather than referential identity.
   // The times matter as much as the ids: editing a block's start time has to
-  // re-arm the alarm at the new time, and an id-only key would miss that.
+  // re-arm the reminder at the new time, and an id-only key would miss that.
   const blocksKey = blocks.map((b) => `${b.id}:${b.dayOfWeek}:${b.startTime}:${b.title}`).join("|");
 
   useEffect(() => {
-    const state = { masterEnabled, disabledSeriesIds, disabledBlockIds };
+    const state: ScheduleRemindersPersistedState = { masterTier, seriesTierOverrides, blockTierOverrides };
     void runQueued(async () => {
       await reconcileBlockReminders(
         blocks,
-        (block) => resolveReminderEnabled(state, { id: block.id, seriesId: block.seriesId }),
+        (block) => resolveReminderTier(state, { id: block.id, seriesId: block.seriesId }),
         notifications,
       );
       // Only meaningful once there is a real block list to diff against: with
@@ -89,20 +105,22 @@ export function useScheduleReminderSync(blocks: readonly ScheduleBlock[]): void 
       if (blocks.length > 0) await pruneOrphanReminders(blocks, notifications);
     });
     // `blocks` is represented by blocksKey (see above); the three store
-    // fields must stay dependencies so flipping any switch cancels or arms
+    // fields must stay dependencies so changing any tier cancels or arms
     // immediately, even when the block list itself hasn't changed.
-  }, [blocksKey, masterEnabled, disabledSeriesIds, disabledBlockIds, notifications, runQueued]);
+  }, [blocksKey, masterTier, seriesTierOverrides, blockTierOverrides, notifications, runQueued]);
 }
 
 export interface UseScheduleRemindersResult {
-  /** Master switch state — drives the header bell and the "all alarms" row. */
-  masterEnabled: boolean;
-  setMasterEnabled: (enabled: boolean) => Promise<void>;
-  isReminderEnabled: (block: ScheduleBlock) => boolean;
-  toggleBlockReminder: (block: ScheduleBlock) => Promise<void>;
-  /** True when every block in the group would alarm. */
-  isGroupEnabled: (members: readonly ScheduleBlock[]) => boolean;
-  setGroupEnabled: (members: readonly ScheduleBlock[], enabled: boolean) => Promise<void>;
+  /** Master tier — drives the header bell and the "all reminders" row. */
+  masterTier: ReminderTier;
+  setMasterTier: (tier: ReminderTier) => Promise<void>;
+  getReminderTier: (block: ScheduleBlock) => ReminderTier;
+  setBlockTier: (block: ScheduleBlock, tier: ReminderTier) => Promise<void>;
+  /** Drops a block's own override, falling back to inheriting its series (or master) tier. */
+  clearBlockReminderOverride: (block: ScheduleBlock) => Promise<void>;
+  /** The tier every block in the group shares, or "mixed" when they don't all agree. */
+  getGroupTier: (members: readonly ScheduleBlock[]) => ReminderTier | "mixed";
+  setGroupTier: (members: readonly ScheduleBlock[], tier: ReminderTier) => Promise<void>;
 }
 
 /**
@@ -110,75 +128,76 @@ export interface UseScheduleRemindersResult {
  * owns that, and having two reconcilers would mean two sources of truth for
  * the OS queue.
  *
- * Every action cancels eagerly rather than waiting for the sync pass. The
- * sync would get there (its store deps change), but "eventually, once a
- * re-render lands" is the wrong guarantee for switching an alarm off: the
- * user is entitled to assume the thing is silenced the moment the switch
+ * Every action arms/cancels eagerly rather than waiting for the sync pass.
+ * The sync would get there (its store deps change), but "eventually, once a
+ * re-render lands" is the wrong guarantee for changing a reminder's tier: the
+ * user is entitled to assume the change took effect the moment the control
  * moves.
  */
 export function useScheduleReminders(blocks: readonly ScheduleBlock[]): UseScheduleRemindersResult {
   const { notifications } = useCapabilities();
-  const masterEnabled = useScheduleRemindersStore((s) => s.masterEnabled);
-  const disabledSeriesIds = useScheduleRemindersStore((s) => s.disabledSeriesIds);
-  const disabledBlockIds = useScheduleRemindersStore((s) => s.disabledBlockIds);
-  const setMasterInStore = useScheduleRemindersStore((s) => s.setMasterEnabled);
-  const setSeriesInStore = useScheduleRemindersStore((s) => s.setSeriesEnabled);
-  const setBlockInStore = useScheduleRemindersStore((s) => s.setBlockEnabled);
+  const masterTier = useScheduleRemindersStore((s) => s.masterTier);
+  const seriesTierOverrides = useScheduleRemindersStore((s) => s.seriesTierOverrides);
+  const blockTierOverrides = useScheduleRemindersStore((s) => s.blockTierOverrides);
+  const setMasterInStore = useScheduleRemindersStore((s) => s.setMasterTier);
+  const setSeriesInStore = useScheduleRemindersStore((s) => s.setSeriesTier);
+  const setBlockInStore = useScheduleRemindersStore((s) => s.setBlockTier);
+  const clearBlockInStore = useScheduleRemindersStore((s) => s.clearBlockOverride);
   const runQueued = useSerialQueue();
 
   const state = useMemo(
-    () => ({ masterEnabled, disabledSeriesIds, disabledBlockIds }),
-    [masterEnabled, disabledSeriesIds, disabledBlockIds],
+    (): ScheduleRemindersPersistedState => ({ masterTier, seriesTierOverrides, blockTierOverrides }),
+    [masterTier, seriesTierOverrides, blockTierOverrides],
   );
 
   const universe = useMemo(() => toTargets(blocks), [blocks]);
 
-  const isReminderEnabled = useCallback(
-    (block: ScheduleBlock) => resolveReminderEnabled(state, { id: block.id, seriesId: block.seriesId }),
+  const getReminderTier = useCallback(
+    (block: ScheduleBlock) => resolveReminderTier(state, { id: block.id, seriesId: block.seriesId }),
     [state],
   );
 
-  const isGroupEnabled = useCallback(
-    (members: readonly ScheduleBlock[]) => members.length > 0 && members.every(isReminderEnabled),
-    [isReminderEnabled],
+  const getGroupTier = useCallback(
+    (members: readonly ScheduleBlock[]): ReminderTier | "mixed" => {
+      if (members.length === 0) return "mixed";
+      const [first, ...rest] = members.map(getReminderTier);
+      return rest.every((tier) => tier === first) ? first : "mixed";
+    },
+    [getReminderTier],
   );
 
   /**
-   * Silences or unsilences a whole group in one action.
+   * Sets a whole group's tier in one action.
    *
    * Two representations, because the group might not be a real series. When
    * every member shares one `seriesId` the store records it at the SERIES
    * level, which is strictly better: a sixth day added to that series later
-   * inherits the setting instead of arriving unsilenced. A lookalike group
-   * (see schedule-series.ts — five separately-created "Reading" blocks with
-   * five unrelated seriesIds) has no shared key to record against, so it
-   * falls back to one block-level entry per member. Same outcome today; the
-   * series form is just the one that keeps being true tomorrow.
+   * inherits the setting instead of arriving at the master tier. A lookalike
+   * group (see schedule-series.ts — five separately-created "Reading" blocks
+   * with five unrelated seriesIds) has no shared key to record against, so it
+   * falls back to one block-level override per member. Same outcome today;
+   * the series form is just the one that keeps being true tomorrow.
    */
-  const setGroupEnabled = useCallback(
-    async (members: readonly ScheduleBlock[], enabled: boolean) => {
+  const setGroupTier = useCallback(
+    async (members: readonly ScheduleBlock[], tier: ReminderTier) => {
       if (members.length === 0) return;
       const seriesIds = new Set(members.map((b) => b.seriesId));
       const isRealSeries = seriesIds.size === 1;
 
       if (isRealSeries) {
-        setSeriesInStore(members[0].seriesId, enabled, universe);
+        setSeriesInStore(members[0].seriesId, tier, universe);
       } else {
         for (const member of members) {
-          setBlockInStore({ id: member.id, seriesId: member.seriesId }, enabled, universe);
+          setBlockInStore({ id: member.id, seriesId: member.seriesId }, tier, universe);
         }
       }
 
       await runQueued(async () => {
-        if (!enabled) {
-          await cancelBlockReminders(members, notifications);
-          return;
-        }
         for (const block of members) {
           try {
-            await scheduleBlockReminder(block, notifications);
+            await armOrCancel(block, tier, notifications);
           } catch (error) {
-            console.warn(`[schedule-reminders] could not arm reminder for block ${block.id}`, error);
+            console.warn(`[schedule-reminders] could not set reminder tier for block ${block.id}`, error);
           }
         }
       });
@@ -186,54 +205,68 @@ export function useScheduleReminders(blocks: readonly ScheduleBlock[]): UseSched
     [notifications, runQueued, setBlockInStore, setSeriesInStore, universe],
   );
 
-  const setMasterEnabled = useCallback(
-    async (enabled: boolean) => {
-      setMasterInStore(enabled);
+  const setMasterTier = useCallback(
+    async (tier: ReminderTier) => {
+      setMasterInStore(tier);
       await runQueued(async () => {
-        if (!enabled) {
-          // Cancel everything now. Leaving already-queued alarms to fire
-          // after a master OFF is the exact failure the switch exists to
-          // prevent, and it is worse than having no switch at all.
-          await cancelBlockReminders(blocks, notifications);
-          return;
-        }
         for (const block of blocks) {
           try {
-            await scheduleBlockReminder(block, notifications);
+            // Individual overrides still win over the master change — the
+            // store already accounts for that, so re-resolve per block
+            // rather than assuming every block now sits at `tier`.
+            const resolved = resolveReminderTier(
+              { masterTier: tier, seriesTierOverrides, blockTierOverrides },
+              { id: block.id, seriesId: block.seriesId },
+            );
+            await armOrCancel(block, resolved, notifications);
           } catch (error) {
             console.warn(`[schedule-reminders] could not arm reminder for block ${block.id}`, error);
           }
         }
       });
     },
-    [blocks, notifications, runQueued, setMasterInStore],
+    [blocks, blockTierOverrides, notifications, runQueued, seriesTierOverrides, setMasterInStore],
   );
 
-  const toggleBlockReminder = useCallback(
-    async (block: ScheduleBlock) => {
-      const nextEnabled = !isReminderEnabled(block);
-      setBlockInStore({ id: block.id, seriesId: block.seriesId }, nextEnabled, universe);
+  const setBlockTier = useCallback(
+    async (block: ScheduleBlock, tier: ReminderTier) => {
+      setBlockInStore({ id: block.id, seriesId: block.seriesId }, tier, universe);
       await runQueued(async () => {
         try {
-          if (nextEnabled) {
-            await scheduleBlockReminder(block, notifications);
-          } else {
-            await cancelBlockReminders([block], notifications);
-          }
+          await armOrCancel(block, tier, notifications);
         } catch (error) {
-          console.warn(`[schedule-reminders] could not toggle reminder for block ${block.id}`, error);
+          console.warn(`[schedule-reminders] could not set reminder tier for block ${block.id}`, error);
         }
       });
     },
-    [isReminderEnabled, notifications, runQueued, setBlockInStore, universe],
+    [notifications, runQueued, setBlockInStore, universe],
+  );
+
+  const clearBlockReminderOverride = useCallback(
+    async (block: ScheduleBlock) => {
+      clearBlockInStore({ id: block.id, seriesId: block.seriesId });
+      await runQueued(async () => {
+        try {
+          const resolved = resolveReminderTier(
+            { masterTier, seriesTierOverrides, blockTierOverrides: {} },
+            { id: block.id, seriesId: block.seriesId },
+          );
+          await armOrCancel(block, resolved, notifications);
+        } catch (error) {
+          console.warn(`[schedule-reminders] could not clear reminder override for block ${block.id}`, error);
+        }
+      });
+    },
+    [clearBlockInStore, masterTier, notifications, runQueued, seriesTierOverrides],
   );
 
   return {
-    masterEnabled,
-    setMasterEnabled,
-    isReminderEnabled,
-    toggleBlockReminder,
-    isGroupEnabled,
-    setGroupEnabled,
+    masterTier,
+    setMasterTier,
+    getReminderTier,
+    setBlockTier,
+    clearBlockReminderOverride,
+    getGroupTier,
+    setGroupTier,
   };
 }

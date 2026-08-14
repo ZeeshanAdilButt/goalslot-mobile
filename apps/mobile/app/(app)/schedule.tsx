@@ -79,7 +79,7 @@ export default function ScheduleScreen() {
   const router = useRouter();
   const { notifications } = useCapabilities();
   const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
-  // Whether the bell's promise is actually being kept: `reminders.masterEnabled`
+  // Whether the bell's promise is actually being kept: `reminders.masterTier`
   // is only this app's own intent, not proof the OS will do anything with it.
   // A user who denied (or never granted) the system notification permission
   // still sees the bell as fully "on" with zero indication that nothing will
@@ -368,9 +368,15 @@ export default function ScheduleScreen() {
   // exist right now. The previous version added every current block id to a
   // disabled set, so the next block the user created came back on and the
   // switch had silently undone itself — see schedule-reminders-store.ts.
+  // A single tap only ever moves between the two ends of the tier scale —
+  // fully on (loud alarms) and fully off — not through "notify" too. Cycling
+  // three states off one small icon is a bad fit for a single tap target,
+  // and "notify" as a global default isn't the ask anyway: it's meant to be
+  // an exception a user sets per block/series from BlockDetailSheet, not
+  // what the whole week defaults to.
   const handleToggleAllReminders = useCallback(() => {
     hapticLight();
-    // Toggling this store's flag can't fix a blocked OS permission — the
+    // Toggling this store's tier can't fix a blocked OS permission — the
     // switch would just flip from "on and silently doing nothing" to "off
     // and doing nothing on purpose", with the same invisible root cause
     // either way. Route to the one place that actually can (device Settings,
@@ -379,7 +385,7 @@ export default function ScheduleScreen() {
       router.push("/notification-settings");
       return;
     }
-    void reminders.setMasterEnabled(!reminders.masterEnabled);
+    void reminders.setMasterTier(reminders.masterTier === "off" ? "alarm" : "off");
   }, [notificationsBlocked, reminders, router]);
 
   return (
@@ -413,19 +419,19 @@ export default function ScheduleScreen() {
             accessibilityHint={
               notificationsBlocked
                 ? "Notifications are off for GoalSlot, so alarms won't ring. Opens notification settings to fix it."
-                : reminders.masterEnabled
+                : reminders.masterTier !== "off"
                   ? "Turns off every schedule alarm, including slots you add later"
                   : "Turns every schedule alarm back on"
             }
-            accessibilityState={notificationsBlocked ? undefined : { checked: reminders.masterEnabled }}
+            accessibilityState={notificationsBlocked ? undefined : { checked: reminders.masterTier !== "off" }}
           >
             <Icon
-              name={reminders.masterEnabled ? "bell" : "bell-off"}
+              name={reminders.masterTier !== "off" ? "bell" : "bell-off"}
               size={20}
               color={
                 notificationsBlocked
                   ? colors.warning
-                  : reminders.masterEnabled
+                  : reminders.masterTier !== "off"
                     ? colors.foreground
                     : colors.mutedForeground
               }
@@ -433,7 +439,7 @@ export default function ScheduleScreen() {
             {/* Only worth flagging while the switch itself is "on" — off is
                 already unambiguous, and doubling up the warning there would
                 just be noise. */}
-            {notificationsBlocked && reminders.masterEnabled ? (
+            {notificationsBlocked && reminders.masterTier !== "off" ? (
               <View style={styles.remindersToggleWarningDot} />
             ) : null}
           </Pressable>
@@ -538,13 +544,11 @@ export default function ScheduleScreen() {
         onDelete={handleDeleteBlock}
         onEdit={handleEditBlock}
         onDismiss={() => setDetailBlock(null)}
-        reminderEnabled={detailBlock ? reminders.isReminderEnabled(detailBlock) : true}
-        onToggleReminder={() => detailBlock && void reminders.toggleBlockReminder(detailBlock)}
+        reminderTier={detailBlock ? reminders.getReminderTier(detailBlock) : "alarm"}
+        onChangeReminderTier={(tier) => detailBlock && void reminders.setBlockTier(detailBlock, tier)}
         seriesSize={detailLinked.length}
-        seriesEnabled={detailLinked.length > 0 ? reminders.isGroupEnabled(detailLinked) : true}
-        onToggleSeriesReminder={() =>
-          void reminders.setGroupEnabled(detailLinked, !reminders.isGroupEnabled(detailLinked))
-        }
+        seriesTier={detailLinked.length > 0 ? reminders.getGroupTier(detailLinked) : "alarm"}
+        onChangeSeriesTier={(tier) => void reminders.setGroupTier(detailLinked, tier)}
       />
     </SafeAreaView>
   );

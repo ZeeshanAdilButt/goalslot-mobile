@@ -111,8 +111,19 @@ export default function NotificationSettingsScreen() {
         ? "Turned off in your device settings. Tap to open them."
         : "Tap to allow schedule alarms and timer nudges.";
 
-  const masterEnabled = useScheduleRemindersStore((s) => s.masterEnabled);
-  const setMasterEnabled = useScheduleRemindersStore((s) => s.setMasterEnabled);
+  // This switch only distinguishes "off" from "not off" — the tri-state
+  // choice between a quiet "notify" and a loud "alarm" is set per block/series
+  // from that block's own detail sheet (BlockDetailSheet.tsx), same as the
+  // footnote below already says. Turning this switch back on restores
+  // "alarm", matching the store's own default-on rationale (see
+  // schedule-reminders-store.ts's header comment).
+  const masterTier = useScheduleRemindersStore((s) => s.masterTier);
+  const setMasterTier = useScheduleRemindersStore((s) => s.setMasterTier);
+  const masterEnabled = masterTier !== "off";
+  const setMasterEnabled = useCallback(
+    (enabled: boolean) => setMasterTier(enabled ? "alarm" : "off"),
+    [setMasterTier],
+  );
 
   const reminderIntervalMinutes = useSettingsStore((s) => s.timerReminderIntervalMinutes);
   const setReminderIntervalMinutes = useSettingsStore((s) => s.setTimerReminderIntervalMinutes);

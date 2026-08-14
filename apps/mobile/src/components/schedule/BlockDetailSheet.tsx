@@ -16,7 +16,7 @@
 // detail surface now, which is also where the web puts it.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from "react";
-import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BottomSheetBackdrop,
@@ -37,6 +37,10 @@ import {
 import { Icon } from "@/components/ui/Icon";
 import { SheetHandle } from "@/components/ui/SheetHandle";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
+// Owned by the reminders store/hook (schedule-reminders-store.ts,
+// useScheduleReminders.ts) — this sheet only renders the three-way choice,
+// it never resolves or persists one itself.
+import type { ReminderTier } from "@/lib/schedule-reminders-store";
 // Primitive half of the same token set (both resolve to theme/foundation.ts).
 import { typography as typeScale } from "@/theme";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -55,14 +59,17 @@ export interface BlockDetailSheetProps {
   onDelete: (block: ScheduleBlock, scope: ScheduleDeleteScope) => void;
   onEdit: (block: ScheduleBlock) => void;
   onDismiss: () => void;
-  /** Whether this block's reminder notification is currently on — see useScheduleReminders.ts. */
-  reminderEnabled: boolean;
-  onToggleReminder: () => void;
+  /** This block's own resolved reminder tier — see useScheduleReminders.ts's getReminderTier. */
+  reminderTier: ReminderTier;
+  onChangeReminderTier: (tier: ReminderTier) => void;
   /** How many blocks share this block's seriesId. 1 means it isn't really a series. */
   seriesSize: number;
-  /** Whether the whole series' alarms are on — the "silence Reading everywhere" switch. */
-  seriesEnabled: boolean;
-  onToggleSeriesReminder: () => void;
+  /**
+   * The whole series/group's tier — the "set Reading everywhere" control.
+   * "mixed" when the days don't all currently share one tier (getGroupTier).
+   */
+  seriesTier: ReminderTier | "mixed";
+  onChangeSeriesTier: (tier: ReminderTier) => void;
 }
 
 export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetProps>(function BlockDetailSheet(
@@ -71,11 +78,11 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
     onDelete,
     onEdit,
     onDismiss,
-    reminderEnabled,
-    onToggleReminder,
+    reminderTier,
+    onChangeReminderTier,
     seriesSize,
-    seriesEnabled,
-    onToggleSeriesReminder,
+    seriesTier,
+    onChangeSeriesTier,
   },
   ref,
 ) {
@@ -217,47 +224,46 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
 
             {/* "ability to be able to turn on alarms for all schedule blocks
                 and also ability to stop all or one" — this is the "or one"
-                half; the master switch lives in the Schedule screen's header.
-                Between the two sits the series row below: silencing "Reading"
-                once instead of opening five days and flipping five switches. */}
+                half; the master on/off lives in the Schedule screen's header.
+                Between the two sits the series row below: setting "Reading"
+                once instead of opening five days and picking five times.
+                Off/Notify/Alarm rather than the old on/off switch: a quiet
+                "Notify" tier sits between full silence and the loud alarm
+                treatment (sound + vibration + bypasses Focus/DND). */}
             <View style={styles.reminderRow}>
               <View style={styles.reminderLabelGroup}>
-                <Icon name={reminderEnabled ? "bell" : "bell-off"} size={16} color={colors.mutedForeground} />
+                <Icon name={reminderTier === "off" ? "bell-off" : "bell"} size={16} color={colors.mutedForeground} />
                 <View style={styles.reminderCopy}>
-                  <Text style={styles.reminderLabel}>Alarm for this day</Text>
+                  <Text style={styles.reminderLabel}>Reminder for this day</Text>
                   <Text style={styles.reminderHint}>
-                    {reminderEnabled
-                      ? `Rings at ${formatTime12h(block.startTime)}`
-                      : "Silenced"}
+                    {describeReminderTier(reminderTier, `at ${formatTime12h(block.startTime)}`)}
                   </Text>
                 </View>
               </View>
-              <Switch
-                value={reminderEnabled}
-                onValueChange={onToggleReminder}
-                accessibilityRole="switch"
-                accessibilityLabel={`Alarm for this day, ${DAYS_OF_WEEK_FULL[block.dayOfWeek]} at ${formatTime12h(block.startTime)}`}
-                accessibilityState={{ checked: reminderEnabled }}
+              <ReminderTierControl
+                value={reminderTier}
+                onChange={onChangeReminderTier}
+                accessibilityLabel={`Reminder for this day, ${DAYS_OF_WEEK_FULL[block.dayOfWeek]} at ${formatTime12h(block.startTime)}`}
               />
             </View>
 
             {isSeries ? (
               <View style={styles.reminderRow}>
                 <View style={styles.reminderLabelGroup}>
-                  <Icon name={seriesEnabled ? "bell" : "bell-off"} size={16} color={colors.mutedForeground} />
+                  <Icon name={seriesTier === "off" ? "bell-off" : "bell"} size={16} color={colors.mutedForeground} />
                   <View style={styles.reminderCopy}>
-                    <Text style={styles.reminderLabel}>Alarms for all {seriesSize} days</Text>
+                    <Text style={styles.reminderLabel}>Reminder for all {seriesSize} days</Text>
                     <Text style={styles.reminderHint}>
-                      Every day &ldquo;{block.title}&rdquo; repeats
+                      {seriesTier === "mixed"
+                        ? `Different for each of the ${seriesSize} days`
+                        : describeReminderTier(seriesTier, `every day “${block.title}” repeats`)}
                     </Text>
                   </View>
                 </View>
-                <Switch
-                  value={seriesEnabled}
-                  onValueChange={onToggleSeriesReminder}
-                  accessibilityRole="switch"
-                  accessibilityLabel={`Alarms for all ${seriesSize} days of ${block.title}`}
-                  accessibilityState={{ checked: seriesEnabled }}
+                <ReminderTierControl
+                  value={seriesTier}
+                  onChange={onChangeSeriesTier}
+                  accessibilityLabel={`Reminder for all ${seriesSize} days of ${block.title}`}
                 />
               </View>
             ) : null}
@@ -288,6 +294,56 @@ export const BlockDetailSheet = forwardRef<BottomSheetModal, BlockDetailSheetPro
     </BottomSheetModal>
   );
 });
+
+/** Off / Notify / Alarm, in the order they should read left to right. */
+const TIER_OPTIONS: ReadonlyArray<{ tier: ReminderTier; label: string }> = [
+  { tier: "off", label: "Off" },
+  { tier: "notify", label: "Notify" },
+  { tier: "alarm", label: "Alarm" },
+];
+
+/** Plain-language effect of a tier, for the hint line under its label. `whenLabel` reads like "at 6:00 PM" or "every day it repeats". */
+function describeReminderTier(tier: ReminderTier, whenLabel: string): string {
+  if (tier === "off") return "No alert";
+  if (tier === "notify") return `Notifies quietly ${whenLabel}`;
+  return `Rings and vibrates ${whenLabel}`;
+}
+
+/**
+ * The three-way Off/Notify/Alarm choice, replacing the old on/off Switch.
+ * Same segmented-pill-row convention as ReminderIntervalPicker.tsx and
+ * JournalReminderTimePicker.tsx — a fixed set of three, so unlike those two
+ * this doesn't need to scroll, just three equal-width pills.
+ */
+function ReminderTierControl({
+  value,
+  onChange,
+  accessibilityLabel,
+}: {
+  value: ReminderTier | "mixed";
+  onChange: (tier: ReminderTier) => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <View style={styles.tierRow} accessibilityRole="radiogroup" accessibilityLabel={accessibilityLabel}>
+      {TIER_OPTIONS.map(({ tier, label }) => {
+        const selected = value === tier;
+        return (
+          <Pressable
+            key={tier}
+            style={({ pressed }) => [styles.tierChip, selected && styles.tierChipSelected, pressed && styles.tierChipPressed]}
+            onPress={() => onChange(tier)}
+            accessibilityRole="radio"
+            accessibilityLabel={label}
+            accessibilityState={{ selected }}
+          >
+            <Text style={[styles.tierChipLabel, selected && styles.tierChipLabelSelected]}>{label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 function Fact({ label, value, swatch }: { label: string; value: string; swatch?: string }) {
   return (
@@ -370,17 +426,19 @@ const styles = StyleSheet.create({
   section: {
     gap: spacing.sm,
   },
+  // Column, not the row-with-a-Switch-on-the-right this replaced: three
+  // pills need more width than a switch ever did, so the tier control gets
+  // its own full-width line below the label instead of squeezing in beside
+  // it — same stacking ReminderIntervalPicker/JournalReminderTimePicker use
+  // for their own label-then-options layout.
   reminderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    gap: spacing.sm,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: radii.lg,
     backgroundColor: colors.muted,
   },
   reminderLabelGroup: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
@@ -399,6 +457,40 @@ const styles = StyleSheet.create({
     textTransform: "none",
     letterSpacing: 0,
     color: colors.mutedForeground,
+  },
+  // Three equal pills rather than ReminderIntervalPicker's scrolling row —
+  // there are only ever three options here, so there's nothing to scroll to,
+  // and `flex: 1` on each chip turns the row into a proper segmented control
+  // spanning the same width the label line above it does.
+  tierRow: {
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  tierChip: {
+    flex: 1,
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  tierChipSelected: {
+    backgroundColor: colors.foreground,
+    borderColor: colors.foreground,
+  },
+  tierChipPressed: {
+    opacity: 0.7,
+  },
+  tierChipLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  tierChipLabelSelected: {
+    color: colors.white,
   },
   sectionLabel: {
     ...typography.label,

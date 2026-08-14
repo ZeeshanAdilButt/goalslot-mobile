@@ -119,6 +119,18 @@ interface NotificationInputBase {
    * resolves even when permission was refused.
    */
   alarm?: boolean
+  /**
+   * Ask for this to be delivered as a gentler, still-audible notification —
+   * a normal sound/visible banner, but deliberately NOT alarm-grade: no max
+   * priority, no forced vibration pattern, and it must not bypass a Focus/
+   * Do-Not-Disturb profile the way `alarm` does. Sits between "nothing" and
+   * `alarm` for callers (like a schedule block's reminder tier) that need a
+   * middle option, not just on/off.
+   *
+   * Mutually exclusive with `alarm` — a caller sets at most one of the two,
+   * never both. Defaults to false, same as `alarm`.
+   */
+  notify?: boolean
 }
 
 /** Fires once, at an exact absolute instant — e.g. a coach nudge or a one-off deadline. */

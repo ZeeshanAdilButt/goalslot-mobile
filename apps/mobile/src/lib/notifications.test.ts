@@ -252,7 +252,7 @@ describe("createExpoNotificationCapability", () => {
       expect(mockSetNotificationChannelAsync).toHaveBeenCalledTimes(1);
     });
 
-    it("leaves a non-alarm notification quiet and channel-free", async () => {
+    it("leaves a non-alarm, non-notify notification quiet and channel-free", async () => {
       setPlatform("android");
       mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
       mockScheduleNotificationAsync.mockResolvedValue("native-id");
@@ -268,6 +268,125 @@ describe("createExpoNotificationCapability", () => {
       expect(request.content.sound).toBeUndefined();
       expect(request.trigger.channelId).toBeUndefined();
       expect(mockSetNotificationChannelAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  // The middle tier: audible like an alarm, but deliberately not loud or
+  // DND-piercing. Everything here either asserts what "notify" keeps from
+  // "alarm" (the sound, so it isn't silently swallowed the same bug way) or
+  // what it deliberately drops (priority, vibration pattern, timeSensitive).
+  describe("'notify'-tier delivery", () => {
+    const originalPlatform = Platform.OS;
+
+    function setPlatform(os: "ios" | "android") {
+      Object.defineProperty(Platform, "OS", { value: os, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(Platform, "OS", { value: originalPlatform, configurable: true });
+    });
+
+    async function scheduleNotify() {
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+      await createExpoNotificationCapability().scheduleNotification({
+        id: "notify-1",
+        title: "Reading",
+        body: "Starting now · 6:00 AM",
+        repeat: { weekday: 1, hour: 6, minute: 0 },
+        notify: true,
+      });
+      return mockScheduleNotificationAsync.mock.calls[0][0];
+    }
+
+    it("still carries a sound — the same silent-banner bug applies to this tier too", async () => {
+      setPlatform("ios");
+
+      const request = await scheduleNotify();
+
+      expect(request.content.sound).toBe("default");
+    });
+
+    it("does NOT ask iOS to break through Focus/DND — that's alarm-only", async () => {
+      setPlatform("ios");
+
+      const request = await scheduleNotify();
+
+      expect(request.content.interruptionLevel).toBeUndefined();
+    });
+
+    it("does NOT set a custom vibration pattern — the system default applies", async () => {
+      setPlatform("android");
+
+      const request = await scheduleNotify();
+
+      expect(request.content.vibrate).toBeUndefined();
+    });
+
+    it("does NOT request MAX/HIGH priority", async () => {
+      setPlatform("android");
+
+      const request = await scheduleNotify();
+
+      expect(request.content.priority).toBeUndefined();
+    });
+
+    it("pins to its own DEFAULT-importance Android channel, separate from the alarm channel", async () => {
+      setPlatform("android");
+
+      const request = await scheduleNotify();
+
+      const [channelId, config] = mockSetNotificationChannelAsync.mock.calls[0];
+      expect(config.importance).toBe(3); // AndroidImportance.DEFAULT
+      expect(config.sound).toBe("default");
+      expect(request.trigger.channelId).toBe(channelId);
+      expect(channelId).not.toBe("goalslot-schedule-alarms-v1");
+    });
+
+    it("creates the notify channel once, not once per block", async () => {
+      setPlatform("android");
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+      const capability = createExpoNotificationCapability();
+
+      for (const id of ["a", "b", "c"]) {
+        await capability.scheduleNotification({
+          id,
+          title: id,
+          body: "",
+          repeat: { weekday: 1, hour: 6, minute: 0 },
+          notify: true,
+        });
+      }
+
+      expect(mockSetNotificationChannelAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the notify and alarm channels distinct across calls", async () => {
+      setPlatform("android");
+      mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      mockScheduleNotificationAsync.mockResolvedValue("native-id");
+      const capability = createExpoNotificationCapability();
+
+      await capability.scheduleNotification({
+        id: "alarm-block",
+        title: "Alarm",
+        body: "",
+        repeat: { weekday: 1, hour: 6, minute: 0 },
+        alarm: true,
+      });
+      await capability.scheduleNotification({
+        id: "notify-block",
+        title: "Notify",
+        body: "",
+        repeat: { weekday: 1, hour: 7, minute: 0 },
+        notify: true,
+      });
+
+      expect(mockSetNotificationChannelAsync).toHaveBeenCalledTimes(2);
+      const [alarmChannelId] = mockSetNotificationChannelAsync.mock.calls[0];
+      const [notifyChannelId] = mockSetNotificationChannelAsync.mock.calls[1];
+      expect(alarmChannelId).not.toBe(notifyChannelId);
     });
   });
 

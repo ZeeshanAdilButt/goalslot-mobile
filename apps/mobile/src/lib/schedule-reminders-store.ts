@@ -1,24 +1,40 @@
-// Which schedule blocks have their alarm turned OFF, at three levels of
-// granularity: everything, one series, one block.
+// What each schedule block's reminder is set to, at three levels of
+// granularity: everything, one series, one block. Three tiers now, not two:
+// "off" (nothing), "notify" (a quiet, still-audible notice), or "alarm"
+// (today's loud, DND-piercing behavior).
 //
 // Opt-OUT, not opt-in, and that's deliberate: "I need real alarms and/or
 // alerts... for those who don't turn on the alarms, every time a new
 // schedule slot is in action" — the only way a silent-by-default reminder
 // system reaches someone who never opens a settings toggle is if reminders
-// are already on. So a block's alarm is ON unless something switched it off;
-// nothing has to be explicitly enabled for the default case to work.
+// are already on. So a block's reminder defaults to "alarm" unless something
+// set it to something else; nothing has to be explicitly enabled for the
+// default case to work.
 //
-// WHY THREE LEVELS. "turn off all alarms, or the alarms for a series of
-// schedule blocks" is two different asks, and neither is expressible as a
-// set of block ids:
+// WHY THREE LEVELS OF GRANULARITY (master / series / block). "turn off all
+// reminders, or the reminders for a series of schedule blocks" is two
+// different asks, and neither is expressible as a set of block ids:
 //
-//   - A master switch has to be STICKY. The previous implementation's
-//     "disable all" just bulk-added every currently-known block id, so the
-//     next block the user created came back ON — the switch silently undid
-//     itself. A master switch is one boolean, not a snapshot.
+//   - A master switch has to be STICKY. Bulk-recording every currently-known
+//     block id would mean the next block the user creates comes back ON —
+//     the switch would silently undo itself. A master tier is one value, not
+//     a snapshot.
 //   - Silencing "Reading" has to silence the whole series, including days
 //     the user hasn't looked at, and has to keep applying if a day is added
 //     to that series later. Again: not a snapshot of ids.
+//
+// WHY AN EXPLICIT OVERRIDE MAP INSTEAD OF THE OLD DISABLED-SETS-WITH-DEMOTION
+// MODEL. The previous shape (masterEnabled/disabledSeriesIds/disabledBlockIds,
+// boolean-only) had to rewrite a broader OFF into an equivalent set of
+// narrower OFFs every time something below it turned ON, or the switch that
+// visibly moved would change nothing — a dead switch on an alarms screen
+// means a missed alarm. With three tiers instead of two, that demote-and-
+// rewrite machinery does not generalise cleanly (there is no single "the
+// opposite of off" to expand into). An explicit override map sidesteps the
+// whole problem: each level just records its own most-specific answer, and
+// resolution is a lookup with most-specific-wins, not a rewrite. A block
+// override of "alarm" simply outranks a series override of "off" by lookup
+// order — nothing above it has to change.
 //
 // Only the three bare pieces of state are persisted here, never the
 // notification content. Actually scheduling/cancelling the OS-level
@@ -42,150 +58,95 @@ export interface ReminderTarget {
   seriesId: string;
 }
 
+/** Off = nothing. Notify = quiet, still-audible. Alarm = today's loud, DND-piercing behavior. */
+export type ReminderTier = "off" | "notify" | "alarm";
+
 export interface ScheduleRemindersPersistedState {
-  /** Master switch. False silences every schedule alarm, now and in future. */
-  masterEnabled: boolean;
-  /** Series whose alarms are off — applies to days not yet loaded, and to days added later. */
-  disabledSeriesIds: string[];
-  /** Individual blocks switched off inside an otherwise-on series. */
-  disabledBlockIds: string[];
+  /** Master tier. Applies to every block, now and in future, unless overridden below. */
+  masterTier: ReminderTier;
+  /** seriesId -> explicit override. Applies to days not yet loaded, and to days added later. */
+  seriesTierOverrides: Record<string, ReminderTier>;
+  /** blockId -> explicit override. Wins over any series or master tier. */
+  blockTierOverrides: Record<string, ReminderTier>;
 }
 
 /**
- * Resolution is a plain AND down the hierarchy: a block alarms only if the
- * master is on, its series isn't silenced, and it isn't silenced itself.
+ * Most-specific-wins: a block's own override beats its series' override,
+ * which beats the master tier. No AND-ing, no demotion — the override map
+ * already holds the final answer at whichever level someone last touched.
  */
-export function resolveReminderEnabled(
+export function resolveReminderTier(
   state: ScheduleRemindersPersistedState,
   target: ReminderTarget,
-): boolean {
-  if (!state.masterEnabled) return false;
-  if (state.disabledSeriesIds.includes(target.seriesId)) return false;
-  return !state.disabledBlockIds.includes(target.id);
+): ReminderTier {
+  return state.blockTierOverrides[target.id] ?? state.seriesTierOverrides[target.seriesId] ?? state.masterTier;
 }
 
-// ---------------------------------------------------------------------------
-// Transitions
-//
-// Turning something ON has to be able to escape a broader OFF above it, or
-// the switch is dead: a user who hits the master off, then opens "Reading"
-// and flips its toggle on, must get Reading back — not a switch that visibly
-// moves and changes nothing. A dead switch on an alarms screen means a missed
-// alarm, so the rule is explicit:
-//
-//   Turning ON at a level DEMOTES any OFF above it — the broader OFF is
-//   rewritten as the equivalent set of OFFs one level down, minus the branch
-//   being turned on — and CLEARS every OFF below it.
-//
-// Turning OFF is just the plain thing: record the OFF at that level.
-//
-// Every demotion is exact, not approximate, because the "universe" of blocks
-// really is knowable: a schedule is one week (WeekSchedule is keyed 0-6), so
-// the caller can always hand over every block there is.
-// ---------------------------------------------------------------------------
-
-function without<T>(list: readonly T[], remove: ReadonlySet<T>): T[] {
-  return list.filter((item) => !remove.has(item));
+function withOverride<T extends Record<string, ReminderTier>>(overrides: T, key: string, tier: ReminderTier): T {
+  return { ...overrides, [key]: tier };
 }
 
-function withAll<T>(list: readonly T[], add: readonly T[]): T[] {
-  return Array.from(new Set([...list, ...add]));
+function withoutOverride<T extends Record<string, ReminderTier>>(overrides: T, key: string): T {
+  if (!(key in overrides)) return overrides;
+  const next = { ...overrides };
+  delete next[key];
+  return next;
 }
 
-/** Rewrites `masterEnabled: false` as "every series except this one is off". */
-function demoteMaster(
+export function applyMasterTier(
   state: ScheduleRemindersPersistedState,
-  keepSeriesId: string,
-  universe: readonly ReminderTarget[],
+  tier: ReminderTier,
 ): ScheduleRemindersPersistedState {
-  if (state.masterEnabled) return state;
-  const otherSeriesIds = Array.from(
-    new Set(universe.map((t) => t.seriesId).filter((id) => id !== keepSeriesId)),
-  );
-  return {
-    ...state,
-    masterEnabled: true,
-    disabledSeriesIds: withAll(state.disabledSeriesIds, otherSeriesIds),
-  };
+  return { ...state, masterTier: tier };
 }
 
-/** Rewrites "this series is off" as "every block in it except this one is off". */
-function demoteSeries(
-  state: ScheduleRemindersPersistedState,
-  keepBlockId: string,
-  seriesId: string,
-  universe: readonly ReminderTarget[],
-): ScheduleRemindersPersistedState {
-  if (!state.disabledSeriesIds.includes(seriesId)) return state;
-  const siblingIds = universe
-    .filter((t) => t.seriesId === seriesId && t.id !== keepBlockId)
-    .map((t) => t.id);
-  return {
-    ...state,
-    disabledSeriesIds: without(state.disabledSeriesIds, new Set([seriesId])),
-    disabledBlockIds: withAll(state.disabledBlockIds, siblingIds),
-  };
-}
-
-export function applyMasterEnabled(
-  state: ScheduleRemindersPersistedState,
-  enabled: boolean,
-): ScheduleRemindersPersistedState {
-  // "Turn everything on" means exactly that — the levels below are cleared
-  // rather than left to re-silence something the moment the master comes back.
-  if (enabled) return { masterEnabled: true, disabledSeriesIds: [], disabledBlockIds: [] };
-  return { ...state, masterEnabled: false };
-}
-
-export function applySeriesEnabled(
+export function applySeriesTier(
   state: ScheduleRemindersPersistedState,
   seriesId: string,
-  enabled: boolean,
-  universe: readonly ReminderTarget[],
+  tier: ReminderTier,
 ): ScheduleRemindersPersistedState {
-  if (!enabled) {
-    return { ...state, disabledSeriesIds: withAll(state.disabledSeriesIds, [seriesId]) };
-  }
-  const demoted = demoteMaster(state, seriesId, universe);
-  const memberIds = new Set(universe.filter((t) => t.seriesId === seriesId).map((t) => t.id));
-  return {
-    ...demoted,
-    disabledSeriesIds: without(demoted.disabledSeriesIds, new Set([seriesId])),
-    // Clear the level below: turning the whole series on can't leave one of
-    // its days still individually muted.
-    disabledBlockIds: without(demoted.disabledBlockIds, memberIds),
-  };
+  return { ...state, seriesTierOverrides: withOverride(state.seriesTierOverrides, seriesId, tier) };
 }
 
-export function applyBlockEnabled(
+/** Drops the series override entirely, falling back to inheriting the master tier. */
+export function clearSeriesTierOverride(
+  state: ScheduleRemindersPersistedState,
+  seriesId: string,
+): ScheduleRemindersPersistedState {
+  return { ...state, seriesTierOverrides: withoutOverride(state.seriesTierOverrides, seriesId) };
+}
+
+export function applyBlockTier(
   state: ScheduleRemindersPersistedState,
   target: ReminderTarget,
-  enabled: boolean,
-  universe: readonly ReminderTarget[],
+  tier: ReminderTier,
 ): ScheduleRemindersPersistedState {
-  if (!enabled) {
-    return { ...state, disabledBlockIds: withAll(state.disabledBlockIds, [target.id]) };
-  }
-  const afterMaster = demoteMaster(state, target.seriesId, universe);
-  const afterSeries = demoteSeries(afterMaster, target.id, target.seriesId, universe);
-  return {
-    ...afterSeries,
-    disabledBlockIds: without(afterSeries.disabledBlockIds, new Set([target.id])),
-  };
+  return { ...state, blockTierOverrides: withOverride(state.blockTierOverrides, target.id, tier) };
+}
+
+/** Drops the block override entirely, falling back to inheriting the series (or master) tier. */
+export function clearBlockTierOverride(
+  state: ScheduleRemindersPersistedState,
+  target: ReminderTarget,
+): ScheduleRemindersPersistedState {
+  return { ...state, blockTierOverrides: withoutOverride(state.blockTierOverrides, target.id) };
 }
 
 const INITIAL_STATE: ScheduleRemindersPersistedState = {
-  masterEnabled: true,
-  disabledSeriesIds: [],
-  disabledBlockIds: [],
+  masterTier: "alarm",
+  seriesTierOverrides: {},
+  blockTierOverrides: {},
 };
 
 interface ScheduleRemindersState extends ScheduleRemindersPersistedState {
-  isReminderEnabled: (target: ReminderTarget) => boolean;
-  isSeriesEnabled: (seriesId: string) => boolean;
-  setMasterEnabled: (enabled: boolean) => void;
-  setSeriesEnabled: (seriesId: string, enabled: boolean, universe: readonly ReminderTarget[]) => void;
-  setBlockEnabled: (target: ReminderTarget, enabled: boolean, universe: readonly ReminderTarget[]) => void;
+  reminderTierFor: (target: ReminderTarget) => ReminderTier;
+  seriesTierFor: (seriesId: string) => ReminderTier;
+  setMasterTier: (tier: ReminderTier) => void;
+  /** `universe` is accepted for interface symmetry with the block/series setters, though this override doesn't need it to resolve inheritance. */
+  setSeriesTier: (seriesId: string, tier: ReminderTier, universe: readonly ReminderTarget[]) => void;
+  clearSeriesOverride: (seriesId: string) => void;
+  setBlockTier: (target: ReminderTarget, tier: ReminderTier, universe: readonly ReminderTarget[]) => void;
+  clearBlockOverride: (target: ReminderTarget) => void;
   /**
    * Drop every stored preference. For sign-out only (see session-reset.ts):
    * these are one account's schedule-block and series ids and mean nothing
@@ -194,30 +155,116 @@ interface ScheduleRemindersState extends ScheduleRemindersPersistedState {
   reset: () => void;
 }
 
+/** Old (pre-tri-state) persisted shape, kept only so `migrate` can read it. */
+interface LegacyPersistedStateV1 {
+  masterEnabled: boolean;
+  disabledSeriesIds: string[];
+  disabledBlockIds: string[];
+}
+
+function isLegacyShape(state: unknown): state is Partial<LegacyPersistedStateV1> {
+  if (state === null || typeof state !== "object") return false;
+  return "masterEnabled" in state || "disabledSeriesIds" in state || "disabledBlockIds" in state;
+}
+
+/** A string array read back from untyped storage, or `[]` for anything else — never trusted blind. */
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * Converts the old boolean disabled-sets shape into the new tri-state
+ * override maps, losslessly: nobody's existing on/off choice should change
+ * or reset because of this upgrade.
+ *
+ *   masterEnabled: false -> masterTier: "off";  true -> "alarm"
+ *   each id in disabledSeriesIds/disabledBlockIds -> an "off" override
+ *
+ * `legacy` comes straight from AsyncStorage's untyped JSON, so every field is
+ * revalidated here rather than trusted at the type level — a v0 install only
+ * ever had `disabledBlockIds`, and a corrupted or hand-edited blob could hand
+ * either array field back as anything at all (a string, for instance, which
+ * is itself iterable character-by-character and would otherwise silently
+ * produce one bogus override per character).
+ */
+function migrateFromLegacyV1(legacy: Partial<LegacyPersistedStateV1>): ScheduleRemindersPersistedState {
+  const seriesTierOverrides: Record<string, ReminderTier> = {};
+  for (const seriesId of asStringArray(legacy.disabledSeriesIds)) {
+    seriesTierOverrides[seriesId] = "off";
+  }
+  const blockTierOverrides: Record<string, ReminderTier> = {};
+  for (const blockId of asStringArray(legacy.disabledBlockIds)) {
+    blockTierOverrides[blockId] = "off";
+  }
+  return {
+    masterTier: legacy.masterEnabled === false ? "off" : "alarm",
+    seriesTierOverrides,
+    blockTierOverrides,
+  };
+}
+
+/**
+ * zustand persist's `migrate` function, pulled out to a standalone export so
+ * a test can call it directly against a raw AsyncStorage-shaped payload
+ * without going through hydration. `version` is whatever `state.version` a
+ * real persisted blob on disk carries (or `0`, zustand's default, for a blob
+ * from before this store had a `version` field at all).
+ *
+ * Losslessness is the whole point: nobody's existing on/off choice should
+ * change or reset because of this upgrade.
+ */
+export function migrateSchedulePersistedState(
+  persisted: unknown,
+  version: number,
+): ScheduleRemindersPersistedState {
+  if (version >= 2) {
+    const state = (persisted ?? {}) as Partial<ScheduleRemindersPersistedState>;
+    return {
+      masterTier: state.masterTier ?? INITIAL_STATE.masterTier,
+      seriesTierOverrides: state.seriesTierOverrides ?? {},
+      blockTierOverrides: state.blockTierOverrides ?? {},
+    };
+  }
+  // v0 persisted only `disabledBlockIds`; v1 added `masterEnabled` and
+  // `disabledSeriesIds`. Both funnel through the same conversion — a v0 blob
+  // simply has nothing for the fields v1 introduced, and `asStringArray` /
+  // the `=== false` check above already treat "missing" the same as "empty"
+  // / "on".
+  return migrateFromLegacyV1(isLegacyShape(persisted) ? persisted : {});
+}
+
 export const useScheduleRemindersStore = create<ScheduleRemindersState>()(
   persist(
     (set, get) => ({
       ...INITIAL_STATE,
 
-      isReminderEnabled(target) {
-        return resolveReminderEnabled(get(), target);
+      reminderTierFor(target) {
+        return resolveReminderTier(get(), target);
       },
 
-      isSeriesEnabled(seriesId) {
+      seriesTierFor(seriesId) {
         const state = get();
-        return state.masterEnabled && !state.disabledSeriesIds.includes(seriesId);
+        return state.seriesTierOverrides[seriesId] ?? state.masterTier;
       },
 
-      setMasterEnabled(enabled) {
-        set((state) => applyMasterEnabled(state, enabled));
+      setMasterTier(tier) {
+        set((state) => applyMasterTier(state, tier));
       },
 
-      setSeriesEnabled(seriesId, enabled, universe) {
-        set((state) => applySeriesEnabled(state, seriesId, enabled, universe));
+      setSeriesTier(seriesId, tier) {
+        set((state) => applySeriesTier(state, seriesId, tier));
       },
 
-      setBlockEnabled(target, enabled, universe) {
-        set((state) => applyBlockEnabled(state, target, enabled, universe));
+      clearSeriesOverride(seriesId) {
+        set((state) => clearSeriesTierOverride(state, seriesId));
+      },
+
+      setBlockTier(target, tier) {
+        set((state) => applyBlockTier(state, target, tier));
+      },
+
+      clearBlockOverride(target) {
+        set((state) => clearBlockTierOverride(state, target));
       },
 
       reset() {
@@ -228,26 +275,20 @@ export const useScheduleRemindersStore = create<ScheduleRemindersState>()(
       name: "goalslot-schedule-reminders-store",
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => ({
-        masterEnabled: state.masterEnabled,
-        disabledSeriesIds: state.disabledSeriesIds,
-        disabledBlockIds: state.disabledBlockIds,
+        masterTier: state.masterTier,
+        seriesTierOverrides: state.seriesTierOverrides,
+        blockTierOverrides: state.blockTierOverrides,
       }),
-      // v0 persisted only `disabledBlockIds`. Zustand's default merge is a
-      // shallow spread of persisted-over-initial, so the two new keys would
-      // already fall back to their defaults — but that is an implementation
-      // detail of the middleware to be relying on for a switch whose failure
-      // mode is "alarms the user turned off start firing again". Spelling the
-      // migration out makes the intent survive a zustand upgrade: keep the
-      // per-block opt-outs the user already made, default the rest to on.
-      version: 1,
-      migrate: (persisted, version) => {
-        const state = (persisted ?? {}) as Partial<ScheduleRemindersPersistedState>;
-        if (version >= 1) return { ...INITIAL_STATE, ...state };
-        return {
-          ...INITIAL_STATE,
-          disabledBlockIds: Array.isArray(state.disabledBlockIds) ? state.disabledBlockIds : [],
-        };
-      },
+      // v0 persisted only `disabledBlockIds`. v1 added `masterEnabled` +
+      // `disabledSeriesIds` with a boolean-and-sets model. v2 replaces all
+      // three with the tri-state override model above. Every prior shape is
+      // migrated forward explicitly rather than trusting zustand's default
+      // shallow-merge-over-initial: on a switch whose failure mode is
+      // "reminders the user turned off start firing again", relying on an
+      // implementation detail of the persist middleware to paper over a
+      // shape change is not good enough.
+      version: 2,
+      migrate: migrateSchedulePersistedState,
     },
   ),
 );

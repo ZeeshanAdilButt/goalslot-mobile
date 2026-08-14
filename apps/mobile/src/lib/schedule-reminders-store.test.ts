@@ -1,22 +1,43 @@
-// The three-level alarm hierarchy: master -> series -> block.
+// The three-level reminder hierarchy: master -> series -> block, each of
+// which now holds one of three tiers ("off" / "notify" / "alarm") rather than
+// a boolean.
 //
-// Tested against the exported pure transitions rather than the zustand store,
-// so none of this needs AsyncStorage or hydration. The store's actions are
-// one-line wrappers around exactly these functions.
+// Tested against the exported pure transitions and `resolveReminderTier`
+// rather than the zustand store, so none of this needs AsyncStorage or
+// hydration. The store's actions are one-line wrappers around exactly these
+// functions.
 //
-// The cases that matter are the DEMOTIONS. Turning something on inside a
-// broader "off" is where a naive AND-only model produces a switch that
-// visibly moves and changes nothing — and on an alarms screen, a dead switch
-// is a missed alarm.
+// The case that matters most is PRECEDENCE: a block's own override always
+// wins over its series', which always wins over the master tier — simple
+// lookup, no rewriting of a broader entry required (unlike the old
+// boolean-and-sets model this replaced).
+//
+// The bottom `describe("useScheduleRemindersStore", ...)` block exercises the
+// real zustand store (actions, not just the pure transitions above), so it
+// needs the same AsyncStorage stub timer-store.test.ts uses: the store module
+// imports AsyncStorage at load time for its persist middleware, and nothing
+// here is testing persistence itself.
 
 import {
-  applyBlockEnabled,
-  applyMasterEnabled,
-  applySeriesEnabled,
-  resolveReminderEnabled,
+  applyBlockTier,
+  applyMasterTier,
+  applySeriesTier,
+  clearBlockTierOverride,
+  clearSeriesTierOverride,
+  resolveReminderTier,
+  useScheduleRemindersStore,
   type ReminderTarget,
   type ScheduleRemindersPersistedState,
 } from "./schedule-reminders-store";
+
+jest.mock("@react-native-async-storage/async-storage", () => ({
+  __esModule: true,
+  default: {
+    getItem: jest.fn(async () => null),
+    setItem: jest.fn(async () => undefined),
+    removeItem: jest.fn(async () => undefined),
+  },
+}));
 
 // "Reading" on Mon-Fri (one series), plus a standalone Sunday block.
 const READING = "series-reading";
@@ -32,146 +53,221 @@ const UNIVERSE: ReminderTarget[] = [
   { id: "gym-0", seriesId: GYM },
 ];
 
-const ON: ScheduleRemindersPersistedState = {
-  masterEnabled: true,
-  disabledSeriesIds: [],
-  disabledBlockIds: [],
+const ALARM_STATE: ScheduleRemindersPersistedState = {
+  masterTier: "alarm",
+  seriesTierOverrides: {},
+  blockTierOverrides: {},
 };
 
-/** Every target that would actually alarm in the given state. */
-function ringing(state: ScheduleRemindersPersistedState): string[] {
-  return UNIVERSE.filter((t) => resolveReminderEnabled(state, t)).map((t) => t.id);
-}
-
-describe("resolveReminderEnabled", () => {
-  it("is on by default — nothing has to be explicitly enabled", () => {
-    expect(ringing(ON)).toEqual(UNIVERSE.map((t) => t.id));
+describe("resolveReminderTier", () => {
+  it("is 'alarm' by default — nothing has to be explicitly set", () => {
+    for (const target of UNIVERSE) {
+      expect(resolveReminderTier(ALARM_STATE, target)).toBe("alarm");
+    }
   });
 
-  it("is off when the master is off, whatever the levels below say", () => {
-    expect(ringing({ ...ON, masterEnabled: false })).toEqual([]);
+  it("master tier applies to everything when nothing overrides it", () => {
+    const state = applyMasterTier(ALARM_STATE, "notify");
+    for (const target of UNIVERSE) {
+      expect(resolveReminderTier(state, target)).toBe("notify");
+    }
   });
 
-  it("is off for every member of a silenced series", () => {
-    expect(ringing({ ...ON, disabledSeriesIds: [READING] })).toEqual(["gym-0"]);
+  it("a series override wins over the master tier", () => {
+    const state = applySeriesTier(ALARM_STATE, READING, "off");
+    expect(resolveReminderTier(state, reading(1))).toBe("off");
+    expect(resolveReminderTier(state, { id: "gym-0", seriesId: GYM })).toBe("alarm");
   });
 
-  it("is off for an individually silenced block only", () => {
-    expect(ringing({ ...ON, disabledBlockIds: ["reading-3"] })).toEqual([
-      "reading-1",
-      "reading-2",
-      "reading-4",
-      "reading-5",
-      "gym-0",
-    ]);
-  });
-});
+  it("a block override wins over its series' override", () => {
+    const seriesOff = applySeriesTier(ALARM_STATE, READING, "off");
+    const state = applyBlockTier(seriesOff, reading(3), "notify");
 
-describe("applyMasterEnabled", () => {
-  it("silences everything, including blocks that do not exist yet", () => {
-    const next = applyMasterEnabled(ON, false);
-
-    expect(next.masterEnabled).toBe(false);
-    // The point of a boolean rather than a snapshot of ids: a block created
-    // after the switch was thrown is still silenced.
-    const blockAddedLater: ReminderTarget = { id: "brand-new", seriesId: "series-new" };
-    expect(resolveReminderEnabled(next, blockAddedLater)).toBe(false);
+    expect(resolveReminderTier(state, reading(3))).toBe("notify");
+    // Untouched siblings still inherit the series-level "off".
+    expect(resolveReminderTier(state, reading(1))).toBe("off");
   });
 
-  it("turning the master back on clears every level below it", () => {
-    const muted: ScheduleRemindersPersistedState = {
-      masterEnabled: false,
-      disabledSeriesIds: [READING],
-      disabledBlockIds: ["gym-0"],
-    };
+  it("a block override wins over the master tier even with no series override", () => {
+    const state = applyBlockTier(ALARM_STATE, reading(3), "off");
 
-    const next = applyMasterEnabled(muted, true);
-
-    expect(ringing(next)).toEqual(UNIVERSE.map((t) => t.id));
-  });
-});
-
-describe("applySeriesEnabled", () => {
-  it("silencing a series covers days that are not in the universe yet", () => {
-    const next = applySeriesEnabled(ON, READING, false, UNIVERSE);
-
-    // A sixth Reading day added next week inherits the series' off state
-    // rather than starting on.
-    expect(resolveReminderEnabled(next, { id: "reading-6", seriesId: READING })).toBe(false);
+    expect(resolveReminderTier(state, reading(3))).toBe("off");
+    expect(resolveReminderTier(state, reading(1))).toBe("alarm");
   });
 
-  it("silences every day of the series at once and leaves other series alone", () => {
-    const next = applySeriesEnabled(ON, READING, false, UNIVERSE);
-
-    expect(ringing(next)).toEqual(["gym-0"]);
-  });
-
-  it("re-enabling a series clears per-day mutes inside it", () => {
+  it("every combination of tiers at every level resolves to the most specific one set", () => {
     const state: ScheduleRemindersPersistedState = {
-      masterEnabled: true,
-      disabledSeriesIds: [READING],
-      disabledBlockIds: ["reading-2", "gym-0"],
+      masterTier: "off",
+      seriesTierOverrides: { [READING]: "notify" },
+      blockTierOverrides: { "reading-3": "alarm" },
     };
 
-    const next = applySeriesEnabled(state, READING, true, UNIVERSE);
-
-    // All five Reading days ring; the unrelated gym mute is untouched.
-    expect(ringing(next)).toEqual(["reading-1", "reading-2", "reading-3", "reading-4", "reading-5"]);
-  });
-
-  it("DEMOTES a master-off rather than being a dead switch", () => {
-    const allMuted: ScheduleRemindersPersistedState = { ...ON, masterEnabled: false };
-
-    const next = applySeriesEnabled(allMuted, READING, true, UNIVERSE);
-
-    // Reading comes back, and nothing else does — the master-off has been
-    // rewritten as "every OTHER series is off".
-    expect(next.masterEnabled).toBe(true);
-    expect(ringing(next)).toEqual(["reading-1", "reading-2", "reading-3", "reading-4", "reading-5"]);
+    expect(resolveReminderTier(state, reading(3))).toBe("alarm"); // block wins
+    expect(resolveReminderTier(state, reading(1))).toBe("notify"); // series wins
+    expect(resolveReminderTier(state, { id: "gym-0", seriesId: GYM })).toBe("off"); // master wins
   });
 });
 
-describe("applyBlockEnabled", () => {
-  it("silences one day without touching its siblings", () => {
-    const next = applyBlockEnabled(ON, reading(3), false, UNIVERSE);
-
-    expect(ringing(next)).toEqual(["reading-1", "reading-2", "reading-4", "reading-5", "gym-0"]);
+describe("applyMasterTier", () => {
+  it("applies to blocks that do not exist yet", () => {
+    const next = applyMasterTier(ALARM_STATE, "off");
+    const blockAddedLater: ReminderTarget = { id: "brand-new", seriesId: "series-new" };
+    expect(resolveReminderTier(next, blockAddedLater)).toBe("off");
   });
 
-  it("DEMOTES a series-off so one day can be exempted from it", () => {
-    const seriesMuted = applySeriesEnabled(ON, READING, false, UNIVERSE);
-
-    const next = applyBlockEnabled(seriesMuted, reading(3), true, UNIVERSE);
-
-    // Only Wednesday escapes; the rest of Reading stays silent.
-    expect(ringing(next)).toEqual(["reading-3", "gym-0"]);
-    expect(next.disabledSeriesIds).not.toContain(READING);
-  });
-
-  it("DEMOTES a master-off through BOTH levels for a single block", () => {
-    const everythingOff: ScheduleRemindersPersistedState = {
-      masterEnabled: false,
-      disabledSeriesIds: [READING],
-      disabledBlockIds: [],
+  it("does not touch existing series/block overrides — they still take precedence", () => {
+    const withOverrides: ScheduleRemindersPersistedState = {
+      masterTier: "alarm",
+      seriesTierOverrides: { [READING]: "off" },
+      blockTierOverrides: { "gym-0": "notify" },
     };
 
-    const next = applyBlockEnabled(everythingOff, reading(3), true, UNIVERSE);
+    const next = applyMasterTier(withOverrides, "off");
 
-    expect(next.masterEnabled).toBe(true);
-    expect(ringing(next)).toEqual(["reading-3"]);
+    expect(next.masterTier).toBe("off");
+    expect(resolveReminderTier(next, reading(1))).toBe("off"); // series override unchanged
+    expect(resolveReminderTier(next, { id: "gym-0", seriesId: GYM })).toBe("notify"); // block override unchanged
+  });
+});
+
+describe("applySeriesTier / clearSeriesTierOverride", () => {
+  it("covers days that are not in the universe yet", () => {
+    const next = applySeriesTier(ALARM_STATE, READING, "off");
+
+    // A sixth Reading day added next week inherits the series' tier rather
+    // than starting at the master tier.
+    expect(resolveReminderTier(next, { id: "reading-6", seriesId: READING })).toBe("off");
   });
 
-  it("round-trips: muting then unmuting a block returns the original picture", () => {
-    const muted = applyBlockEnabled(ON, reading(3), false, UNIVERSE);
-    const restored = applyBlockEnabled(muted, reading(3), true, UNIVERSE);
+  it("applies to every day of the series at once and leaves other series alone", () => {
+    const next = applySeriesTier(ALARM_STATE, READING, "notify");
 
-    expect(ringing(restored)).toEqual(ringing(ON));
+    expect(resolveReminderTier(next, reading(1))).toBe("notify");
+    expect(resolveReminderTier(next, reading(5))).toBe("notify");
+    expect(resolveReminderTier(next, { id: "gym-0", seriesId: GYM })).toBe("alarm");
   });
 
-  it("never records the same id twice", () => {
-    const once = applyBlockEnabled(ON, reading(3), false, UNIVERSE);
-    const twice = applyBlockEnabled(once, reading(3), false, UNIVERSE);
+  it("does not clear block overrides beneath it — they're independent map entries", () => {
+    const state: ScheduleRemindersPersistedState = {
+      masterTier: "alarm",
+      seriesTierOverrides: {},
+      blockTierOverrides: { "reading-2": "off" },
+    };
 
-    expect(twice.disabledBlockIds).toEqual(["reading-3"]);
+    const next = applySeriesTier(state, READING, "notify");
+
+    // The block override is a separate, more-specific entry and still wins.
+    expect(resolveReminderTier(next, reading(2))).toBe("off");
+    expect(resolveReminderTier(next, reading(1))).toBe("notify");
+  });
+
+  it("clearing a series override falls back to the master tier", () => {
+    const seriesOff = applySeriesTier(ALARM_STATE, READING, "off");
+    const next = clearSeriesTierOverride(seriesOff, READING);
+
+    expect(next.seriesTierOverrides[READING]).toBeUndefined();
+    expect(resolveReminderTier(next, reading(1))).toBe("alarm");
+  });
+
+  it("clearing an override that was never set is a no-op", () => {
+    const next = clearSeriesTierOverride(ALARM_STATE, READING);
+    expect(next).toEqual(ALARM_STATE);
+  });
+});
+
+describe("applyBlockTier / clearBlockTierOverride", () => {
+  it("sets one day's tier without touching its siblings", () => {
+    const next = applyBlockTier(ALARM_STATE, reading(3), "off");
+
+    expect(resolveReminderTier(next, reading(3))).toBe("off");
+    expect(resolveReminderTier(next, reading(1))).toBe("alarm");
+    expect(resolveReminderTier(next, reading(2))).toBe("alarm");
+  });
+
+  it("overrides a series tier for exactly one day, leaving the rest of the series alone", () => {
+    const seriesOff = applySeriesTier(ALARM_STATE, READING, "off");
+    const next = applyBlockTier(seriesOff, reading(3), "alarm");
+
+    expect(resolveReminderTier(next, reading(3))).toBe("alarm");
+    expect(resolveReminderTier(next, reading(1))).toBe("off");
+    // The series override itself is untouched — no rewriting needed.
+    expect(next.seriesTierOverrides[READING]).toBe("off");
+  });
+
+  it("round-trips: setting then clearing a block override returns the original resolution", () => {
+    const withOverride = applyBlockTier(ALARM_STATE, reading(3), "off");
+    const restored = clearBlockTierOverride(withOverride, reading(3));
+
+    expect(resolveReminderTier(restored, reading(3))).toBe(resolveReminderTier(ALARM_STATE, reading(3)));
+    expect(restored.blockTierOverrides["reading-3"]).toBeUndefined();
+  });
+
+  it("re-setting the same block's tier replaces rather than duplicates the entry", () => {
+    const once = applyBlockTier(ALARM_STATE, reading(3), "off");
+    const twice = applyBlockTier(once, reading(3), "notify");
+
+    expect(twice.blockTierOverrides).toEqual({ "reading-3": "notify" });
+  });
+
+  it("clearing falls back through to a series override, not straight to master", () => {
+    const seriesOff = applySeriesTier(ALARM_STATE, READING, "off");
+    const withBlockOverride = applyBlockTier(seriesOff, reading(3), "alarm");
+
+    const next = clearBlockTierOverride(withBlockOverride, reading(3));
+
+    expect(resolveReminderTier(next, reading(3))).toBe("off");
+  });
+});
+
+describe("useScheduleRemindersStore", () => {
+  beforeEach(() => {
+    useScheduleRemindersStore.getState().reset();
+  });
+
+  it("defaults to masterTier 'alarm' with no overrides", () => {
+    const state = useScheduleRemindersStore.getState();
+    expect(state.masterTier).toBe("alarm");
+    expect(state.seriesTierOverrides).toEqual({});
+    expect(state.blockTierOverrides).toEqual({});
+  });
+
+  it("setMasterTier / setSeriesTier / setBlockTier update the store and resolution follows precedence", () => {
+    const store = useScheduleRemindersStore.getState();
+
+    store.setMasterTier("notify");
+    store.setSeriesTier(READING, "off", UNIVERSE);
+    store.setBlockTier(reading(3), "alarm", UNIVERSE);
+
+    const state = useScheduleRemindersStore.getState();
+    expect(resolveReminderTier(state, reading(3))).toBe("alarm");
+    expect(resolveReminderTier(state, reading(1))).toBe("off");
+    expect(resolveReminderTier(state, { id: "gym-0", seriesId: GYM })).toBe("notify");
+  });
+
+  it("clearSeriesOverride / clearBlockOverride drop the override entirely", () => {
+    const store = useScheduleRemindersStore.getState();
+    store.setSeriesTier(READING, "off", UNIVERSE);
+    store.setBlockTier(reading(2), "off", UNIVERSE);
+
+    store.clearBlockOverride(reading(2));
+    expect(useScheduleRemindersStore.getState().blockTierOverrides["reading-2"]).toBeUndefined();
+    expect(resolveReminderTier(useScheduleRemindersStore.getState(), reading(2))).toBe("off"); // still series-off
+
+    store.clearSeriesOverride(READING);
+    expect(useScheduleRemindersStore.getState().seriesTierOverrides[READING]).toBeUndefined();
+    expect(resolveReminderTier(useScheduleRemindersStore.getState(), reading(2))).toBe("alarm"); // falls to master
+  });
+
+  it("reset() restores the default state", () => {
+    const store = useScheduleRemindersStore.getState();
+    store.setMasterTier("off");
+    store.setSeriesTier(READING, "notify", UNIVERSE);
+
+    store.reset();
+
+    const state = useScheduleRemindersStore.getState();
+    expect(state.masterTier).toBe("alarm");
+    expect(state.seriesTierOverrides).toEqual({});
+    expect(state.blockTierOverrides).toEqual({});
   });
 });

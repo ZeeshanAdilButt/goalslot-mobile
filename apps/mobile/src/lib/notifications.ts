@@ -35,6 +35,17 @@ import type { NotificationCapability, NotificationInput } from "@goalslot/shared
  */
 const ALARM_CHANNEL_ID = "goalslot-schedule-alarms-v1";
 
+/**
+ * Android channel for the gentler "notify" tier (`NotificationInput.notify`).
+ *
+ * A separate id from `ALARM_CHANNEL_ID`, not a shared one, for the same
+ * reason that comment gives: a channel's importance and sound are FROZEN at
+ * creation on Android 8+, so this tier needs its own id to ever land at
+ * DEFAULT importance rather than inheriting whatever the alarm channel
+ * already locked in. Bump the suffix if these settings ever need to change.
+ */
+const NOTIFY_CHANNEL_ID = "goalslot-schedule-notify-v1";
+
 /** Long-short-long — reads as an alert rather than the single buzz of a notice. */
 const ALARM_VIBRATION_PATTERN = [0, 400, 200, 400];
 
@@ -45,6 +56,8 @@ const ALARM_VIBRATION_PATTERN = [0, 400, 200, 400];
  * creation rather than racing.
  */
 let alarmChannelReady: Promise<void> | null = null;
+/** Same caching rationale as `alarmChannelReady`, for the "notify" tier's own channel. */
+let notifyChannelReady: Promise<void> | null = null;
 
 async function ensureAlarmChannel(): Promise<void> {
   if (Platform.OS !== "android") return;
@@ -63,9 +76,29 @@ async function ensureAlarmChannel(): Promise<void> {
   await alarmChannelReady;
 }
 
-/** Test seam only — lets a suite assert the channel is (re)created. */
+/**
+ * Deliberately DEFAULT importance, no custom vibration pattern, and no
+ * MAX/HIGH priority anywhere this channel is used — see NotificationInput.notify's
+ * doc comment. This is the tier that stays audible without being the loud,
+ * DND-piercing alarm.
+ */
+async function ensureNotifyChannel(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  notifyChannelReady ??= Notifications.setNotificationChannelAsync(NOTIFY_CHANNEL_ID, {
+    name: "Schedule notifications",
+    description: "A quieter heads-up when one of your scheduled time slots begins.",
+    importance: Notifications.AndroidImportance.DEFAULT,
+    sound: "default",
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    showBadge: true,
+  }).then(() => undefined);
+  await notifyChannelReady;
+}
+
+/** Test seam only — lets a suite assert the channels are (re)created. */
 export function resetAlarmChannelCacheForTests(): void {
   alarmChannelReady = null;
+  notifyChannelReady = null;
 }
 
 export function createExpoNotificationCapability(): NotificationCapability {
@@ -87,7 +120,7 @@ export function createExpoNotificationCapability(): NotificationCapability {
     },
 
     async scheduleNotification(input: NotificationInput) {
-      const { id, title, body, data, alarm = false } = input;
+      const { id, title, body, data, alarm = false, notify = false } = input;
       const current = await Notifications.getPermissionsAsync();
       let granted = current.granted;
 
@@ -102,6 +135,7 @@ export function createExpoNotificationCapability(): NotificationCapability {
       }
 
       if (alarm) await ensureAlarmChannel();
+      else if (notify) await ensureNotifyChannel();
 
       // expo-notifications' WeeklyTriggerInput numbers weekdays 1-7 with
       // Sunday = 1; NotificationInput's `repeat.weekday` follows
@@ -110,10 +144,11 @@ export function createExpoNotificationCapability(): NotificationCapability {
       // belongs here, at the one file allowed to import expo-notifications.
       //
       // `channelId` has to ride on the TRIGGER, not the content — that is
-      // where expo-notifications reads it from. Without it an alarm lands on
-      // the library's `expo_notifications_fallback_notification_channel`,
+      // where expo-notifications reads it from. Without it a reminder lands
+      // on the library's `expo_notifications_fallback_notification_channel`,
       // whose settings this app does not control.
-      const androidChannel = alarm && Platform.OS === "android" ? { channelId: ALARM_CHANNEL_ID } : null;
+      const channelId = alarm ? ALARM_CHANNEL_ID : notify ? NOTIFY_CHANNEL_ID : null;
+      const androidChannel = channelId && Platform.OS === "android" ? { channelId } : null;
       const trigger = input.repeat
         ? {
             type: Notifications.SchedulableTriggerInputTypes.WEEKLY as const,
@@ -144,6 +179,10 @@ export function createExpoNotificationCapability(): NotificationCapability {
           // without `sound` is delivered as a silent banner. So the previous
           // code produced a notification that was, on both platforms, a
           // wordless entry in the shade — visually present, never noticed.
+          // "notify" is not exempt from this: it must stay audible, just not
+          // alarm-grade, so it still needs an explicit `sound` — omitting it
+          // here would reintroduce the exact same silent-banner bug for this
+          // tier alone.
           ...(alarm
             ? {
                 sound: "default" as const,
@@ -155,7 +194,15 @@ export function createExpoNotificationCapability(): NotificationCapability {
                 // starting now" is exactly the time-sensitive case.
                 interruptionLevel: "timeSensitive" as const,
               }
-            : {}),
+            : notify
+              ? {
+                  // Audible and visible, deliberately NOT alarm-grade: no
+                  // custom vibration pattern (system default applies), no
+                  // MAX/HIGH priority, and no `interruptionLevel` — "notify"
+                  // must not bypass a Focus/DND profile the way "alarm" does.
+                  sound: "default" as const,
+                }
+              : {}),
         },
         trigger,
       });
