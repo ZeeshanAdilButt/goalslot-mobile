@@ -56,10 +56,13 @@ import {
   buildNoteTree,
   buildReorderPayload,
   flattenVisibleTree,
+  genId,
   getProjection,
   hasResponse,
+  type CreateNoteDto,
   type FlatNote,
   type Note,
+  type NoteDetailResponse,
   type NoteReorderItem,
   type NoteTreeItem,
 } from "@goalslot/shared";
@@ -73,7 +76,7 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 // read from the same src/theme/foundation.ts, so this is one token source, not
 // two; see the header comment in foundation.ts for why the split exists.
 import { shadows } from "@/theme";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, notify } from "@/lib/api-client";
 import {
   hapticCompletion,
   hapticDepthTick,
@@ -81,21 +84,24 @@ import {
   hapticLight,
   hapticSlotTick,
 } from "@/lib/haptics";
+import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useNotesUiStore } from "@/lib/notes-ui-store";
 import { useAnalytics } from "@/providers/growth-provider";
+import { useAuth } from "@/providers/auth-provider";
 
 /**
- * Create/delete/reorder/favorite aren't queued to the offline outbox (see
- * the handover notes — note/[id].tsx's title/content autosave IS, since
- * that's the one place typed content can be lost outright). What this DOES
- * fix: a generic "please try again" read identically whether the request
- * never reached the server (offline) or the server answered and rejected
- * it, which told an offline user their own connection might be the fixable
- * part when it wasn't going to retry-and-succeed at all. `hasResponse` (the
- * same duck-type check the outbox-backed call sites use to decide whether
- * to queue) tells the two apart.
+ * Create/delete/reorder/favorite now queue to the offline outbox exactly
+ * like every other mutating call site in the app (note/[id].tsx's
+ * title/content autosave was the first one queued here, since that was the
+ * highest-risk gap — typed content lost outright). `hasResponse` (the same
+ * duck-type check `queueOfflineEdit` uses) still does the "was this a
+ * genuine rejection or did the request never reach the server" split for the
+ * alert shown on an actual rejection — the two used to read identically as a
+ * generic "please try again", which told an offline user their own
+ * connection might be the fixable part when it wasn't going to
+ * retry-and-succeed at all.
  */
 function offlineAwareAlert(err: unknown, title: string, rejectionMessage: string): void {
   if (!hasResponse(err)) {
@@ -130,6 +136,7 @@ const listKey = noteQueries.noteQueries.list();
 
 export default function NotesScreen() {
   const analytics = useAnalytics();
+  const { user } = useAuth();
 
   const { data: notes, isPending, isError, isFetching, refetch } = useQuery(noteQueries.list());
 
@@ -395,6 +402,13 @@ export default function NotesScreen() {
    * cache, live PUT /notes/reorder, invalidate on success, snapshot rollback
    * on failure. Shared by drag-drop, the a11y move actions, and the
    * delete-time child reparenting.
+   *
+   * On a network-looking failure the payload queues to the offline outbox
+   * ("note-reorder") instead of rolling back — the moved/reparented rows
+   * keep the optimistic parentId/order they were just given (tagged
+   * `pendingSync: true`, same contract as every other queued edit in this
+   * app) rather than snapping back to their pre-drag position only to move
+   * again once the outbox drains.
    */
   const applyReorder = useCallback(
     async (
@@ -421,6 +435,15 @@ export default function NotesScreen() {
         if (options.announceMessage) announce(options.announceMessage);
         return true;
       } catch (err) {
+        const queued = await queueOfflineEdit("note-reorder", payload, err);
+        if (queued) {
+          queryClient.setQueryData<Note[]>(listKey, (existing) =>
+            (existing ?? []).map((note) => (patchById.has(note.id) ? { ...note, pendingSync: true } : note)),
+          );
+          if (options.announceMessage) announce(`${options.announceMessage} — queued, will sync when online`);
+          notify("Queued — will sync when online", "success");
+          return true;
+        }
         restoreSnapshot(previous);
         offlineAwareAlert(err, "Couldn't move page", "Please try again.");
         return false;
@@ -479,31 +502,88 @@ export default function NotesScreen() {
     handleDropRef.current(noteId, targetIndex, dragOffsetX);
   }, []);
 
+  /**
+   * Create carries a client-generated id (`CreateNoteDto.id`) in both the
+   * live and queued path, so the optimistic row placed in the cache below
+   * and the eventual server row are the SAME id — see the header note on
+   * "note-create" in src/lib/offline.ts for why that matters (a queued
+   * create can be followed by queued note-update entries against that same
+   * id, from typing into the brand-new page while still offline).
+   *
+   * On a network-looking failure the create queues instead of failing
+   * outright: the optimistic row stays in the list (tagged `pendingSync:
+   * true`) and, since "New page" always navigates straight into the editor,
+   * the detail cache is seeded too so opening that editor while still
+   * offline renders the local row instead of an avoidable load error.
+   */
   const createNote = useCallback(
     async (parentId: string | null) => {
       if (isCreating) return;
       setIsCreating(true);
+      const optimisticId = genId();
+      const payload: CreateNoteDto = { id: optimisticId, title: "Untitled page", content: "", parentId };
+      const siblingCount = (notesRef.current ?? []).filter((n) => (n.parentId ?? null) === parentId).length;
+      const optimisticNote: Note = {
+        id: optimisticId,
+        title: payload.title,
+        content: payload.content ?? "",
+        icon: null,
+        color: null,
+        parentId,
+        order: (siblingCount + 1) * 1000,
+        isExpanded: true,
+        isFavorite: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        userId: user?.id ?? "",
+      };
+      queryClient.setQueryData<Note[]>(listKey, (existing) => [...(existing ?? []), optimisticNote]);
+      if (parentId) expand(parentId);
+
       try {
-        const response = await apiClient.notes.create({
-          title: "Untitled page",
-          content: "",
-          parentId,
-        });
+        const response = await apiClient.notes.create(payload);
         const created = response.data;
-        queryClient.setQueryData<Note[]>(listKey, (existing) => [...(existing ?? []), created]);
+        queryClient.setQueryData<Note[]>(listKey, (existing) =>
+          (existing ?? []).map((n) => (n.id === optimisticId ? created : n)),
+        );
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
-        if (parentId) expand(parentId);
         analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
         router.push(`/note/${created.id}`);
       } catch (err) {
-        offlineAwareAlert(err, "Couldn't create page", "Please try again.");
+        const queued = await queueOfflineEdit("note-create", payload, err);
+        if (queued) {
+          const pendingNote: Note = { ...optimisticNote, pendingSync: true };
+          queryClient.setQueryData<Note[]>(listKey, (existing) =>
+            (existing ?? []).map((n) => (n.id === optimisticId ? pendingNote : n)),
+          );
+          queryClient.setQueryData<NoteDetailResponse>(noteQueries.noteQueries.detail(optimisticId), {
+            note: pendingNote,
+            readOnly: false,
+          });
+          notify("Queued — will sync when online", "success");
+          router.push(`/note/${optimisticId}`);
+        } else {
+          queryClient.setQueryData<Note[]>(listKey, (existing) => (existing ?? []).filter((n) => n.id !== optimisticId));
+          offlineAwareAlert(err, "Couldn't create page", "Please try again.");
+        }
       } finally {
         setIsCreating(false);
       }
     },
-    [analytics, expand, isCreating],
+    [analytics, expand, isCreating, user],
   );
 
+  /**
+   * Delete: reparent-then-delete, same as before, but a network-looking
+   * failure at either live call now queues rather than rolling back. Two
+   * outbox entries can be needed (reparent, then delete) — `reorderDone`
+   * tracks whether the reparent PUT already succeeded live before the delete
+   * itself hit a network error, so that step is never re-queued (and so
+   * never double-applied) on top of one that already landed. Queued deletes
+   * get no `pendingSync` tag — the row is already gone from the list, and
+   * there is no "pending" version of gone to show (mirrors
+   * schedule.tsx's handleDeleteBlock).
+   */
   const deleteNote = useCallback(
     async (note: FlatNote) => {
       const children = nodeMap.get(note.id)?.children ?? [];
@@ -537,15 +617,39 @@ export default function NotesScreen() {
           }),
       );
 
+      let reorderDone = !reparent;
       try {
-        if (reparent) await apiClient.notes.reorder(reparent);
+        if (reparent) {
+          await apiClient.notes.reorder(reparent);
+          reorderDone = true;
+        }
         await apiClient.notes.delete(note.id);
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         analytics.track({ name: "noteDeleted", payload: { noteId: note.id } });
         announce(`Deleted "${note.title}"`);
       } catch (err) {
-        restoreSnapshot(previous);
-        offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
+        if (reparent && !reorderDone) {
+          const reorderQueued = await queueOfflineEdit("note-reorder", reparent, err);
+          if (!reorderQueued) {
+            restoreSnapshot(previous);
+            offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
+            return;
+          }
+          // The reparented survivors carry an un-synced parentId/order —
+          // tag them the same way applyReorder's queued branch does, so
+          // they don't read as confirmed until the outbox actually drains.
+          queryClient.setQueryData<Note[]>(listKey, (existing) =>
+            (existing ?? []).map((n) => (patchById.has(n.id) ? { ...n, pendingSync: true } : n)),
+          );
+        }
+        const deleteQueued = await queueOfflineEdit("note-delete", { id: note.id }, err);
+        if (deleteQueued) {
+          announce(`Deleted "${note.title}" — will sync when online`);
+          notify("Queued — will sync when online", "success");
+        } else {
+          restoreSnapshot(previous);
+          offlineAwareAlert(err, "Couldn't delete page", "Please try again.");
+        }
       }
     },
     [analytics, announce, nodeMap, restoreSnapshot],
@@ -577,6 +681,19 @@ export default function NotesScreen() {
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         hapticLight();
       } catch (err) {
+        // Its own "note-favorite" kind rather than reusing "note-update" —
+        // mechanically the same PUT, but a queued favorite toggle should
+        // read unambiguously in the outbox rather than looking like an
+        // unrelated title/content edit queued in the same offline session
+        // (same reasoning as "goal-complete" vs "goal-update" in offline.ts).
+        const queued = await queueOfflineEdit("note-favorite", { id: note.id, isFavorite: nextValue }, err);
+        if (queued) {
+          queryClient.setQueryData<Note[]>(listKey, (existing) =>
+            (existing ?? []).map((n) => (n.id === note.id ? { ...n, isFavorite: nextValue, pendingSync: true } : n)),
+          );
+          notify("Queued — will sync when online", "success");
+          return;
+        }
         restoreSnapshot(previous);
         offlineAwareAlert(err, "Couldn't update favorite", "Please try again.");
       }

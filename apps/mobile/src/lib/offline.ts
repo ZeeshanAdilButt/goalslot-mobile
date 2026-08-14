@@ -12,6 +12,7 @@ import {
   type CompleteTaskInput,
   type CreateGoalInput,
   type CreateJournalEntryInput,
+  type CreateNoteDto,
   type CreateScheduleBlockInput,
   type CreateTaskInput,
   type CreateTimeEntryInput,
@@ -21,6 +22,7 @@ import {
   type MessagingMessage,
   type MessagingThreadMessage,
   type Note,
+  type NoteReorderItem,
   type ScheduleBlock,
   type Task,
   type TimeEntry,
@@ -284,11 +286,14 @@ operationRegistry.registerOperation<JournalUpdatePayload, JournalEntry>("journal
   invalidateKeys: [journalQueries.journalQueries.all],
 });
 
-// Notes: only the title/content autosave (note/[id].tsx) is queued here —
-// the highest-risk gap of the notes surface, since it's the one place typed
-// content can be lost outright if the user leaves the screen before
-// reconnecting. Create/delete/reorder/favorite (notes.tsx) stay live-only;
-// see the handover notes for the option to extend outbox coverage to them.
+// Notes: title/content autosave (note/[id].tsx) was the first thing queued
+// here — the highest-risk gap of the notes surface, since it's the one place
+// typed content can be lost outright if the user leaves the screen before
+// reconnecting. Create/delete/reorder/favorite (notes.tsx) now queue too,
+// closing what used to be an accepted scope-cut (see the git history on this
+// block): those four actions used to only give "honest" offline messaging
+// (a clear "you're offline" alert instead of a misleading "please try
+// again"), never an actual queue-and-replay.
 export interface NoteUpdatePayload {
   id: string;
   data: UpdateNoteDto;
@@ -296,6 +301,56 @@ export interface NoteUpdatePayload {
 
 operationRegistry.registerOperation<NoteUpdatePayload, Note>("note-update", {
   execute: async (payload) => (await apiClient.notes.update(payload.id, payload.data)).data,
+  invalidateKeys: [noteQueries.noteQueries.all],
+});
+
+// `CreateNoteDto.id` (packages/shared/src/types/note.ts) is the optional
+// client-generated id ported from the web's own note.create offline
+// operation, which exists specifically for this: notes.tsx's createNote
+// generates the id up front and sends it in the live/queued create alike, so
+// the row created here has the SAME id the optimistic cache entry already
+// used. That matters because a queued create can be followed by queued
+// note-update entries against that same id (the user opened the brand-new
+// page and kept typing while still offline) — the outbox drains strictly
+// FIFO, so note-create always replays before any note-update queued after
+// it, and by the time the update runs the id is real.
+operationRegistry.registerOperation<CreateNoteDto, Note>("note-create", {
+  execute: async (payload) => (await apiClient.notes.create(payload)).data,
+  invalidateKeys: [noteQueries.noteQueries.all],
+});
+
+// Reused by both notes.tsx call sites that produce a `PUT /notes/reorder`
+// payload: drag-and-drop/the a11y move actions (applyReorder), and the
+// reparent-surviving-children step deleteNote runs before a delete when the
+// deleted page has subpages. One `kind` covers both because the payload
+// shape (and the replay) is identical either way — the outbox has no notion
+// of "why" a reorder was queued, only "apply this NoteReorderItem[]".
+operationRegistry.registerOperation<NoteReorderItem[], void>("note-reorder", {
+  execute: async (payload) => {
+    await apiClient.notes.reorder(payload);
+  },
+  invalidateKeys: [noteQueries.noteQueries.all],
+});
+
+operationRegistry.registerOperation<EntityIdPayload, void>("note-delete", {
+  execute: async (payload) => {
+    await apiClient.notes.delete(payload.id);
+  },
+  invalidateKeys: [noteQueries.noteQueries.all],
+});
+
+// Favorite is mechanically just `notes.update` with one field, but — same
+// reasoning as "goal-complete" above — it gets its own `kind` rather than
+// reusing "note-update" so a queued favorite toggle reads unambiguously in
+// the outbox instead of looking like an unrelated title/content edit queued
+// in the same offline session.
+export interface NoteFavoritePayload {
+  id: string;
+  isFavorite: boolean;
+}
+
+operationRegistry.registerOperation<NoteFavoritePayload, Note>("note-favorite", {
+  execute: async (payload) => (await apiClient.notes.update(payload.id, { isFavorite: payload.isFavorite })).data,
   invalidateKeys: [noteQueries.noteQueries.all],
 });
 
