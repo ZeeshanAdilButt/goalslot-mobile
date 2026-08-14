@@ -82,6 +82,8 @@ __export(index_exports, {
   createGoalQueries: () => createGoalQueries,
   createGoalSchema: () => createGoalSchema,
   createGoalsApi: () => createGoalsApi,
+  createInstructionsApi: () => createInstructionsApi,
+  createInstructionsQueries: () => createInstructionsQueries,
   createJournalApi: () => createJournalApi,
   createJournalEntrySchema: () => createJournalEntrySchema,
   createJournalQueries: () => createJournalQueries,
@@ -103,6 +105,7 @@ __export(index_exports, {
   createScheduleBlockSchema: () => createScheduleBlockSchema,
   createScheduleQueries: () => createScheduleQueries,
   createSharingApi: () => createSharingApi,
+  createSharingQueries: () => createSharingQueries,
   createStaticFeatureFlags: () => createStaticFeatureFlags,
   createTaskQueries: () => createTaskQueries,
   createTaskSchema: () => createTaskSchema,
@@ -1286,6 +1289,16 @@ function createGoalsApi(api) {
   };
 }
 
+// src/api/instructions.ts
+function createInstructionsApi(api) {
+  return {
+    assign: (data) => api.post("/instructions", data),
+    listAssignedByMe: () => api.get("/instructions/assigned-by-me"),
+    listAssignedToMe: () => api.get("/instructions/assigned-to-me"),
+    complete: (id) => api.patch(`/instructions/${id}/complete`)
+  };
+}
+
 // src/api/journal.ts
 function createJournalApi(api) {
   return {
@@ -1497,7 +1510,18 @@ function createPushSubscriptionsApi(api) {
 function createSharingApi(api) {
   return {
     getMyShares: () => api.get("/sharing/my-shares"),
-    getSharedWithMe: () => api.get("/sharing/shared-with-me")
+    getSharedWithMe: () => api.get("/sharing/shared-with-me"),
+    /**
+     * A mentee's time entries, for the accepted share `ownerId` granted the
+     * caller. Same shape the caller's own `/time-entries/range` returns
+     * (goal/task are the same reduced projections), so the Reports screen's
+     * existing aggregation helpers work unmodified against this response —
+     * see apps/mobile's mentee/[id] screen. 403s server-side if the share
+     * was revoked or never accepted; nothing here re-checks that client-side.
+     */
+    getSharedUserTimeEntries: (ownerId, startDate, endDate) => api.get(`/sharing/user/${ownerId}/time-entries`, { params: { startDate, endDate } }),
+    /** A mentee's goals, for the accepted share `ownerId` granted the caller. */
+    getSharedUserGoals: (ownerId) => api.get(`/sharing/user/${ownerId}/goals`)
   };
 }
 
@@ -1740,6 +1764,10 @@ function createApiClient(config) {
     // configurable (and frequently not configured at all).
     messaging: createMessagingApi(api),
     sharing: createSharingApi(api),
+    // Assign/track instructions a mentor gives a mentee — see ./instructions.ts.
+    // Same accepted-share prerequisite as `sharing.getSharedUser*` above,
+    // enforced server-side.
+    instructions: createInstructionsApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.
@@ -2296,6 +2324,56 @@ function createMessagingQueries(client, sharingApi) {
     contacts: () => (0, import_react_query12.queryOptions)({
       queryKey: messagingQueries.contacts(),
       queryFn: fetchContacts
+    })
+  };
+}
+
+// src/queries/sharing.ts
+var import_react_query13 = require("@tanstack/react-query");
+function createSharingQueries(api) {
+  const sharingQueries = {
+    all: ["sharing"],
+    sharedWithMe: () => [...sharingQueries.all, "shared-with-me"],
+    sharedUserTimeEntries: (ownerId, startDate, endDate) => [...sharingQueries.all, "shared-user", ownerId, "time-entries", startDate, endDate],
+    sharedUserGoals: (ownerId) => [...sharingQueries.all, "shared-user", ownerId, "goals"]
+  };
+  return {
+    sharingQueries,
+    /** People who shared their data with the signed-in user — their mentees. */
+    sharedWithMe: () => (0, import_react_query13.queryOptions)({
+      queryKey: sharingQueries.sharedWithMe(),
+      queryFn: async () => (await api.getSharedWithMe()).data
+    }),
+    sharedUserTimeEntries: (ownerId, startDate, endDate) => (0, import_react_query13.queryOptions)({
+      queryKey: sharingQueries.sharedUserTimeEntries(ownerId, startDate, endDate),
+      queryFn: async () => (await api.getSharedUserTimeEntries(ownerId, startDate, endDate)).data
+    }),
+    sharedUserGoals: (ownerId) => (0, import_react_query13.queryOptions)({
+      queryKey: sharingQueries.sharedUserGoals(ownerId),
+      queryFn: async () => (await api.getSharedUserGoals(ownerId)).data
+    })
+  };
+}
+
+// src/queries/instructions.ts
+var import_react_query14 = require("@tanstack/react-query");
+function createInstructionsQueries(api) {
+  const instructionsQueries = {
+    all: ["instructions"],
+    assignedByMe: () => [...instructionsQueries.all, "assigned-by-me"],
+    assignedToMe: () => [...instructionsQueries.all, "assigned-to-me"]
+  };
+  return {
+    instructionsQueries,
+    /** Instructions the signed-in user (a mentor) has assigned to mentees. */
+    assignedByMe: () => (0, import_react_query14.queryOptions)({
+      queryKey: instructionsQueries.assignedByMe(),
+      queryFn: async () => (await api.listAssignedByMe()).data
+    }),
+    /** Instructions assigned to the signed-in user (a mentee) by a mentor. */
+    assignedToMe: () => (0, import_react_query14.queryOptions)({
+      queryKey: instructionsQueries.assignedToMe(),
+      queryFn: async () => (await api.listAssignedToMe()).data
     })
   };
 }
@@ -3709,6 +3787,8 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   createGoalQueries,
   createGoalSchema,
   createGoalsApi,
+  createInstructionsApi,
+  createInstructionsQueries,
   createJournalApi,
   createJournalEntrySchema,
   createJournalQueries,
@@ -3730,6 +3810,7 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   createScheduleBlockSchema,
   createScheduleQueries,
   createSharingApi,
+  createSharingQueries,
   createStaticFeatureFlags,
   createTaskQueries,
   createTaskSchema,

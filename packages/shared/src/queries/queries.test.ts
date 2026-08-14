@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { CategoriesApi } from '../api/categories'
 import type { GoalsApi } from '../api/goals'
+import type { InstructionsApi } from '../api/instructions'
 import type { MessagingServiceClient } from '../api/messaging'
 import type { SharingApi } from '../api/sharing'
 import type { JournalApi } from '../api/journal'
@@ -17,6 +18,8 @@ import { createCategoryQueries } from './categories'
 import { createLabelQueries } from './labels'
 import { createJournalQueries } from './journal'
 import { createMessagingQueries } from './messaging'
+import { createSharingQueries } from './sharing'
+import { createInstructionsQueries } from './instructions'
 
 describe('goal queries', () => {
   it('builds stable, filter-sensitive query keys and wires the fetcher to goalsApi.getAll', async () => {
@@ -183,5 +186,78 @@ describe('messaging queries', () => {
     expect(contacts).toEqual([
       { userId: 'u2', name: 'Zoe', email: 'z@e.com', relationship: 'shared-with-them' },
     ])
+  })
+})
+
+describe('sharing queries', () => {
+  function build() {
+    const sharingApi = {
+      getMyShares: vi.fn(),
+      getSharedWithMe: vi.fn().mockResolvedValue({ data: [{ id: 's1', ownerId: 'u1' }] }),
+      getSharedUserTimeEntries: vi.fn().mockResolvedValue({ data: [{ id: 't1' }] }),
+      getSharedUserGoals: vi.fn().mockResolvedValue({ data: [{ id: 'g1' }] }),
+    } as unknown as SharingApi
+
+    return { sharingApi, queries: createSharingQueries(sharingApi) }
+  }
+
+  it('namespaces every key under `sharing`, distinct from messaging`s own contact-list cache', () => {
+    const { queries } = build()
+    expect(queries.sharingQueries.all).toEqual(['sharing'])
+    expect(queries.sharingQueries.sharedWithMe()).toEqual(['sharing', 'shared-with-me'])
+    expect(queries.sharingQueries.sharedUserTimeEntries('u1', '2026-08-01', '2026-08-07')).toEqual([
+      'sharing',
+      'shared-user',
+      'u1',
+      'time-entries',
+      '2026-08-01',
+      '2026-08-07',
+    ])
+    expect(queries.sharingQueries.sharedUserGoals('u1')).toEqual(['sharing', 'shared-user', 'u1', 'goals'])
+  })
+
+  it('wires the fetchers to sharingApi and unwraps the axios response', async () => {
+    const { sharingApi, queries } = build()
+
+    expect(await queries.sharedWithMe().queryFn?.({} as never)).toEqual([{ id: 's1', ownerId: 'u1' }])
+    expect(sharingApi.getSharedWithMe).toHaveBeenCalled()
+
+    expect(await queries.sharedUserTimeEntries('u1', '2026-08-01', '2026-08-07').queryFn?.({} as never)).toEqual([
+      { id: 't1' },
+    ])
+    expect(sharingApi.getSharedUserTimeEntries).toHaveBeenCalledWith('u1', '2026-08-01', '2026-08-07')
+
+    expect(await queries.sharedUserGoals('u1').queryFn?.({} as never)).toEqual([{ id: 'g1' }])
+    expect(sharingApi.getSharedUserGoals).toHaveBeenCalledWith('u1')
+  })
+})
+
+describe('instructions queries', () => {
+  function build() {
+    const instructionsApi = {
+      assign: vi.fn(),
+      listAssignedByMe: vi.fn().mockResolvedValue({ data: [{ id: 'i1' }] }),
+      listAssignedToMe: vi.fn().mockResolvedValue({ data: [{ id: 'i2' }] }),
+      complete: vi.fn(),
+    } as unknown as InstructionsApi
+
+    return { instructionsApi, queries: createInstructionsQueries(instructionsApi) }
+  }
+
+  it('namespaces every key under `instructions`', () => {
+    const { queries } = build()
+    expect(queries.instructionsQueries.all).toEqual(['instructions'])
+    expect(queries.instructionsQueries.assignedByMe()).toEqual(['instructions', 'assigned-by-me'])
+    expect(queries.instructionsQueries.assignedToMe()).toEqual(['instructions', 'assigned-to-me'])
+  })
+
+  it('wires the fetchers to instructionsApi and unwraps the axios response', async () => {
+    const { instructionsApi, queries } = build()
+
+    expect(await queries.assignedByMe().queryFn?.({} as never)).toEqual([{ id: 'i1' }])
+    expect(instructionsApi.listAssignedByMe).toHaveBeenCalled()
+
+    expect(await queries.assignedToMe().queryFn?.({} as never)).toEqual([{ id: 'i2' }])
+    expect(instructionsApi.listAssignedToMe).toHaveBeenCalled()
   })
 })

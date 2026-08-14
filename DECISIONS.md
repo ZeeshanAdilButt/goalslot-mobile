@@ -127,6 +127,25 @@ Journal, Notes (shipped later — see below), a Reports view, Whiteboards
 (web-only permanently, no viable native canvas port), sharing management,
 library/templates, and admin screens.
 
+> **Amended.** Reports shipped later too — a deliberately small analytics
+> view, not a port of web's multi-card dashboard; see the header comment on
+> `app/(app)/reports.tsx`. "Sharing management" (invite/accept/decline/
+> revoke, public links) is still cut and stays web-only — that's still a
+> rare, form-heavy flow with no mobile upside. But "sharing management" was
+> being read as "sharing, full stop," which starved a real mobile need: a
+> mentor could not see a mentee's reports, message them, or assign them an
+> instruction anywhere on mobile, even though all three already existed as
+> real API surface (`goal-slot-api`'s `sharing`/`messaging`/`instructions`
+> modules — instructions had shipped server-side with no client anywhere,
+> web included). `app/(app)/mentees.tsx` + `mentee/[id].tsx` now cover that:
+> a mentee list read from the same sharing directory `getSharedWithMe`
+> already served, a reduced reports view built on `sharing.getSharedUser*`
+> reusing the Reports tab's own chart components, "Message" reusing the
+> existing messaging conversation flow as-is, and an assign-instruction
+> sheet against the (previously clientless) instructions endpoints. See
+> `packages/shared/src/api/sharing.ts`'s header for the read/manage split
+> this now draws explicitly.
+
 ## 6. What doesn't port, and has to be rebuilt
 
 - **All UI components** — the large majority of the web codebase by line

@@ -1170,6 +1170,17 @@ interface IncomingShare {
 declare function createSharingApi(api: AxiosInstance): {
     getMyShares: () => Promise<axios.AxiosResponse<OutgoingShare[], any, {}, any>>;
     getSharedWithMe: () => Promise<axios.AxiosResponse<IncomingShare[], any, {}, any>>;
+    /**
+     * A mentee's time entries, for the accepted share `ownerId` granted the
+     * caller. Same shape the caller's own `/time-entries/range` returns
+     * (goal/task are the same reduced projections), so the Reports screen's
+     * existing aggregation helpers work unmodified against this response —
+     * see apps/mobile's mentee/[id] screen. 403s server-side if the share
+     * was revoked or never accepted; nothing here re-checks that client-side.
+     */
+    getSharedUserTimeEntries: (ownerId: string, startDate: string, endDate: string) => Promise<axios.AxiosResponse<TimeEntry[], any, {}, any>>;
+    /** A mentee's goals, for the accepted share `ownerId` granted the caller. */
+    getSharedUserGoals: (ownerId: string) => Promise<axios.AxiosResponse<Goal[], any, {}, any>>;
 };
 type SharingApi = ReturnType<typeof createSharingApi>;
 
@@ -1670,6 +1681,44 @@ declare function createCoachSettingsApi(api: AxiosInstance): {
 };
 type CoachSettingsApi = ReturnType<typeof createCoachSettingsApi>;
 
+type InstructionStatus = 'PENDING' | 'DONE';
+/** The reduced user projection the API embeds on `assigner`/`assignee`. */
+interface InstructionPerson {
+    id: string;
+    name: string | null;
+    email: string;
+}
+interface Instruction {
+    id: string;
+    assignerId: string;
+    assigneeId: string;
+    title: string;
+    note: string | null;
+    status: InstructionStatus;
+    completedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+interface InstructionAssignedByMe extends Instruction {
+    assignee: InstructionPerson;
+}
+interface InstructionAssignedToMe extends Instruction {
+    assigner: InstructionPerson;
+}
+interface AssignInstructionInput {
+    /** User id of the mentee receiving the instruction — the share's `ownerId`. */
+    assigneeId: string;
+    title: string;
+    note?: string;
+}
+declare function createInstructionsApi(api: AxiosInstance): {
+    assign: (data: AssignInstructionInput) => Promise<axios.AxiosResponse<InstructionAssignedByMe, any, {}, any>>;
+    listAssignedByMe: () => Promise<axios.AxiosResponse<InstructionAssignedByMe[], any, {}, any>>;
+    listAssignedToMe: () => Promise<axios.AxiosResponse<InstructionAssignedToMe[], any, {}, any>>;
+    complete: (id: string) => Promise<axios.AxiosResponse<InstructionAssignedToMe, any, {}, any>>;
+};
+type InstructionsApi = ReturnType<typeof createInstructionsApi>;
+
 /** The exact header name goal-slot-api's `IdempotencyInterceptor` reads. */
 declare const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 interface IdempotentRequestOptions {
@@ -2027,6 +2076,14 @@ declare function createApiClient(config: ApiClientConfig): {
     sharing: {
         getMyShares: () => Promise<axios.AxiosResponse<OutgoingShare[], any, {}, any>>;
         getSharedWithMe: () => Promise<axios.AxiosResponse<IncomingShare[], any, {}, any>>;
+        getSharedUserTimeEntries: (ownerId: string, startDate: string, endDate: string) => Promise<axios.AxiosResponse<TimeEntry[], any, {}, any>>;
+        getSharedUserGoals: (ownerId: string) => Promise<axios.AxiosResponse<Goal[], any, {}, any>>;
+    };
+    instructions: {
+        assign: (data: AssignInstructionInput) => Promise<axios.AxiosResponse<InstructionAssignedByMe, any, {}, any>>;
+        listAssignedByMe: () => Promise<axios.AxiosResponse<InstructionAssignedByMe[], any, {}, any>>;
+        listAssignedToMe: () => Promise<axios.AxiosResponse<InstructionAssignedToMe[], any, {}, any>>;
+        complete: (id: string) => Promise<axios.AxiosResponse<InstructionAssignedToMe, any, {}, any>>;
     };
     coachSettings: {
         getByokKey: () => Promise<axios.AxiosResponse<CoachByokState, any, {}, any>>;
@@ -2744,6 +2801,68 @@ declare function createMessagingQueries(client: MessagingServiceClient, sharingA
         };
     };
 };
+
+declare function createSharingQueries(api: SharingApi): {
+    sharingQueries: {
+        all: readonly ["sharing"];
+        sharedWithMe: () => readonly ["sharing", "shared-with-me"];
+        sharedUserTimeEntries: (ownerId: string, startDate: string, endDate: string) => readonly ["sharing", "shared-user", string, "time-entries", string, string];
+        sharedUserGoals: (ownerId: string) => readonly ["sharing", "shared-user", string, "goals"];
+    };
+    /** People who shared their data with the signed-in user — their mentees. */
+    sharedWithMe: () => _tanstack_query_core.OmitKeyof<_tanstack_react_query.UseQueryOptions<IncomingShare[], Error, IncomingShare[], readonly ["sharing", "shared-with-me"]>, "queryFn"> & {
+        queryFn?: _tanstack_query_core.QueryFunction<IncomingShare[], readonly ["sharing", "shared-with-me"], never> | undefined;
+    } & {
+        queryKey: readonly ["sharing", "shared-with-me"] & {
+            [dataTagSymbol]: IncomingShare[];
+            [dataTagErrorSymbol]: Error;
+        };
+    };
+    sharedUserTimeEntries: (ownerId: string, startDate: string, endDate: string) => _tanstack_query_core.OmitKeyof<_tanstack_react_query.UseQueryOptions<TimeEntry[], Error, TimeEntry[], readonly ["sharing", "shared-user", string, "time-entries", string, string]>, "queryFn"> & {
+        queryFn?: _tanstack_query_core.QueryFunction<TimeEntry[], readonly ["sharing", "shared-user", string, "time-entries", string, string], never> | undefined;
+    } & {
+        queryKey: readonly ["sharing", "shared-user", string, "time-entries", string, string] & {
+            [dataTagSymbol]: TimeEntry[];
+            [dataTagErrorSymbol]: Error;
+        };
+    };
+    sharedUserGoals: (ownerId: string) => _tanstack_query_core.OmitKeyof<_tanstack_react_query.UseQueryOptions<Goal[], Error, Goal[], readonly ["sharing", "shared-user", string, "goals"]>, "queryFn"> & {
+        queryFn?: _tanstack_query_core.QueryFunction<Goal[], readonly ["sharing", "shared-user", string, "goals"], never> | undefined;
+    } & {
+        queryKey: readonly ["sharing", "shared-user", string, "goals"] & {
+            [dataTagSymbol]: Goal[];
+            [dataTagErrorSymbol]: Error;
+        };
+    };
+};
+type SharingQueries = ReturnType<typeof createSharingQueries>;
+
+declare function createInstructionsQueries(api: InstructionsApi): {
+    instructionsQueries: {
+        all: readonly ["instructions"];
+        assignedByMe: () => readonly ["instructions", "assigned-by-me"];
+        assignedToMe: () => readonly ["instructions", "assigned-to-me"];
+    };
+    /** Instructions the signed-in user (a mentor) has assigned to mentees. */
+    assignedByMe: () => _tanstack_query_core.OmitKeyof<_tanstack_react_query.UseQueryOptions<InstructionAssignedByMe[], Error, InstructionAssignedByMe[], readonly ["instructions", "assigned-by-me"]>, "queryFn"> & {
+        queryFn?: _tanstack_query_core.QueryFunction<InstructionAssignedByMe[], readonly ["instructions", "assigned-by-me"], never> | undefined;
+    } & {
+        queryKey: readonly ["instructions", "assigned-by-me"] & {
+            [dataTagSymbol]: InstructionAssignedByMe[];
+            [dataTagErrorSymbol]: Error;
+        };
+    };
+    /** Instructions assigned to the signed-in user (a mentee) by a mentor. */
+    assignedToMe: () => _tanstack_query_core.OmitKeyof<_tanstack_react_query.UseQueryOptions<InstructionAssignedToMe[], Error, InstructionAssignedToMe[], readonly ["instructions", "assigned-to-me"]>, "queryFn"> & {
+        queryFn?: _tanstack_query_core.QueryFunction<InstructionAssignedToMe[], readonly ["instructions", "assigned-to-me"], never> | undefined;
+    } & {
+        queryKey: readonly ["instructions", "assigned-to-me"] & {
+            [dataTagSymbol]: InstructionAssignedToMe[];
+            [dataTagErrorSymbol]: Error;
+        };
+    };
+};
+type InstructionsQueries = ReturnType<typeof createInstructionsQueries>;
 
 interface ScheduledAlarm {
     id: string;
@@ -3514,4 +3633,4 @@ declare function resolveSpokenTarget(target: NamedTarget, candidates: readonly T
 
 declare const SHARED_PACKAGE_NAME = "@goalslot/shared";
 
-export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClientConfig, type AppendNoteIntent, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachReligiousContext, type CoachSettingsApi, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskInput, type CreateTimeEntryInput, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, IDEMPOTENCY_KEY_HEADER, INDENTATION_WIDTH, type IdempotentRequestOptions, type IncomingShare, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type Label, type LabelInput, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_JOURNAL_CONTENT_LENGTH, MAX_MESSAGE_LENGTH, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type PushSubscriptionKind, type PushSubscriptionResponse, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryScheduleBlockSummary, type TimerSessionApi, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type UpsertJournalEntryInput, type User, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createPushSubscriptionsApi, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, hasResponse, idempotentConfig, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertJournalEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };
+export { type ActionableVoiceIntent, type ActiveTimerAttributionInput, type ActiveTimerClient, type ActiveTimerConflict, type ActiveTimerSession, type ActiveTimerSessionGoalSummary, type ActiveTimerSessionScheduleBlockSummary, type ActiveTimerSessionStatus, type ActiveTimerSessionTaskSummary, type AlarmCapability, type AnalyticsCapability, type AnalyticsEvent, type AnalyticsEventMap, type AnalyticsEventName, type ApiClientConfig, type AppendNoteIntent, type AssignInstructionInput, type AuthTokens, type BuildDayAnalysisInput, COACH_BUDGET_INCREMENT_PERCENTS, COACH_BYOK_MAX_TOKEN_BUDGET, COACH_BYOK_MIN_TOKEN_BUDGET, COACH_BYOK_PROVIDERS, COACH_PROPOSAL_ACTION_TYPES, COACH_RELIGIOUS_CONTEXTS, COACH_VOICE_INTENT_TYPES, type Capabilities, type CategoriesApi, type Category, type CoachApi, type CoachBudgetIncrement, type CoachByokProvider, type CoachByokProviderMeta, type CoachByokState, type CoachByokUsage, type CoachHabitsProfile, type CoachMessageDto, type CoachMessageRole, type CoachProposalAction, type CoachProposalActionType, type CoachProposalBlock, type CoachProposalResult, type CoachReligiousContext, type CoachSettingsApi, type CoachStreamChunk, type CoachStreamRequestConfig, type CoachVoiceIntentCandidateGoal, type CoachVoiceIntentCandidateTask, type CoachVoiceIntentContext, type CoachVoiceIntentResponse, type CoachVoiceIntentTarget, type CoachVoiceIntentTimerStatus, type CoachVoiceIntentType, type CompleteTaskInput, type ContentTargetSplit, type ConversationIndexEntry, type ConversationKind, type ConversationTurnSnapshot, type CreateCategoryForm, type CreateGoalInput, type CreateJournalEntryInput, type CreateLabelForm, type CreateMessagingConversationInput, type CreateNoteDto, type CreateScheduleBlockInput, type CreateTaskInput, type CreateTimeEntryInput, DAYS_OF_WEEK, DAYS_OF_WEEK_FULL, DAY_END_MIN, DAY_START_MIN, DEFAULT_KIND_WORDS, DEFAULT_PAGE_SIZE, type DayAnalysisBlockResult, type DayAnalysisBundle, type DayAnalysisGoalResult, type DayAnalysisScheduleBlockInput, type DayAnalysisTimeEntryInput, type ExtractedCoachProposals, type FeatureFlagCapability, type FeatureFlagKey, type FlatNote, GOAL_STATUS_OPTIONS, type Goal, type GoalFilters, type GoalLabel, type GoalStats, type GoalStatus, type GoalSummary, type GoalsApi, IDEMPOTENCY_KEY_HEADER, INDENTATION_WIDTH, type IdempotentRequestOptions, type IncomingShare, type Instruction, type InstructionAssignedByMe, type InstructionAssignedToMe, type InstructionPerson, type InstructionStatus, type InstructionsApi, type InstructionsQueries, type IntentTarget, type JournalApi, type JournalDateRange, type JournalEntry, type Label, type LabelInput, type LabelsApi, type ListMessagesOptions, type LogTimeIntent, type LoginResponse, MAX_JOURNAL_CONTENT_LENGTH, MAX_MESSAGE_LENGTH, type MessagingContact, type MessagingConversation, MessagingError, type MessagingErrorKind, type MessagingMessage, type MessagingParticipant, type MessagingServiceClient, type MessagingServiceConfig, type MessagingSocket, type MessagingSocketConfig, type MessagingSocketLike, type MessagingSocketStatus, type MessagingThreadMessage, type MessagingTokenResponse, type MessagingTokenStore, type MessagingTokenStoreConfig, NO_TARGET, type NamedTarget, type NoTarget, type Note, type NoteDetailResponse, type NoteProjection, type NoteReorderItem, type NoteTreeItem, type NotesApi, type NotificationCapability, type NotificationInput, type NotificationPermissionStatus, type OfflineOperation, type OfflineStorage, type OfflineSync, type OfflineSyncConfig, type OperationRegistry, type Outbox, type OutboxEntry, type OutgoingShare, type ParseVoiceCommandOptions, type PauseIntent, type PendingMessagingMessage, type PushSubscriptionKind, type PushSubscriptionResponse, type ResolveTargetOptions, type ResolvedTarget, type ResumeIntent, SHARED_PACKAGE_NAME, type ScheduleApi, type ScheduleBlock, type ScheduleBlockGoalSummary, type ScheduleBlockTaskSummary, type ScheduleDeleteScope, type ScheduleUpdateScope, type ScheduledAlarm, type SharingApi, type SharingPeer, type SharingQueries, type SpokenTargetKind, type StartTimerSessionInput, type StartTrackingIntent, type StopTimerSessionInput, type StopTimerSessionResult, type StopTrackingIntent, TARGET_KINDS, type TargetCandidate, type TargetKind, type TargetResolution, type TargetResolutionStatus, type Task, type TaskListFilters, type TaskScheduleBlockSummary, type TaskStatus, type TasksApi, type TimeEntriesApi, type TimeEntry, type TimeEntryScheduleBlockSummary, type TimerSessionApi, type TokenStorage, type UnknownIntent, type UpcomingScheduleBlock, type UpdateCategoryForm, type UpdateGoalInput, type UpdateJournalEntryInput, type UpdateLabelForm, type UpdateNoteDto, type UpdateProfileForm, type UpdateScheduleBlockInput, type UpdateTaskInput, type UpdateTimeEntryInput, type UpdateTimerSessionInput, type UpsertCoachHabitsProfile, type UpsertJournalEntryInput, type User, VOICE_INTENT_TYPES, type VoiceCapability, type VoiceError, type VoiceErrorKind, type VoiceIntent, type VoiceIntentType, type VoiceListenHandlers, type VoicePermissionStatus, type WeekSchedule, applyMessageToConversations, applyReadReceipt, buildDayAnalysisBundle, buildMessagingContacts, buildNoteTree, buildReorderPayload, buildSocketUrl, buildZonedDateFromParts, calculateProgressPercent, clampConfidence, coachBudgetIncrements, coachByokProviderMeta, completeTaskSchema, confirmPendingMessage, contactsByUserId, contactsWithoutConversation, countUnreadConversations, createApiClient, createAuthApi, createCategoriesApi, createCategoryQueries, createCoachApi, createCoachQueries, createCoachSettingsApi, createCoachSettingsQueries, createConsoleAnalytics, createGoalQueries, createGoalSchema, createGoalsApi, createInstructionsApi, createInstructionsQueries, createJournalApi, createJournalEntrySchema, createJournalQueries, createLabelQueries, createLabelsApi, createMessagingApi, createMessagingQueries, createMessagingServiceClient, createMessagingSocket, createMessagingTokenStore, createNoopCapabilities, createNoteQueries, createNotesApi, createOfflineSync, createOperationRegistry, createOutbox, createPushSubscriptionsApi, createScheduleApi, createScheduleBlockSchema, createScheduleQueries, createSharingApi, createSharingQueries, createStaticFeatureFlags, createTaskQueries, createTaskSchema, createTasksApi, createTimeEntriesApi, createTimeEntryQueries, createTimeEntrySchema, createTimerSessionApi, createTimerSessionQueries, createUsersApi, currentCoachWeekScopeKey, deriveConversationPreview, deriveConversationTitle, extractCoachProposals, findCounterpart, findNextScheduleBlock, findParticipant, findSpokenDuration, findUpcomingScheduleBlocks, flattenVisibleTree, foldText, formatCoachTokenCount, formatDayAnalysisPrompt, formatDuration, formatTime12h, genId, getISOWeekKey, getLocalDateString, getLocalTimeString, getProjection, getReportingWeekDates, hasResponse, idempotentConfig, insertArchivedConversationEntry, isActionableVoiceIntent, isCoachBudgetExceededError, isConversationUnread, isNamedTarget, isPendingMessage, isReversibleVoiceIntent, labelInputSchema, lastReadAtFor, markPendingMessage, mergeOlderMessages, mergeServerMessages, minutesToTime, nameSimilarity, namedTarget, newestServerMessage, normalizeCoachActionType, oldestMessageTimestamp, parseCoachByokBudget, parseCoachSseStream, parseIncomingMessage, parseVoiceCommand, postCoachStream, rankTargets, reconnectDelayMs, removeConversationIndexEntry, removePendingMessage, resetLiveConversationEntry, resolveActiveBlock, resolveSpokenTarget, sortConversationsByRecency, sortMessages, splitContentAndTarget, summariseTurnsForArchive, taskStatusSchema, timeToMinutes, toMessagingError, todayKey, truncateConversationText, unknownIntent, updateGoalSchema, updateJournalEntrySchema, updateScheduleBlockSchema, updateTaskSchema, updateTimeEntrySchema, upsertJournalEntrySchema, upsertLiveConversationEntry, upsertMessage, validateCoachByokKey };

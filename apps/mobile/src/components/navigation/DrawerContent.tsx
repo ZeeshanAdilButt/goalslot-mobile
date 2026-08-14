@@ -66,6 +66,7 @@ export type DrawerHref =
   | "/journal"
   | "/notes"
   | "/messages"
+  | "/mentees"
   | "/coach"
   | "/settings";
 
@@ -156,6 +157,10 @@ const NAV_GROUPS: DrawerNavGroup[] = [
       ...(messagingEnabled
         ? ([{ href: "/messages", label: "Messages", icon: "messages" }] as DrawerNavItem[])
         : []),
+      // Mentor view — people who share their progress with you. Unlike
+      // Messages, this one isn't service-gated: it's built entirely on the
+      // sharing directory GoalSlot's own API already serves.
+      { href: "/mentees", label: "Mentees", icon: "mentees" },
       { href: "/reports", label: "Reports", icon: "reports" },
       { href: "/categories", label: "Categories", icon: "categories" },
       { href: "/settings", label: "Settings", icon: "settings" },

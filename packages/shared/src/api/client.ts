@@ -17,6 +17,7 @@ import { createCategoriesApi } from './categories'
 import { createCoachApi, postCoachStream, type CoachStreamChunk } from './coach'
 import { createCoachSettingsApi } from './coach-settings'
 import { createGoalsApi } from './goals'
+import { createInstructionsApi } from './instructions'
 import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
 import { createMessagingApi } from './messaging'
@@ -235,6 +236,10 @@ export function createApiClient(config: ApiClientConfig) {
     // configurable (and frequently not configured at all).
     messaging: createMessagingApi(api),
     sharing: createSharingApi(api),
+    // Assign/track instructions a mentor gives a mentee — see ./instructions.ts.
+    // Same accepted-share prerequisite as `sharing.getSharedUser*` above,
+    // enforced server-side.
+    instructions: createInstructionsApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.

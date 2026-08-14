@@ -12,11 +12,13 @@ import {
   createCoachQueries,
   createCoachSettingsQueries,
   createGoalQueries,
+  createInstructionsQueries,
   createJournalQueries,
   createLabelQueries,
   createMessagingQueries,
   createNoteQueries,
   createScheduleQueries,
+  createSharingQueries,
   createTaskQueries,
   createTimeEntryQueries,
   createTimerSessionQueries,
@@ -48,3 +50,10 @@ export const noteQueries = createNoteQueries(apiClient.notes);
 // sharing directory. Keying both under ['messaging'] means signing out or
 // losing the messaging token clears the feature with a single invalidate.
 export const messagingQueries = createMessagingQueries(messagingClient, apiClient.sharing);
+// The Mentees screen's own directory read (who shared their data with the
+// signed-in user) plus a mentee's shared time entries/goals — see
+// packages/shared/src/queries/sharing.ts for why this is a separate key
+// namespace from messaging's `contacts()` above rather than reusing it.
+export const sharingQueries = createSharingQueries(apiClient.sharing);
+// Assign/list instructions a mentor gives a mentee.
+export const instructionsQueries = createInstructionsQueries(apiClient.instructions);

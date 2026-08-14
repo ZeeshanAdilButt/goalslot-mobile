@@ -31,6 +31,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Clock,
   CreditCard,
   Eye,
@@ -59,6 +60,7 @@ import {
   Tag,
   Trash2,
   User,
+  Users,
   WifiOff,
   X,
   type LucideIcon,
@@ -84,6 +86,10 @@ const ICONS = {
   // conversational entries aren't the same glyph twice.
   messages: MessagesSquare,
   notes: StickyNote,
+  // The Mentees screen (people who've shared their data with you) and the
+  // instructions you can assign them, both new alongside it.
+  mentees: Users,
+  instructions: ClipboardList,
   add: Plus,
   // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.
   menu: Menu,
