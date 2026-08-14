@@ -10,7 +10,7 @@
 
 import { create } from "zustand";
 
-import type { User } from "@goalslot/shared";
+import { hasResponse, type User } from "@goalslot/shared";
 
 import { apiClient, setSessionExpiredHandler } from "../lib/api-client";
 import { secureTokenStorage } from "../lib/secure-token-storage";
@@ -54,10 +54,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   // For screens that mutate the profile and get the updated row back —
   // Settings' name edit is the first. Mirrors web's `useAuthStore.setUser`.
   //
-  // Deliberately not "just call loadUser() again": loadUser treats any failed
-  // /auth/me as a dead session and clears the tokens, so a network blip in
-  // the seconds after a successful save would sign the user out over a
-  // change that already landed on the server.
+  // Deliberately not "just call loadUser() again": loadUser clears tokens
+  // and signs out on a genuine (server-answered) rejection of /auth/me, so
+  // reusing it here would risk logging the user out over an edge case in
+  // the refresh/expiry timing of a change that already landed on the
+  // server, instead of just updating the row we already have.
   setUser(user) {
     set({ user });
   },
@@ -102,20 +103,39 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const response = await apiClient.auth.getProfile();
       set({ user: response.data, status: "authenticated" });
-    } catch {
-      // Token present but rejected (expired/invalid and refresh failed, or a
-      // network error on the very first request). Either way there's no
-      // usable session to show — fall back to unauthenticated rather than
-      // getting stuck in `loading` forever.
+    } catch (err) {
+      // `hasResponse` (packages/shared/src/offline/http-error.ts) is the
+      // same "did the server actually answer?" check every other offline
+      // call site in this app uses (timer.tsx, journal.tsx, notes.tsx,
+      // src/lib/offline.ts) to tell a network failure apart from a genuine
+      // rejection. A request that never reached the server (no wifi, DNS
+      // failure, timeout — going offline right on cold start) has no
+      // `.response` at all; it is NOT proof the stored token is invalid, so
+      // it must never clear tokens or bounce to the login screen. Doing
+      // that here was the direct cause of "turn off wifi, get logged out
+      // with no way back in": the token really was deleted, not just the
+      // UI's belief about it.
+      if (!hasResponse(err)) {
+        // Stay optimistically authenticated on the locally stored token —
+        // there is no cached profile to show yet, but the alternative
+        // (unauthenticated) is strictly worse and unrecoverable while
+        // offline. A later authenticated request, or the next loadUser()
+        // once connectivity returns, fills in `user`.
+        set({ status: "authenticated" });
+        return;
+      }
+
+      // The server actually answered and rejected the token (expired/
+      // invalid, and refresh — handled inside the shared api client —
+      // failed too). There's no usable session to show; fall back to
+      // unauthenticated rather than getting stuck in `loading` forever.
       //
-      // Deliberately NOT resetSessionState(), unlike logout() above: the two
-      // causes are indistinguishable from here, and on the network-blip one
-      // the user is still legitimately signed in — wiping the offline outbox
-      // would silently destroy writes they queued while offline. The cost is
-      // that reminders queued by the previous account survive this
-      // particular exit until someone signs in (login/register both reset).
-      // Distinguishing a rejected token from an unreachable server is the
-      // fix; until then the destructive option is the worse trade.
+      // Deliberately NOT resetSessionState(), unlike logout() above: the
+      // offline outbox may still hold writes queued by this same account
+      // and shouldn't be wiped just because this particular request was
+      // rejected. The cost is that reminders queued by the previous
+      // account survive this particular exit until someone signs in
+      // (login/register both reset).
       await secureTokenStorage.clear();
       set({ user: null, status: "unauthenticated" });
     }

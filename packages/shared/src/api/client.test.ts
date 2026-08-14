@@ -132,6 +132,52 @@ describe('createApiClient', () => {
       expect(await storage.getRefreshToken()).toBeNull()
     })
 
+    it('propagates a network error on the original request without touching auth state', async () => {
+      // Regression test: a request that never reaches the server (offline,
+      // DNS failure, timeout) rejects with an AxiosError that has NO
+      // `.response` at all — unlike a genuine 401, where `.response.status`
+      // is 401. The interceptor's very first check
+      // (`error.response?.status !== 401`) must treat that as "not my
+      // problem" and let it propagate untouched, the same way every other
+      // offline call site in this codebase distinguishes "no response" from
+      // "server said no" via `hasResponse`. It must NOT attempt a refresh or
+      // call onSessionExpired / clear tokens on a plain network failure.
+      const storage = createMemoryStorage({ access: 'some-token', refresh: 'some-refresh' });
+      const onSessionExpired = vi.fn();
+      const client = createApiClient({ baseUrl: BASE_URL, storage, onSessionExpired });
+      const mock = new MockAdapter(client.api);
+
+      mock.onGet('/goals').networkError();
+
+      await expect(client.goals.getAll()).rejects.toBeTruthy();
+      expect(onSessionExpired).not.toHaveBeenCalled();
+      expect(await storage.getAccessToken()).toBe('some-token');
+      expect(await storage.getRefreshToken()).toBe('some-refresh');
+    });
+
+    it('keeps tokens and does not sign out when the refresh call itself fails with a network error', async () => {
+      // Same distinction, one level deeper: the original request gets a
+      // genuine 401, so a refresh is attempted — but the refresh POST
+      // itself never reaches the server (offline mid-refresh). That
+      // `refreshError` also has no `.response`, so `isAuthFailureStatus`
+      // must be false and the catch block must keep tokens and skip
+      // `handleSessionExpired`, per the "Network/offline failure isn't
+      // proof the session is invalid" comment in client.ts.
+      const storage = createMemoryStorage({ access: 'expired-token', refresh: 'valid-refresh' });
+      const onSessionExpired = vi.fn();
+      const client = createApiClient({ baseUrl: BASE_URL, storage, onSessionExpired });
+      const mock = new MockAdapter(client.api);
+      const refreshMock = mockRefreshEndpoint();
+
+      mock.onGet('/goals').reply(401, { message: 'Unauthorized' });
+      refreshMock.onPost(`${BASE_URL}/api/auth/refresh`).networkError();
+
+      await expect(client.goals.getAll()).rejects.toBeTruthy();
+      expect(onSessionExpired).not.toHaveBeenCalled();
+      expect(await storage.getAccessToken()).toBe('expired-token');
+      expect(await storage.getRefreshToken()).toBe('valid-refresh');
+    });
+
     it('does not attempt a refresh for the login endpoint itself', async () => {
       const storage = createMemoryStorage()
       const onSessionExpired = vi.fn()
