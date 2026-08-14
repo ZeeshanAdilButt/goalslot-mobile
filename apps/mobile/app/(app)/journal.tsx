@@ -45,6 +45,7 @@ import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
+import { htmlToPlainText } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { journalQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -550,14 +551,21 @@ export default function JournalScreen() {
   const renderRecentItem = useCallback(
     ({ item }: { item: JournalEntry }) => {
       const isActive = item.date === selectedDate;
-      const trimmedContent = item.content.trim();
-      const hasContent = trimmedContent.length > 0;
+      // Entries authored in the web app's TipTap editor are stored as HTML, so
+      // the preview reads the flattened text — showing `item.content` directly
+      // put the literal `<blockquote><p><em>` on screen (and into the label a
+      // screen reader speaks). Emptiness has to be judged on that text too: a
+      // structurally non-empty but wordless document like `<p></p>` counts as
+      // content by length alone and would render as a blank-looking row
+      // instead of the "No content" placeholder.
+      const preview = htmlToPlainText(item.content);
+      const hasContent = preview.length > 0;
       return (
         <PressableScale
           style={[styles.recentRow, isActive && styles.recentRowActive]}
           onPress={() => setSelectedDate(item.date)}
           accessibilityRole="button"
-          accessibilityLabel={`${formatDisplayDate(item.date)}${hasContent ? `, ${trimmedContent.slice(0, 80)}` : ", no content"}`}
+          accessibilityLabel={`${formatDisplayDate(item.date)}${hasContent ? `, ${preview.slice(0, 80)}` : ", no content"}`}
         >
           <RecentDayBadge dateKey={item.date} active={isActive} />
           <View style={styles.recentRowBody}>
@@ -565,7 +573,7 @@ export default function JournalScreen() {
               style={[styles.recentRowPreview, !hasContent && styles.recentRowPreviewEmpty]}
               numberOfLines={1}
             >
-              {hasContent ? trimmedContent : "No content"}
+              {hasContent ? preview : "No content"}
             </Text>
             <Text style={styles.recentRowDate} numberOfLines={1}>
               {formatDisplayDate(item.date)}

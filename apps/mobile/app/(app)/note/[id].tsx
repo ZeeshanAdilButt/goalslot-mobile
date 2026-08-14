@@ -54,7 +54,7 @@ import { hasResponse, type Note, type NoteDetailResponse } from "@goalslot/share
 import { ErrorState, LoadingState } from "@/components";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
-import { normalizeContent } from "@/lib/note-content";
+import { decodeNoteEntities, normalizeContent } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -65,17 +65,15 @@ const CONTENT_DEBOUNCE_MS = 1000;
  *  back to the plain-text view. */
 const EDITOR_INIT_TIMEOUT_MS = 8000;
 
-/** Crude HTML-to-text for the editor-failed fallback view only. */
+/** HTML-to-text for the editor-failed fallback view only. Kept separate from
+ *  `htmlToPlainText` because this one renders a whole document rather than a
+ *  one-line preview: block tags have to survive as paragraph breaks instead of
+ *  collapsing into single spaces. Entity decoding is the shared pass, so the
+ *  two never drift on what `&amp;` means. */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<(p|div|br|li|h[1-6]|blockquote)[^>]*>/gi, "\n")
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  return decodeNoteEntities(
+    html.replace(/<(p|div|br|li|h[1-6]|blockquote)[^>]*>/gi, "\n").replace(/<[^>]*>/g, ""),
+  )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

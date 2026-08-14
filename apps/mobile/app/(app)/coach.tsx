@@ -78,6 +78,7 @@ import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
+import { htmlToPlainText } from "@/lib/note-content";
 import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useCapabilities } from "@/providers/capabilities-provider";
@@ -590,7 +591,12 @@ export default function CoachScreen() {
         timeEntriesForDay: todayEntriesRes.data.map(toDayAnalysisEntry),
         trailingTimeEntries: trailingEntriesRes.data.map(toDayAnalysisEntry),
         trailingWindowDays: DAY_ANALYSIS_TRAILING_WINDOW_DAYS,
-        journalContent: journalEntry?.content ?? null,
+        // Flattened, not raw: this prompt is echoed back as the user's own
+        // chat bubble (and its accessibilityLabel), so raw TipTap markup would
+        // be visible there and re-read on every reload of the conversation.
+        // The builder treats "" exactly as it treats null, so a wordless entry
+        // still lands in the "no journal entry" branch.
+        journalContent: htmlToPlainText(journalEntry?.content ?? ""),
       });
       const prompt = formatDayAnalysisPrompt(bundle);
 
