@@ -546,6 +546,23 @@ export default function NotesScreen() {
         queryClient.setQueryData<Note[]>(listKey, (existing) =>
           (existing ?? []).map((n) => (n.id === optimisticId ? created : n)),
         );
+        // Same reasoning as the queued branch below: "New page" always
+        // navigates straight into the editor, and note/[id].tsx's `useQuery`
+        // has nothing else to show while its own GET is in flight. Without
+        // this the freshly created row lived ONLY in the list cache, so
+        // landing on the editor immediately after a successful create still
+        // meant an unseeded detail query — a blank "Opening page..." spinner
+        // at best, or (if that immediate follow-up GET hit any hiccup —
+        // timeout, a slow/flaky connection, anything) the same "Couldn't
+        // load this page" ErrorState a genuine failure would show, even
+        // though the create itself had already succeeded. Seeding with the
+        // real server row (not a placeholder) means the editor has
+        // everything it needs the instant it mounts, same as the queued
+        // path already gets via its pendingNote seed.
+        queryClient.setQueryData<NoteDetailResponse>(noteQueries.noteQueries.detail(created.id), {
+          note: created,
+          readOnly: false,
+        });
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
         router.push(`/note/${created.id}`);
@@ -1196,6 +1213,24 @@ function NoteRow({
         overshootRight={false}
         leftThreshold={40}
         rightThreshold={40}
+        // Swipeable's own internal pan (ReanimatedSwipeable.tsx) activates
+        // after just `dragOffsetFromLeftEdge`/`dragOffsetFromRightEdge`
+        // (10px, default, unconfigured here) of horizontal movement, with no
+        // long-press requirement. It wraps `pan` below as an ANCESTOR view,
+        // and with no relation declared between two independent gesture
+        // recognizers, arbitration goes to whichever activates first — which
+        // is always Swipeable's 10px threshold, long before `pan`'s
+        // `activateAfterLongPress(300)` timer can ever fire, since any real
+        // long-press hold has more than 10px of finger jitter well inside
+        // that window. That's why drag-to-reorder never engaged: Swipeable
+        // was winning every touch before the long press even had a chance.
+        // `requireExternalGestureToFail` makes Swipeable's pan wait for
+        // `pan` to settle first: a genuine swipe still feels instant (`pan`
+        // fails within a few px once movement exceeds its own long-press
+        // cancel distance — see PanGestureHandler's `shouldFail`), but a
+        // still, held touch now lets `pan` claim the gesture and activate at
+        // 300ms instead of losing it to the swipe recognizer.
+        requireExternalGestureToFail={pan}
       >
         <GestureDetector gesture={pan}>
           <Animated.View style={[styles.rowSurface, isActive && styles.rowSurfaceActive, liftedStyle]}>
