@@ -315,7 +315,11 @@ export default function MessageThreadScreen() {
     [counterpartName, currentUserId, discard, retry],
   );
 
-  const conversationFailed = conversationQuery.isError;
+  // `isError && !data`, not `isError` alone: this screen refetches on every
+  // focus, so a failed background refetch must not blow away an
+  // already-loaded conversation header — same rule `threadUnreadable` below
+  // already applies to the message list.
+  const conversationFailed = conversationQuery.isError && !conversationQuery.data;
   // Only a failure with nothing to show is worth a full-screen error. This
   // screen refetches on every focus, so `isError` stays true after a failed
   // background refetch while `data` still holds the thread the user was

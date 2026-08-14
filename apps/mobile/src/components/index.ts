@@ -3,6 +3,7 @@ export * from "./EditTaskSheet";
 export * from "./EmptyState";
 export * from "./ErrorState";
 export * from "./LoadingState";
+export * from "./QueryErrorState";
 export * from "./QuickAddSheet";
 export * from "./Skeleton";
 // Screens already reach for the state primitives through this barrel, so the

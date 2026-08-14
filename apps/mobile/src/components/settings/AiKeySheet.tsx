@@ -48,7 +48,7 @@ import {
 } from "@goalslot/shared";
 
 import { Button, TextField } from "@/components/ui";
-import { ErrorState } from "@/components/ErrorState";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
@@ -70,7 +70,7 @@ function formatTokens(value: number): string {
 }
 
 export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
-  const { data, isPending, isError, refetch } = useQuery({
+  const { data, isPending, isError, error: queryError, refetch } = useQuery({
     ...coachSettingsQueries.byokKey(),
     enabled: visible,
   });
@@ -226,8 +226,11 @@ export function AiKeySheet({ visible, onClose }: AiKeySheetProps) {
     >
       {isPending ? (
         <LoadingState message="Checking your key" />
-      ) : isError ? (
-        <ErrorState message="Couldn't load your AI key settings." onRetry={() => void refetch()} />
+      ) : isError && !data ? (
+        // `isError && !data`: a cached key state from an earlier open must
+        // not be replaced by a hard error just because this open's refetch
+        // failed.
+        <QueryErrorState error={queryError} message="Couldn't load your AI key settings." onRetry={() => void refetch()} />
       ) : (
         <>
           {error ? (

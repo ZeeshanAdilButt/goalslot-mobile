@@ -64,7 +64,7 @@ import {
   type TimeEntry,
 } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, Skeleton } from "@/components";
+import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { formatMessageTime } from "@/components/messaging/format";
@@ -85,6 +85,17 @@ import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/t
 
 const MAX_MESSAGE_LENGTH = 2000;
 const RATE_LIMIT_MESSAGE = "You've used today's 30 Coach messages. It resets in 24 hours — try again later.";
+
+/**
+ * Shown instead of a raw network exception when `streamChat` never gets a
+ * response at all. See the matching constant + comment in
+ * app/(app)/voice.tsx's `runCoachTurn` for the full "why `.status` is the
+ * right signal here" reasoning — postCoachStream only attaches `.status`
+ * once a real HTTP response came back.
+ */
+const OFFLINE_MESSAGE =
+  "You're offline — Coach needs an internet connection. Try again once you're back online.";
+
 /** How many days of prior time entries "Analyze my day" pulls to compute block-completion history and per-goal daily averages. */
 const DAY_ANALYSIS_TRAILING_WINDOW_DAYS = 28;
 
@@ -465,7 +476,12 @@ export default function CoachScreen() {
           return false;
         }
         const status = (err as { status?: number } | undefined)?.status;
-        const message = status === 429 ? RATE_LIMIT_MESSAGE : err instanceof Error ? err.message : "Couldn't reach the Coach.";
+        const message =
+          status === 429
+            ? RATE_LIMIT_MESSAGE
+            : status !== undefined && err instanceof Error
+              ? err.message
+              : OFFLINE_MESSAGE;
         setError(message);
         onFailure?.(content);
         setOptimisticUser(null);
@@ -607,8 +623,18 @@ export default function CoachScreen() {
         </View>
       </View>
     );
-  } else if (historyQuery.isError) {
-    body = <ErrorState message="Couldn't load your conversation with the Coach." onRetry={() => void historyQuery.refetch()} />;
+  } else if (historyQuery.isError && !historyQuery.data) {
+    // `isError && !data`, matching goals.tsx/tasks.tsx/schedule.tsx's own
+    // guard: `refetchOnMount: "always"` above means this refetches on every
+    // visit, so a failed background refetch must not replace an
+    // already-loaded thread with a hard error.
+    body = (
+      <QueryErrorState
+        error={historyQuery.error}
+        message="Couldn't load your conversation with the Coach."
+        onRetry={() => void historyQuery.refetch()}
+      />
+    );
   } else if (allMessages.length === 0) {
     body = (
       <EmptyState

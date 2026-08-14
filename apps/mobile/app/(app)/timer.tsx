@@ -60,7 +60,7 @@ import {
   type TimeEntry,
 } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, SkeletonListItem } from "@/components";
+import { EmptyState, QueryErrorState, SkeletonListItem } from "@/components";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { SessionHistory } from "@/components/timer/SessionHistory";
 import { TimerControls } from "@/components/timer/TimerControls";
@@ -1214,10 +1214,15 @@ export default function TimerScreen() {
             ))}
           </View>
         </ScrollView>
-      ) : recentQuery.isError ? (
+      ) : recentQuery.isError && !recentQuery.data ? (
+        // `isError && !data`, matching goals.tsx/tasks.tsx/schedule.tsx's own
+        // guard — without it a failed background refetch (e.g. pull-to-
+        // refresh while offline) would replace an already-loaded session
+        // list with a hard error instead of just leaving it on screen.
         <ScrollView contentContainerStyle={styles.scrollContent}>
           {hero}
-          <ErrorState
+          <QueryErrorState
+            error={recentQuery.error}
             message="Couldn't load recent entries."
             onRetry={() => void recentQuery.refetch()}
           />

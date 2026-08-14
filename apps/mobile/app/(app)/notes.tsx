@@ -138,7 +138,7 @@ export default function NotesScreen() {
   const analytics = useAnalytics();
   const { user } = useAuth();
 
-  const { data: notes, isPending, isError, isFetching, refetch } = useQuery(noteQueries.list());
+  const { data: notes, isPending, isError, error, isFetching, refetch } = useQuery(noteQueries.list());
 
   const collapsedIds = useNotesUiStore((s) => s.collapsedIds);
   const toggleCollapsed = useNotesUiStore((s) => s.toggleCollapsed);
@@ -842,7 +842,18 @@ export default function NotesScreen() {
       </View>
     );
   } else if (isError && !notes) {
-    body = <ErrorState message="Couldn't load your notes." onRetry={() => void refetch()} />;
+    // `hasResponse` (the same duck-type check the mutations on this screen
+    // use, and offline.ts/timer.tsx elsewhere) tells a genuine server
+    // rejection apart from a request that never reached the server at all —
+    // conflating them here would tell an offline user their notes failed to
+    // load for a reason a retry can't fix, instead of the true, actionable
+    // "you're offline" story.
+    body = (
+      <ErrorState
+        message={hasResponse(error) ? "Couldn't load your notes." : "You're offline — reconnect to load your notes."}
+        onRetry={() => void refetch()}
+      />
+    );
   } else if (visibleItems.length === 0) {
     body = (
       <ListEmptyState

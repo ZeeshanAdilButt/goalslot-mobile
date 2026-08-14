@@ -38,7 +38,7 @@ import {
 
 import { Button, TextField } from "@/components/ui";
 import { Icon } from "@/components/ui/Icon";
-import { ErrorState } from "@/components/ErrorState";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
@@ -67,7 +67,7 @@ function spokenTokens(value: number): string {
 }
 
 export function IncreaseBudgetSheet({ visible, onClose, onRaised }: IncreaseBudgetSheetProps) {
-  const { data, isPending, isError, refetch } = useQuery({
+  const { data, isPending, isError, error: queryError, refetch } = useQuery({
     ...coachSettingsQueries.byokKey(),
     enabled: visible,
   });
@@ -149,8 +149,10 @@ export function IncreaseBudgetSheet({ visible, onClose, onRaised }: IncreaseBudg
   let body: React.ReactNode;
   if (isPending) {
     body = <LoadingState message="Checking your budget" />;
-  } else if (isError) {
-    body = <ErrorState message="Couldn't load your current budget." onRetry={() => void refetch()} />;
+  } else if (isError && !data) {
+    // `isError && !data`: a cached budget from an earlier open must not be
+    // replaced by a hard error just because this open's refetch failed.
+    body = <QueryErrorState error={queryError} message="Couldn't load your current budget." onRetry={() => void refetch()} />;
   } else if (data?.status !== "active") {
     // Only a BYOK key has a monthly token budget. Someone on the shared
     // operator allowance hit a different ceiling and needs a key, not a

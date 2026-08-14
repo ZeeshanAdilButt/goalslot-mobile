@@ -34,7 +34,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FlashList } from "@shopify/flash-list";
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
-import { genId, getLocalDateString, todayKey, type JournalEntry } from "@goalslot/shared";
+import { genId, getLocalDateString, hasResponse, todayKey, type JournalEntry } from "@goalslot/shared";
 
 import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
 import { Reveal } from "@/components/reports/Reveal";
@@ -322,10 +322,14 @@ export default function JournalScreen() {
   }, [entryQuery.data, selectedDate, today, voiceMode]);
 
   // Defensive: if today's entry fails to load while priming, there is
-  // nothing to safely start capture against (and no TextInput to tap into,
-  // since the error branch below replaces the editor with ErrorState) — fall
-  // back to plain "inactive" rather than leaving "Getting ready to listen…"
-  // on screen forever.
+  // nothing to safely start capture against — `entryQuery.data` never
+  // resolves past `undefined` on either a hard server error or an offline
+  // failure (the latter still renders the writable TextInput below, per
+  // `isEntryOffline`, but priming->listening below only fires once
+  // `entryQuery.data !== undefined`, which an offline fetch never reaches)
+  // — fall back to plain "inactive" rather than leaving "Getting ready to
+  // listen…" on screen forever. The user can still type directly into the
+  // now-visible editor.
   useEffect(() => {
     if (voiceMode !== "priming" || !entryQuery.isError) return;
     setVoiceMode("inactive");
@@ -597,10 +601,26 @@ export default function JournalScreen() {
   // "Saved" treatment below.
   const isPendingSync = entryQuery.data?.pendingSync === true;
 
+  // A failed fetch that never reached the server (offline/timeout — no
+  // `.response` on the error, exactly what `hasResponse` duck-types
+  // elsewhere in this app's outbox/mutation paths) is not the same problem
+  // as a failed fetch the server actually rejected. The former has no
+  // business replacing the editor with a hard error: there's nothing wrong
+  // with the entry, the device just couldn't ask about it. Only a genuine
+  // server rejection (`hasResponse` true) earns the hard error card below;
+  // an offline failure instead falls through to the normal writable editor,
+  // same as a day that legitimately has no entry yet — Save already queues
+  // to the offline outbox (`queueOfflineEdit`, handleSave above) regardless
+  // of which of those two "empty" reasons got it there.
+  const isHardEntryError =
+    entryQuery.isError && entryQuery.data === undefined && hasResponse(entryQuery.error);
+  const isEntryOffline =
+    entryQuery.isError && entryQuery.data === undefined && !hasResponse(entryQuery.error);
+
   // Whether the editor is showing real, writable content right now (not the
   // loading skeleton or the hard-error branch) — gates the word count below
   // it, which has nothing meaningful to report in either of those states.
-  const isEditorReady = !entryQuery.isPending && !(entryQuery.isError && entryQuery.data === undefined);
+  const isEditorReady = !entryQuery.isPending && !isHardEntryError;
   const wordCount = useMemo(() => {
     const trimmed = draft.trim();
     return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
@@ -615,14 +635,16 @@ export default function JournalScreen() {
         <Skeleton height={160} style={styles.editorSkeletonBody} />
       </View>
     );
-  } else if (entryQuery.isError && entryQuery.data === undefined) {
+  } else if (isHardEntryError) {
     // `data === undefined` (never resolved even once), not `!data` — a day
     // with no entry legitimately resolves to `null`, which must still
     // render the empty editor below, not this error state. Gating on
     // `isError` alone used to replace an already-rendered, perfectly good
     // cached entry with a hard error on every failed background refetch
     // (offline pull-to-refresh, focus-refetch), even though the cached
-    // content needed to render it was sitting right there.
+    // content needed to render it was sitting right there. Further gated on
+    // `hasResponse` so only a genuine server rejection lands here — see the
+    // `isHardEntryError`/`isEntryOffline` comment above.
     editorContent = (
       <View style={styles.editorErrorCard}>
         <ErrorState compact message="Couldn't load this entry." onRetry={() => void entryQuery.refetch()} />
@@ -630,25 +652,33 @@ export default function JournalScreen() {
     );
   } else {
     editorContent = (
-      <TextInput
-        style={[styles.textInput, isEditorFocused && styles.textInputFocused]}
-        multiline
-        value={draft}
-        onChangeText={(text) => {
-          setDraft(text);
-          setIsDirty(true);
-        }}
-        onFocus={() => {
-          setIsEditorFocused(true);
-          handleEditorFocus();
-        }}
-        onBlur={() => setIsEditorFocused(false)}
-        placeholder="Write about your day..."
-        placeholderTextColor={colors.mutedForeground}
-        textAlignVertical="top"
-        accessibilityLabel={`Journal entry for ${formatDisplayDate(selectedDate)}`}
-        accessibilityHint="Multiline text field. Use the Save button below to save your changes."
-      />
+      <>
+        {isEntryOffline ? (
+          <Text style={styles.offlineDraftHint}>
+            Offline — couldn't check for a saved entry, so this is a blank draft. Saving will sync once
+            you're back online.
+          </Text>
+        ) : null}
+        <TextInput
+          style={[styles.textInput, isEditorFocused && styles.textInputFocused]}
+          multiline
+          value={draft}
+          onChangeText={(text) => {
+            setDraft(text);
+            setIsDirty(true);
+          }}
+          onFocus={() => {
+            setIsEditorFocused(true);
+            handleEditorFocus();
+          }}
+          onBlur={() => setIsEditorFocused(false)}
+          placeholder="Write about your day..."
+          placeholderTextColor={colors.mutedForeground}
+          textAlignVertical="top"
+          accessibilityLabel={`Journal entry for ${formatDisplayDate(selectedDate)}`}
+          accessibilityHint="Multiline text field. Use the Save button below to save your changes."
+        />
+      </>
     );
   }
 
@@ -662,8 +692,20 @@ export default function JournalScreen() {
       </View>
     );
   } else if (recentQuery.isError && !recentQuery.data) {
-    recentContent = (
+    // Same offline-vs-server-error distinction as `entryQuery` above: a
+    // network failure (no `.response`) just means this device couldn't ask,
+    // not that the server said no — the copy and icon say so instead of the
+    // generic "something went wrong" framing, though Retry stays available
+    // either way since connectivity can return at any moment.
+    recentContent = hasResponse(recentQuery.error) ? (
       <ErrorState compact message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
+    ) : (
+      <ErrorState
+        compact
+        iconName="wifi-off"
+        message="Recent entries aren't available offline."
+        onRetry={() => void recentQuery.refetch()}
+      />
     );
   } else if (recentEntries.length === 0) {
     recentContent = (
@@ -1205,6 +1247,17 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
     textAlign: "right",
     marginTop: spacing.xs,
+  },
+  // Sits above the editor only while `isEntryOffline` is true (a failed
+  // fetch with no server response) — explains why a day that might actually
+  // have a saved entry is showing a blank box, matching this app's general
+  // "explain what's happening, especially around offline state" pattern
+  // (ConnectivityPill, the Save button's "Queued" treatment below).
+  offlineDraftHint: {
+    fontSize: typography.size.xs,
+    lineHeight: 16,
+    color: colors.mutedForeground,
+    marginBottom: spacing.xs,
   },
   saveButton: {
     flexDirection: "row",

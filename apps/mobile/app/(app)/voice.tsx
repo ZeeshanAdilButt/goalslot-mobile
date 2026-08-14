@@ -85,6 +85,17 @@ import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography }
 
 const RATE_LIMIT_MESSAGE = "You've used today's 30 Coach messages. It resets in 24 hours — try again later.";
 
+/**
+ * Shown instead of a raw network exception whenever a voice command reaches
+ * out to GoalSlot AI (Tier 2's /coach/voice-intent classify call, or Tier 3's
+ * full Coach chat) and nothing answers at all — no DNS, no server, no
+ * response of any kind. Tier 1's local `parseVoiceCommand` matching still
+ * works fine while this is on screen; only the tiers that genuinely need the
+ * network are affected.
+ */
+const OFFLINE_MESSAGE =
+  "You're offline — voice commands need an internet connection. Try again once you're back online.";
+
 /** Shown at rest so the mic isn't a button with no stated vocabulary. */
 const EXAMPLES = [
   "Start tracking time for my deen goal",
@@ -341,7 +352,14 @@ export default function VoiceScreen() {
    * always asks first.
    */
   const appendToNote = useCallback(async (target: ResolvedTarget, content: string): Promise<string> => {
-    const detail = await queryClient.fetchQuery(noteQueries.detail(target.id));
+    const detail = await queryClient.fetchQuery(noteQueries.detail(target.id)).catch((err: unknown) => {
+      // Not cached yet and nothing answered — same "no response at all"
+      // signal `hasResponse` reads elsewhere, just for a GET this function
+      // has no offline queue for (queueOfflineEdit below only covers the
+      // write). A raw axios "Network Error" leaking here would be no
+      // friendlier than the fetch exception runCoachTurn used to leak.
+      throw new Error(hasResponse(err) ? "Couldn't load that page. Please try again." : OFFLINE_MESSAGE);
+    });
     const readOnlyRejection = rejectIfNoteReadOnly(detail.readOnly);
     if (readOnlyRejection !== null) {
       throw new Error(readOnlyRejection.kind === "reject" ? readOnlyRejection.message : "Can't update that page.");
@@ -583,7 +601,13 @@ export default function VoiceScreen() {
   const appendToJournal = useCallback(async (text: string): Promise<string> => {
     const date = todayKey();
     const entryKey = journalQueries.journalQueries.byDate(date);
-    const existing = await queryClient.fetchQuery(journalQueries.byDate(date));
+    // Same reasoning as appendToNote's own fetchQuery guard just above:
+    // this GET has no offline queue of its own, so an unguarded failure
+    // here would otherwise leak a raw axios error straight past the
+    // friendly handling the write below already has.
+    const existing = await queryClient.fetchQuery(journalQueries.byDate(date)).catch((err: unknown) => {
+      throw new Error(hasResponse(err) ? "Couldn't load today's journal entry. Please try again." : OFFLINE_MESSAGE);
+    });
     const isCreate = !existing?.id || existing.pendingSync === true;
     const nextContent = appendJournalParagraph(existing?.content ?? "", text);
 
@@ -691,9 +715,19 @@ export default function VoiceScreen() {
           message:
             status === 429
               ? RATE_LIMIT_MESSAGE
-              : err instanceof Error
-                ? err.message
-                : "Couldn't reach GoalSlot AI. Check your connection and try again.",
+              : // postCoachStream (packages/shared/src/api/coach.ts) only ever
+                // sets `.status` once a response actually came back from the
+                // server — see its header. No status at all means the fetch
+                // call itself threw (DNS failure, no signal, a dropped
+                // connection mid-stream): the same "nothing answered" case
+                // `hasResponse` reads off axios' `.response` elsewhere in
+                // this app. Surfacing that raw exception (e.g. "Fetch
+                // failed: java.net.UnknownHostException ... Unable to
+                // resolve host api.goalslot.io") straight to the user is
+                // exactly what this branch used to do — now it doesn't.
+                status !== undefined && err instanceof Error
+                  ? err.message
+                  : OFFLINE_MESSAGE,
         };
       } finally {
         abortRef.current = null;

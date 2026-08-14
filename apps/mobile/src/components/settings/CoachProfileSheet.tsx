@@ -34,8 +34,8 @@ import {
 // barrel: that barrel is what the screens use, and reaching for it from
 // inside src/components would be one re-export away from a cycle.
 import { Button, TextField } from "@/components/ui";
-import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { coachSettingsQueries } from "@/lib/queries";
@@ -53,7 +53,7 @@ export function CoachProfileSheet({ visible, onClose }: CoachProfileSheetProps) 
   // `enabled: visible` — this is the only screen that reads the habits
   // profile, so there's no reason to fetch it until the sheet is actually
   // open.
-  const { data, isPending, isError, refetch } = useQuery({
+  const { data, isPending, isError, error: queryError, refetch } = useQuery({
     ...coachSettingsQueries.habitsProfile(),
     enabled: visible,
   });
@@ -126,8 +126,12 @@ export function CoachProfileSheet({ visible, onClose }: CoachProfileSheetProps) 
     >
       {isPending ? (
         <LoadingState message="Loading your coach profile" />
-      ) : isError ? (
-        <ErrorState message="Couldn't load your coach profile." onRetry={() => void refetch()} />
+      ) : isError && !data ? (
+        // `isError && !data`: this query is `enabled: visible`, so it can
+        // still hold a good cached profile from an earlier open even if the
+        // refetch on this open fails — that cached profile must not be
+        // replaced by a hard error.
+        <QueryErrorState error={queryError} message="Couldn't load your coach profile." onRetry={() => void refetch()} />
       ) : (
         <>
           {error ? (

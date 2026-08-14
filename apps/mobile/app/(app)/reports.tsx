@@ -31,7 +31,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { calculateProgressPercent, formatDuration, getLocalDateString } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, Skeleton } from "@/components";
+import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import {
   buildCategoryBreakdown,
   buildDayBuckets,
@@ -321,7 +321,12 @@ export default function ReportsScreen() {
   if (initialError) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
-        <ErrorState
+        <QueryErrorState
+          // Any one of the three carries the same failure here (a cold
+          // cache with no network path reaching the server fails all three
+          // requests identically), so the first one is representative of
+          // what actually happened.
+          error={timeEntriesQuery.error ?? activeGoalsQuery.error ?? tasksQuery.error}
           message="Couldn't load your reports."
           onRetry={() => {
             void timeEntriesQuery.refetch();

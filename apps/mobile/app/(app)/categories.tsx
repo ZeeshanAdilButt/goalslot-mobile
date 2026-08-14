@@ -42,7 +42,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { genId, type Category, type CreateCategoryForm, type CreateLabelForm, type Label } from "@goalslot/shared";
 
-import { ErrorState, SkeletonListItem } from "@/components";
+import { QueryErrorState, SkeletonListItem } from "@/components";
 import { Icon } from "@/components/ui/Icon";
 import {
   ColorSwatch,
@@ -104,7 +104,7 @@ export default function CategoriesScreen() {
 }
 
 function CategoriesSection() {
-  const { data, isPending, isError, refetch } = useQuery(categoryQueries.list());
+  const { data, isPending, isError, error, refetch } = useQuery(categoryQueries.list());
   const listKey = categoryQueries.categoryQueries.listKey();
 
   const [isAdding, setIsAdding] = useState(false);
@@ -199,8 +199,12 @@ function CategoriesSection() {
             <SkeletonListItem key={index} />
           ))}
         </View>
-      ) : isError ? (
-        <ErrorState message="Couldn't load categories." onRetry={() => void refetch()} />
+      ) : isError && !data ? (
+        // `isError && !data`, not `isError` alone: this section refetches on
+        // focus, so a failed background refetch must not blow away an
+        // already-rendered, perfectly good cached list — the same guard
+        // schedule.tsx/goals.tsx/tasks.tsx already apply to their own lists.
+        <QueryErrorState error={error} message="Couldn't load categories." onRetry={() => void refetch()} />
       ) : !data || data.length === 0 ? (
         <ListEmptyState
           compact
@@ -247,7 +251,7 @@ function CategoriesSection() {
 }
 
 function LabelsSection() {
-  const { data, isPending, isError, refetch } = useQuery(labelQueries.list());
+  const { data, isPending, isError, error, refetch } = useQuery(labelQueries.list());
   const listKey = labelQueries.labelQueries.listKey();
 
   const [isAdding, setIsAdding] = useState(false);
@@ -335,8 +339,9 @@ function LabelsSection() {
             <SkeletonListItem key={index} />
           ))}
         </View>
-      ) : isError ? (
-        <ErrorState message="Couldn't load labels." onRetry={() => void refetch()} />
+      ) : isError && !data ? (
+        // Same `isError && !data` guard as CategoriesSection above.
+        <QueryErrorState error={error} message="Couldn't load labels." onRetry={() => void refetch()} />
       ) : !data || data.length === 0 ? (
         <ListEmptyState
           compact

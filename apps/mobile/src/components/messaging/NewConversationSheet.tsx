@@ -31,7 +31,7 @@ import {
   type MessagingContact,
 } from "@goalslot/shared";
 
-import { ErrorState } from "@/components/ErrorState";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { apiClient } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
@@ -136,9 +136,12 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
           <View style={styles.centered}>
             <ActivityIndicator color={colors.primaryPressed} />
           </View>
-        ) : contactsQuery.isError ? (
-          <ErrorState
+        ) : contactsQuery.isError && !contactsQuery.data ? (
+          // `isError && !data`: a cached contact list must not be replaced
+          // by a hard error just because a background refetch failed.
+          <QueryErrorState
             compact
+            error={contactsQuery.error}
             message="Couldn't load the people you can message."
             onRetry={() => void contactsQuery.refetch()}
           />
