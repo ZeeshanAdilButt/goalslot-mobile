@@ -55,10 +55,11 @@ export function SettingsSheet({ visible, title, description, onClose, children }
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose} statusBarTranslucent>
       <KeyboardAvoidingView
         style={styles.fill}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        // Android resizes the window for the keyboard already; adding padding
-        // on top of that double-counts it and leaves a gap the height of the
-        // keyboard under the sheet.
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // Android does NOT resize the window for the keyboard here — that
+        // only happens under adjustResize, which edge-to-edge (on unconditionally
+        // once targeting SDK 35+) makes the OS ignore. "height" is what makes
+        // this sheet actually move out from under the keyboard on Android too.
       >
         <Pressable
           style={styles.backdrop}

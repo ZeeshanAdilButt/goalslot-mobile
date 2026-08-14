@@ -43,7 +43,17 @@
 // that goal's tasks, ordered first), so it is not rendered there.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { Goal, Task } from "@goalslot/shared";
@@ -249,6 +259,14 @@ export function TrackingPicker({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
+      <KeyboardAvoidingView
+        style={styles.fill}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // The search field means this sheet needs the same keyboard handling
+        // SettingsSheet.tsx has — Android does not resize the window here
+        // under edge-to-edge, so without this the goal/task list sits hidden
+        // behind the keyboard the moment the search box is focused.
+      >
       <Pressable
         style={styles.backdrop}
         onPress={handleClose}
@@ -463,6 +481,7 @@ export function TrackingPicker({
           </Pressable>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -511,6 +530,9 @@ function PickerRow({ title, subtitle, accentColor, selected, accessibilityLabel,
 }
 
 const styles = StyleSheet.create({
+  fill: {
+    flex: 1,
+  },
   backdrop: {
     flex: 1,
     backgroundColor: colors.overlay,
