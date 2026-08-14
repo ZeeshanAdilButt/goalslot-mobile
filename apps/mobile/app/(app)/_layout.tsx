@@ -150,6 +150,20 @@ export default function AppLayout() {
               // the bar's top line. Without this it is clipped flat against it
               // and stops reading as raised at all.
               overflow: "visible",
+              // The library's own default row height (49dp, a fixed UIKit-style
+              // constant applied on both platforms) is exactly tall enough for
+              // a plain icon+label pair, but VoiceTabButton's raised orb (its
+              // label sits below 36dp of orb instead of a normal ~24dp icon)
+              // overflows it by a few dp. `overflow: visible` above lets that
+              // spill past the row's top line on purpose, but at the *bottom*
+              // it was spilling into the safe-area inset padding below the
+              // row instead — invisible on devices that reserve real gesture-
+              // nav inset space, but merging the "Voice" label straight into
+              // the Android system bar on devices/nav-modes where that inset
+              // reads as zero or unreliable. Explicitly sizing the row itself
+              // (rather than relying on inset padding to happen to cover the
+              // gap) fixes it for every device, insets or not.
+              height: 57,
             },
             tabBarLabelStyle: {
               fontSize: 11,
