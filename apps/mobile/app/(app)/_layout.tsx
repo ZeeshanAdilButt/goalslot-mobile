@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Pressable, StyleSheet, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
 import { Icon } from "@/components/ui/Icon";
@@ -15,6 +15,17 @@ import { useTimerStore } from "@/lib/timer-store";
 import { syncWidgets } from "@/widgets/widget-sync";
 import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
+/**
+ * Floor for the tab bar's bottom clearance above the system nav bar/gesture
+ * pill, used as `Math.max(insets.bottom, MIN_BOTTOM_CLEARANCE)` — see the
+ * `insets` comment below for why this exists at all. 16dp is comfortably
+ * inside every real Android gesture-nav/3-button inset this app has actually
+ * measured, so it only ever kicks in when `insets.bottom` itself is
+ * suspiciously low/zero, not on a device where the reported value is already
+ * legitimate.
+ */
+const MIN_BOTTOM_CLEARANCE = 16;
+
 export default function AppLayout() {
   const { status } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -27,6 +38,20 @@ export default function AppLayout() {
   // height. Zero (the default) means every screen's content starts exactly
   // where it always has.
   const [bannerHeight, setBannerHeight] = useState(0);
+
+  // The tab bar composes its own bottom padding from this value below
+  // (see tabBarStyle.paddingBottom) instead of trusting the library's
+  // automatic `paddingBottom: insets.bottom` — on at least one real device
+  // this session (Samsung Galaxy S22 Ultra, gesture nav, edge-to-edge
+  // enabled) that automatic value read as 0, leaving the entire tab bar
+  // flush against the screen edge with no clearance at all, so the
+  // system's own gesture-nav pill drew directly on top of every tab
+  // icon — not just Voice's raised orb overflowing by a few dp (a
+  // different, already-fixed bug), the whole row. `Math.max(insets.bottom,
+  // MIN_BOTTOM_CLEARANCE)` is a defensive floor: it changes nothing on a
+  // device correctly reporting a real inset (the real value already
+  // exceeds the floor), and guarantees real clearance on one that isn't.
+  const insets = useSafeAreaInsets();
 
   // One socket for the whole authenticated app, so an incoming message
   // updates the conversation list from anywhere — not only while a Messages
@@ -164,6 +189,13 @@ export default function AppLayout() {
               // (rather than relying on inset padding to happen to cover the
               // gap) fixes it for every device, insets or not.
               height: 57,
+              // Bottom clearance above the system nav bar/gesture pill,
+              // taken over from the library's own automatic
+              // `paddingBottom: insets.bottom` (this object is the last
+              // style merged into the bar, so it wins). See the
+              // `MIN_BOTTOM_CLEARANCE` comment above `insets` for why this
+              // can't just be `insets.bottom` on its own.
+              paddingBottom: Math.max(insets.bottom, MIN_BOTTOM_CLEARANCE),
             },
             tabBarLabelStyle: {
               fontSize: 11,
