@@ -21,21 +21,26 @@
 // touches this: it's an additive shortcut, not a second filtering path, so
 // this invariant can't regress by way of it.
 //
-// Selection semantics: picking a task clears any picked goal and vice versa
-// (see timer.tsx's handlers) — a run is tracked against one or the other,
-// never both.
+// Selection semantics: a session is tracked against a goal, optionally
+// narrowed to one task under it. Those are two separate choices, so this
+// sheet opens SCOPED to whichever one the user tapped (`slot`) — "goal"
+// lists goals, "task" lists tasks, and the sheet with no slot at all is the
+// history-attach flow, which files an already-logged entry under either.
+// Picking a task implies its goal (see timer.tsx's handlers); picking a goal
+// keeps an already-picked task only when that task belongs to it.
 //
 // GOAL → TASK CASCADE. Picking a goal is no longer necessarily the sheet's
 // last word: if that goal has its own tasks, they're surfaced right below
 // the search row as a scoped quick-pick (<GoalTaskQuickPick>) — see that
-// component's header — so finding "the task under the goal I just picked"
-// doesn't mean scrolling the full flat list a second time. The full list
-// underneath is untouched and still searches everything (previous
-// paragraph); the cascade is purely an addition above it, and picking a
-// *task* — from the chips or from the flat list — still closes the sheet
-// exactly as it always has. Only a *goal* pick with tasks to cascade to
-// keeps the sheet open; a goal with no tasks closes immediately, matching
-// the old one-tap-and-done behaviour.
+// component's header — so "and now the task under the goal I just picked"
+// is available without reopening anything. The full list underneath is
+// untouched and still searches everything (previous paragraph); the cascade
+// is purely an addition above it, and picking a *task* — from the chips or
+// from the flat list — still closes the sheet exactly as it always has.
+// Only a *goal* pick with tasks to cascade to keeps the sheet open; a goal
+// with no tasks closes immediately, matching the old one-tap-and-done
+// behaviour. It is redundant in "task" slot mode (the whole list is already
+// that goal's tasks, ordered first), so it is not rendered there.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -52,12 +57,16 @@ export interface TrackingPickerProps {
   visible: boolean;
   tasks: Task[];
   goals: Goal[];
-  /** Currently picked id (task or goal), so the sheet can show what's selected. */
-  selectedId?: string | null;
+  /** Currently attached goal, so the sheet can check-mark it and scope the task list. */
+  selectedGoalId?: string | null;
+  /** Currently attached task, if any. */
+  selectedTaskId?: string | null;
   onPickTask: (task: Task) => void;
   onPickGoal: (goal: Goal) => void;
-  /** Clears the target — "just track time", and the way an attached session gets detached again. */
+  /** Clears the target entirely — "just track time", and how an attached session gets detached again. */
   onPickNone: () => void;
+  /** Drops just the task, keeping the goal. Only used in "task" slot mode. */
+  onClearTask?: () => void;
   onClose: () => void;
   /**
    * Which of the sheet's three jobs this is, which is purely a copy
@@ -66,18 +75,27 @@ export interface TrackingPickerProps {
    * already been logged ("logged").
    */
   mode?: "prestart" | "running" | "logged";
+  /**
+   * Which attribution slot is being filled. Undefined is the history-attach
+   * flow, which offers goals and tasks together in one list — see this
+   * file's header.
+   */
+  slot?: "goal" | "task";
 }
 
 export function TrackingPicker({
   visible,
   tasks,
   goals,
-  selectedId,
+  selectedGoalId,
+  selectedTaskId,
   onPickTask,
   onPickGoal,
   onPickNone,
+  onClearTask,
   onClose,
   mode = "prestart",
+  slot,
 }: TrackingPickerProps) {
   // A `Modal` renders outside the screen's SafeAreaView, so the sheet has to
   // apply the bottom inset itself — without it the Cancel target sits under
@@ -98,15 +116,24 @@ export function TrackingPicker({
   // could be undone by tapping it.
   const [pickedThisSession, setPickedThisSession] = useState(false);
 
-  const visibleGoals = useMemo(() => filterGoals(goals, query), [goals, query]);
-  const visibleTasks = useMemo(() => filterTasks(tasks, query), [tasks, query]);
+  // Which entity this sheet is choosing between. A scoped sheet lists exactly
+  // one kind, so the search box narrows that kind and nothing else — the
+  // "search searches everything" invariant above is about not hiding rows
+  // *within* what the sheet is offering, which is unchanged here.
+  const showGoals = slot !== "task";
+  const showTasks = slot !== "goal";
+  /** Names what the search box actually covers, so the copy can't over-promise. */
+  const searchScope = showGoals && showTasks ? "goals and tasks" : showGoals ? "goals" : "tasks";
+
+  const visibleGoals = useMemo(() => (showGoals ? filterGoals(goals, query) : []), [goals, query, showGoals]);
+  const visibleTasks = useMemo(() => (showTasks ? filterTasks(tasks, query) : []), [tasks, query, showTasks]);
 
   const searching = normalizeQuery(query).length > 0;
   const noResults = searching && visibleGoals.length === 0 && visibleTasks.length === 0;
   // Distinguishes "your search matched nothing" from "you have nothing yet" —
   // the two need completely different copy, and conflating them is what makes
   // an empty state useless.
-  const nothingToShow = !searching && goals.length === 0 && tasks.length === 0;
+  const nothingToShow = !searching && (showGoals ? goals.length : 0) + (showTasks ? tasks.length : 0) === 0;
 
   const scopedGoal = useMemo(
     () => (scopedGoalId ? (goals.find((g) => g.id === scopedGoalId) ?? null) : null),
@@ -118,6 +145,20 @@ export function TrackingPicker({
   const scopedTasks = useMemo(
     () => (scopedGoal ? tasks.filter((t) => t.goalId === scopedGoal.id) : []),
     [scopedGoal, tasks],
+  );
+
+  // In "task" mode the goal's own tasks lead the list and everything else
+  // follows under its own heading, rather than the goal's tasks being buried
+  // in one flat alphabet — but nothing is filtered out, so a task under a
+  // different goal is still one tap away (picking it re-points the goal too).
+  const groupTasksByScope = slot === "task" && scopedGoal !== null && !searching;
+  const scopedVisibleTasks = useMemo(
+    () => (groupTasksByScope && scopedGoal ? visibleTasks.filter((t) => t.goalId === scopedGoal.id) : []),
+    [groupTasksByScope, scopedGoal, visibleTasks],
+  );
+  const unscopedVisibleTasks = useMemo(
+    () => (groupTasksByScope && scopedGoal ? visibleTasks.filter((t) => t.goalId !== scopedGoal.id) : visibleTasks),
+    [groupTasksByScope, scopedGoal, visibleTasks],
   );
 
   const clearSearch = () => setQuery("");
@@ -136,18 +177,14 @@ export function TrackingPicker({
     if (!justOpened) return;
 
     setPickedThisSession(false);
-    if (!selectedId) {
-      setScopedGoalId(null);
+    if (selectedGoalId) {
+      setScopedGoalId(selectedGoalId);
       return;
     }
-    const goalMatch = goals.find((g) => g.id === selectedId);
-    if (goalMatch) {
-      setScopedGoalId(goalMatch.id);
-      return;
-    }
-    const taskMatch = tasks.find((t) => t.id === selectedId);
+    // No goal attached, but an attached task still implies one.
+    const taskMatch = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : undefined;
     setScopedGoalId(taskMatch?.goalId ?? null);
-  }, [visible, selectedId, goals, tasks]);
+  }, [visible, selectedGoalId, selectedTaskId, tasks]);
 
   const handleClose = () => {
     // A stale query would otherwise still be filtering the list the next time
@@ -186,6 +223,30 @@ export function TrackingPicker({
     handleClose();
   };
 
+  /** "No task" — drops the task without touching the goal. Only reachable in "task" mode. */
+  const handleClearTask = () => {
+    onClearTask?.();
+    handleClose();
+  };
+
+  const sheetTitle =
+    slot === "goal"
+      ? "Which goal?"
+      : slot === "task"
+        ? "Which task?"
+        : mode === "prestart"
+          ? "What are you tracking?"
+          : "Attach to this session";
+
+  const sheetSubtitle =
+    slot === "task"
+      ? "Optional. A task narrows the session to one thing under the goal — the goal stays either way."
+      : mode === "running"
+        ? "Your time keeps counting either way — this just files it somewhere."
+        : mode === "logged"
+          ? "Files time you've already logged under a goal or task."
+          : "Optional. You can start now and attach a goal later, or never.";
+
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
       <Pressable
@@ -205,16 +266,8 @@ export function TrackingPicker({
           accessible={false}
         >
           <View style={styles.handle} />
-          <Text style={styles.title}>
-            {mode === "prestart" ? "What are you tracking?" : "Attach to this session"}
-          </Text>
-          <Text style={styles.subtitle}>
-            {mode === "running"
-              ? "Your time keeps counting either way — this just files it somewhere."
-              : mode === "logged"
-                ? "Files time you've already logged under a goal or task."
-                : "Optional. You can start now and attach a goal later, or never."}
-          </Text>
+          <Text style={styles.title}>{sheetTitle}</Text>
+          <Text style={styles.subtitle}>{sheetSubtitle}</Text>
 
           <View style={styles.searchRow}>
             <Icon name="search" size={16} color={colors.mutedForeground} />
@@ -222,13 +275,13 @@ export function TrackingPicker({
               style={styles.searchInput}
               value={query}
               onChangeText={setQuery}
-              placeholder="Search goals and tasks"
+              placeholder={`Search ${searchScope}`}
               placeholderTextColor={colors.mutedForeground}
               autoCorrect={false}
               autoCapitalize="none"
               returnKeyType="search"
-              accessibilityLabel="Search goals and tasks"
-              accessibilityHint="Searches all of your goals and tasks by name or category"
+              accessibilityLabel={`Search ${searchScope}`}
+              accessibilityHint={`Searches all of your ${searchScope} by name${showGoals ? " or category" : ""}`}
             />
             {searching ? (
               <Pressable
@@ -252,12 +305,14 @@ export function TrackingPicker({
               searching: search already surfaces every matching task
               regardless of goal (this file's header), so the two would be
               showing overlapping, differently-scoped answers to the same
-              question at once. */}
-          {!searching && scopedGoal ? (
+              question at once. Also hidden in "task" mode, where the whole
+              list already IS that goal's tasks (led by them, see
+              `groupTasksByScope`) and the chips would just repeat it. */}
+          {!searching && slot !== "task" && scopedGoal ? (
             <GoalTaskQuickPick
               goal={scopedGoal}
               tasks={scopedTasks}
-              selectedTaskId={selectedId}
+              selectedTaskId={selectedTaskId}
               onPickTask={handleSelectTask}
             />
           ) : null}
@@ -268,28 +323,47 @@ export function TrackingPicker({
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            {/* Hidden while searching (it isn't a search result, and it would
-                sit above the actual matches competing for the first tap), and
-                in "logged" mode, where the sheet is only ever opened from an
-                entry that already has nothing attached — so "attach nothing"
-                would be a row that does nothing. */}
+            {/* The opt-out row. Hidden while searching (it isn't a search
+                result, and it would sit above the actual matches competing
+                for the first tap), and in "logged" mode, where the sheet is
+                only ever opened from an entry that already has nothing
+                attached — so "attach nothing" would be a row that does
+                nothing. In "task" mode it drops only the task: the goal is a
+                separate slot and clearing it from here would silently undo a
+                choice the user didn't come to this sheet to change. */}
             {!searching && mode !== "logged" ? (
-              <PickerRow
-                title={mode === "running" ? "No goal — just track time" : "Just track time"}
-                subtitle="Log the time without attaching it to anything"
-                accentColor={null}
-                selected={!selectedId}
-                accessibilityLabel="Track without a goal or task"
-                onPress={handleSelectNone}
-              />
+              slot === "task" ? (
+                <PickerRow
+                  title="No task"
+                  subtitle="Track the goal on its own"
+                  accentColor={null}
+                  selected={!selectedTaskId}
+                  accessibilityLabel="Track without a task"
+                  onPress={handleClearTask}
+                />
+              ) : (
+                <PickerRow
+                  title={mode === "running" ? "No goal — just track time" : "Just track time"}
+                  subtitle="Log the time without attaching it to anything"
+                  accentColor={null}
+                  selected={!selectedGoalId && !selectedTaskId}
+                  accessibilityLabel="Track without a goal or task"
+                  onPress={handleSelectNone}
+                />
+              )
             ) : null}
 
             {noResults ? (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyTitle}>No goals or tasks match “{query.trim()}”</Text>
+                <Text style={styles.emptyTitle}>
+                  No {searchScope} match “{query.trim()}”
+                </Text>
                 <Text style={styles.emptyBody}>
-                  This searched all {goals.length} of your goals and {tasks.length} tasks — nothing else is
-                  filtering the list.
+                  {showGoals && showTasks
+                    ? `This searched all ${goals.length} of your goals and ${tasks.length} tasks — nothing else is filtering the list.`
+                    : showGoals
+                      ? `This searched all ${goals.length} of your goals — nothing else is filtering the list.`
+                      : `This searched all ${tasks.length} of your tasks — nothing else is filtering the list.`}
                 </Text>
                 <Pressable
                   style={({ pressed }) => [styles.clearButton, pressed && styles.rowPressed]}
@@ -302,10 +376,11 @@ export function TrackingPicker({
               </View>
             ) : nothingToShow ? (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyTitle}>Nothing to attach yet</Text>
+                <Text style={styles.emptyTitle}>{slot === "task" ? "No tasks yet" : "Nothing to attach yet"}</Text>
                 <Text style={styles.emptyBody}>
-                  You don’t have any goals or tasks. Start the timer anyway — you can attach one later, from
-                  this sheet or from the session in your history.
+                  {slot === "task"
+                    ? "You don’t have any tasks. A task is optional — the goal on its own is enough to track against."
+                    : "You don’t have any goals or tasks. Start the timer anyway — you can attach one later, from this sheet or from the session in your history."}
                 </Text>
               </View>
             ) : (
@@ -320,7 +395,7 @@ export function TrackingPicker({
                         title={goal.title}
                         subtitle={goal.category || null}
                         accentColor={goal.color}
-                        selected={selectedId === goal.id}
+                        selected={selectedGoalId === goal.id}
                         accessibilityLabel={`Track goal "${goal.title}"`}
                         onPress={() => handleSelectGoal(goal)}
                       />
@@ -328,16 +403,43 @@ export function TrackingPicker({
                   </>
                 ) : null}
 
-                {visibleTasks.length > 0 ? (
+                {/* In "task" mode the chosen goal's own tasks lead, under a
+                    heading that names it, with everything else still listed
+                    below rather than hidden. */}
+                {groupTasksByScope && scopedVisibleTasks.length > 0 && scopedGoal ? (
                   <>
-                    <SectionLabel text="Tasks" count={visibleTasks.length} />
-                    {visibleTasks.map((task) => (
+                    <SectionLabel text={`Tasks in “${scopedGoal.title}”`} count={scopedVisibleTasks.length} />
+                    {scopedVisibleTasks.map((task) => (
+                      <PickerRow
+                        key={task.id}
+                        title={task.title}
+                        subtitle={null}
+                        accentColor={scopedGoal.color}
+                        selected={selectedTaskId === task.id}
+                        accessibilityLabel={`Track task "${task.title}"`}
+                        onPress={() => handleSelectTask(task)}
+                      />
+                    ))}
+                  </>
+                ) : null}
+
+                {unscopedVisibleTasks.length > 0 ? (
+                  <>
+                    <SectionLabel
+                      text={
+                        groupTasksByScope && scopedVisibleTasks.length > 0
+                          ? "Tasks under other goals"
+                          : "Tasks"
+                      }
+                      count={unscopedVisibleTasks.length}
+                    />
+                    {unscopedVisibleTasks.map((task) => (
                       <PickerRow
                         key={task.id}
                         title={task.title}
                         subtitle={task.goal?.title ?? null}
                         accentColor={task.goal?.color ?? null}
-                        selected={selectedId === task.id}
+                        selected={selectedTaskId === task.id}
                         accessibilityLabel={`Track task "${task.title}"`}
                         onPress={() => handleSelectTask(task)}
                       />

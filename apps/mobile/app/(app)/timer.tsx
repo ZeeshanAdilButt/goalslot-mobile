@@ -51,7 +51,6 @@ import {
   genId,
   getLocalDateString,
   namedTarget,
-  resolveActiveBlock,
   resolveSpokenTarget,
   updateTimeEntrySchema,
   type CreateTimeEntryInput,
@@ -79,6 +78,12 @@ import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries, timerSessi
 import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useSettingsStore } from "@/lib/settings-store";
+import {
+  cleanLabel,
+  isDormantLocalSession,
+  isDormantServerSession,
+  resolveScheduledTarget,
+} from "@/lib/timer-attribution";
 import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAuth } from "@/providers/auth-provider";
@@ -132,11 +137,16 @@ function hasResponse(err: unknown): boolean {
 }
 
 /**
- * What the tracking picker is currently choosing for: the live session
- * (whether idle-and-not-yet-started or already running), or a specific entry
- * already in the history that the user is filing after the fact.
+ * What the tracking picker is currently choosing for: one of the live
+ * session's two attribution slots (whether idle-and-not-yet-started or
+ * already running), or a specific entry already in the history that the user
+ * is filing after the fact.
+ *
+ * The slot is what makes goal and task independently settable — the sheet
+ * opens listing only the thing that row is for, so "now also add a task"
+ * isn't a second pass through a list that reads as "replace your goal".
  */
-type PickerTarget = { kind: "session" } | { kind: "entry"; entry: TimeEntry };
+type PickerTarget = { kind: "session"; slot: "goal" | "task" } | { kind: "entry"; entry: TimeEntry };
 
 /** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
 const MAX_RING_SIZE = 300;
@@ -220,12 +230,37 @@ export default function TimerScreen() {
 
   // The other possible source of truth — see this file's header. `null`
   // (not an error) is what the endpoint returns when nothing is running, so
-  // `serverSession` below is exactly that: a session, or nothing.
+  // this is exactly that: a session, or nothing.
   const serverSessionQuery = useQuery({
     ...timerSessionQueries.active(),
     refetchInterval: SERVER_SESSION_POLL_MS,
   });
-  const serverSession = serverSessionQuery.data ?? null;
+  const rawServerSession = serverSessionQuery.data ?? null;
+
+  /**
+   * A DORMANT session — paused, no measured time, no attribution of any kind
+   * (see isDormantServerSession) — is deliberately NOT treated as a session
+   * at all below this line. `serverSession` is the live one or nothing, so
+   * every guard, handler and bit of render logic that already asks "is a
+   * server session in charge?" gets the right answer without knowing this
+   * distinction exists.
+   *
+   * WHY: a row like that is indistinguishable on screen from "nothing is
+   * happening" — 00:00:00, nothing attached — but it used to make the screen
+   * claim "Paused" forever, suppress the schedule-linked default (which
+   * refuses to touch a non-idle session, correctly), and route every
+   * attribution edit through PATCH /timer/session, the exact request that
+   * hangs for this shape of session (see packages/shared/src/api/client.ts's
+   * timeout note). The result was a dead end: no goal shown, no way to pick
+   * one, no way out. Nothing is lost by ignoring it — it holds no time and no
+   * attribution — and `handleStart` cleans it up for real when the user
+   * actually starts something.
+   *
+   * A session with REAL elapsed time or ANY attribution is never dormant, so
+   * this can't re-point or discard a session the user would recognise.
+   */
+  const dormantServerSession = isDormantServerSession(rawServerSession) ? rawServerSession : null;
+  const serverSession = dormantServerSession === null ? rawServerSession : null;
   const hasServerSession = serverSession !== null;
 
   useFocusEffect(
@@ -276,6 +311,21 @@ export default function TimerScreen() {
   const effectivePausedElapsedMs = hasServerSession ? (serverSession.accumulatedMs ?? 0) : pausedElapsedMs;
   const effectiveTaskId = hasServerSession ? (serverSession.taskId ?? null) : timerTaskId;
   const effectiveGoalId = hasServerSession ? (serverSession.goalId ?? null) : timerGoalId;
+
+  /**
+   * The local store's own version of the dormant case above: paused, no
+   * measured time, nothing attached. Unlike the server flavour this is NOT
+   * hidden from the rest of the screen — the transport controls still offer
+   * Resume/Stop on it, which is honest and costs the user nothing. It exists
+   * purely so the schedule-linked default below isn't suppressed by a session
+   * that holds nothing, whichever of the two stores happens to be holding it.
+   */
+  const localDormant = isDormantLocalSession({
+    status,
+    pausedElapsedMs,
+    taskId: timerTaskId,
+    goalId: timerGoalId,
+  });
 
   // Lets the iOS home-screen widget's "Start" button (see
   // targets/widget/GoalSlotWidget.swift) jump straight into tracking instead
@@ -330,12 +380,15 @@ export default function TimerScreen() {
    */
   useEffect(() => {
     if (autostart !== "active" || autoStartFired.current || effectiveStatus !== "idle") return;
-    if (!scheduleQuery.data || !tasksQuery.data || !goalsQuery.data) return;
 
-    const activeBlock = resolveActiveBlock(scheduleQuery.data, new Date(), DEVICE_TIMEZONE);
-    const blockGoalId = activeBlock?.goalId ?? activeBlock?.goal?.id;
-    if (!blockGoalId) return;
-    const blockTaskId = activeBlock?.tasks?.[0]?.id;
+    const scheduled = resolveScheduledTarget(
+      scheduleQuery.data,
+      goalsQuery.data,
+      tasksQuery.data,
+      new Date(),
+      DEVICE_TIMEZONE,
+    );
+    if (!scheduled) return;
 
     // Re-check live state right before mutating, same race this file's
     // auto-select-on-open effect below guards against (see its own comment
@@ -344,9 +397,9 @@ export default function TimerScreen() {
     if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
 
     autoStartFired.current = true;
-    start(blockTaskId, blockGoalId);
+    start(scheduled.task?.id, scheduled.goal.id);
     hapticLight();
-    analytics.track({ name: "timerStarted", payload: { taskId: blockTaskId } });
+    analytics.track({ name: "timerStarted", payload: { taskId: scheduled.task?.id } });
   }, [analytics, autostart, effectiveStatus, goalsQuery.data, hasServerSession, scheduleQuery.data, start, tasksQuery.data]);
 
   /**
@@ -417,11 +470,22 @@ export default function TimerScreen() {
    *     `start()` has already flipped it to "running", silently
    *     overwriting the goal (or spoken target) the deep link was asked to
    *     start.
-   *   - `effectiveStatus !== "idle"` — never re-point a session that's
-   *     already running or paused, whether that session is local or a
-   *     server-side one (see this file's header on `effectiveStatus`) — a
-   *     live session's attribution is the user's to change, not this
-   *     effect's.
+   *   - not idle AND not dormant — never re-point a session that's genuinely
+   *     running or paused with something in it, whether local or server-side
+   *     (see this file's header on `effectiveStatus`): a live session's
+   *     attribution is the user's to change, not this effect's. A DORMANT
+   *     session is the deliberate exception on both sides — paused, zero
+   *     elapsed, nothing attached (see isDormantServerSession /
+   *     isDormantLocalSession). `effectiveStatus` already reads "idle" for
+   *     the server flavour because `dormantServerSession` is excluded from
+   *     `serverSession` entirely; `localDormant` is the same judgement for
+   *     the local store. Such a session is indistinguishable on screen from
+   *     "nothing is happening", and letting it suppress this default is
+   *     exactly what left the Timer screen with a permanently blank goal
+   *     during a scheduled block, with nothing on screen to explain why.
+   *     Note the local case is not merely a display default: `retarget`
+   *     applies to a paused session for real, which is right — it only ever
+   *     writes attribution, never the clock.
    *   - `userSelectedRef` — never override a pick the user already made this
    *     visit, including a deliberate "Just track time".
    *   - `selectedTask`/`selectedGoal` already set — covers a fast remount
@@ -442,36 +506,25 @@ export default function TimerScreen() {
   useEffect(() => {
     if (
       autostart !== undefined ||
-      effectiveStatus !== "idle" ||
+      (effectiveStatus !== "idle" && !localDormant) ||
       userSelectedRef.current ||
       selectedTask !== null ||
       selectedGoal !== null
     ) {
       return;
     }
-    // Wait for every list this needs to resolve ids against — an
-    // undefined-vs-empty distinction matters here (a still-loading query is
-    // `undefined`, a genuinely empty one is `[]`), so this can't just check
-    // `.length`.
-    if (!scheduleQuery.data || !tasksQuery.data || !goalsQuery.data) return;
-
-    const activeBlock = resolveActiveBlock(
+    // `resolveScheduledTarget` waits for every list it needs to resolve ids
+    // against — an undefined-vs-empty distinction matters (a still-loading
+    // query is `undefined`, a genuinely empty one is `[]`), which is why it
+    // takes the raw query data rather than a `?? []` fallback.
+    const scheduled = resolveScheduledTarget(
       scheduleQuery.data,
+      goalsQuery.data,
+      tasksQuery.data,
       new Date(),
       DEVICE_TIMEZONE,
     );
-    const blockGoalId = activeBlock?.goalId ?? activeBlock?.goal?.id;
-    if (!blockGoalId) return;
-    const goal = goalsQuery.data.find((g) => g.id === blockGoalId);
-    if (!goal) return;
-
-    // A block can name several tasks; there's no ordering signal to prefer
-    // one over another, so the first is an acceptable simplification (per
-    // this feature's brief) rather than guessing at intent.
-    const blockTaskId = activeBlock?.tasks?.[0]?.id;
-    const task = blockTaskId
-      ? tasksQuery.data.find((t) => t.id === blockTaskId)
-      : undefined;
+    if (!scheduled) return;
 
     // Re-checks LIVE state right before mutating anything — closes a real
     // race, not a theoretical one: `effectiveStatus` above is the value
@@ -492,22 +545,25 @@ export default function TimerScreen() {
     // that.) `retarget()`'s own idle check protects the *opposite*
     // direction (a truly idle store), so it can't catch this — the whole
     // failure mode IS a store that stopped being idle in between.
-    if (useTimerStore.getState().status !== "idle" || hasServerSession) return;
+    //
+    // Re-derived from the store's own live state rather than trusting the
+    // `localDormant` this effect closed over, for exactly the same reason.
+    const liveState = useTimerStore.getState();
+    if ((liveState.status !== "idle" && !isDormantLocalSession(liveState)) || hasServerSession) return;
 
-    if (task) {
-      setSelectedTask(task);
-      setSelectedGoal(null);
-      retarget(task.id, task.goalId);
-    } else {
-      setSelectedGoal(goal);
-      setSelectedTask(null);
-      retarget(undefined, goal.id);
-    }
+    // BOTH slots, not one or the other: the goal is what the block is for,
+    // and the task (when the block names one) narrows it. Setting the goal
+    // even in the task case is what lets the user drop the task later and
+    // still be tracking against something.
+    setSelectedGoal(scheduled.goal);
+    setSelectedTask(scheduled.task);
+    retarget(scheduled.task?.id, scheduled.goal.id);
   }, [
     autostart,
     effectiveStatus,
     goalsQuery.data,
     hasServerSession,
+    localDormant,
     retarget,
     scheduleQuery.data,
     selectedGoal,
@@ -529,11 +585,23 @@ export default function TimerScreen() {
       goalsQuery.data?.find((g) => g.id === effectiveGoalId) ?? (effectiveStatus === "idle" ? selectedGoal : null),
     [goalsQuery.data, effectiveGoalId, effectiveStatus, selectedGoal],
   );
-  // A server session already carries its own denormalised `taskName` (set at
-  // start, or by a PATCH from this screen or the Coach) — falling back to it
-  // means an unattributed-but-named server session ("log this as 'gym'")
-  // shows that name here even before/without a matching local task or goal.
-  const resolvedLabel = activeTask?.title ?? activeGoal?.title ?? (hasServerSession ? serverSession.taskName : null);
+  // The two slots' own titles, each independently resolvable. EVERY one goes
+  // through `cleanLabel`: these are unvalidated network strings, and an empty
+  // one is "no title", not a title that happens to be empty. Skipping that is
+  // exactly how the attribution row came to render as a blank box with a
+  // "Change" affordance and nothing else in it.
+  const goalTitle = cleanLabel(
+    activeGoal?.title ?? activeTask?.goal?.title ?? (hasServerSession ? serverSession.goal?.title : null),
+  );
+  const taskTitle = cleanLabel(activeTask?.title ?? (hasServerSession ? serverSession.task?.title : null));
+  // A server session also carries a denormalised free-text `taskName` (set at
+  // start, or by a PATCH from this screen or the Coach), which is a session
+  // NAME rather than a task — "log this as 'gym'" produces one with no task
+  // or goal behind it. Kept separate from the two slots so it can't be
+  // mistaken for a real task, but still shown (and still what the entry gets
+  // named on stop).
+  const sessionName = hasServerSession ? cleanLabel(serverSession.taskName) : null;
+  const resolvedLabel = taskTitle ?? goalTitle ?? sessionName;
 
   // The store persists only ids, so a running session's title has to be
   // looked up in the task/goal lists — and those lists can be momentarily
@@ -554,10 +622,10 @@ export default function TimerScreen() {
   // Null here means "there is no title to show", which since one-tap
   // tracking landed covers two genuinely different situations: nothing is
   // attached (the ordinary case now), or something is attached but hasn't
-  // resolved yet on a cold start. `hasTarget` is what tells them apart —
-  // TrackingTarget needs both to pick its copy, and conflating them would
-  // label a deliberately unattributed session "Untitled", which reads as a
-  // failure rather than a choice.
+  // resolved yet on a cold start. The `*Unresolved` flags below are what tell
+  // them apart — TrackingTarget needs that to pick its copy, and conflating
+  // them would label a deliberately unattributed session "Untitled", which
+  // reads as a failure rather than a choice.
   //
   // No placeholder is substituted here any more. It used to be, which meant
   // a running session with nothing attached rendered as though it were
@@ -566,17 +634,43 @@ export default function TimerScreen() {
   // handleStop) and the notification's own `label ?? "Untitled session"`.
   const knownLabel = resolvedLabel ?? latchedLabel;
   const activeLabel = knownLabel;
-  const hasTarget =
+
+  // Which ids each slot is showing, from whichever source of truth owns them
+  // right now. While idle that's the pre-start selection: the store
+  // deliberately refuses to hold a target it isn't timing (see timer-store's
+  // `retarget`), so its ids are null until Start.
+  const slotTaskId = effectiveStatus === "idle" ? (selectedTask?.id ?? null) : effectiveTaskId;
+  const slotGoalId =
     effectiveStatus === "idle"
-      ? selectedTask !== null || selectedGoal !== null
-      : effectiveTaskId !== null || effectiveGoalId !== null;
+      ? (selectedGoal?.id ?? selectedTask?.goalId ?? null)
+      : (effectiveGoalId ?? activeTask?.goalId ?? null);
+  // "An id is attached but we can't name it yet" — a cold start with the
+  // goal/task lists still in flight, not an empty slot.
+  const goalUnresolved = slotGoalId !== null && goalTitle === null;
+  const taskUnresolved = slotTaskId !== null && taskTitle === null;
+
   const activeColor =
     activeGoal?.color ?? activeTask?.goal?.color ?? (hasServerSession ? (serverSession.goal?.color ?? null) : null);
-  // A task shows its parent goal; a goal shows its category — either way the
-  // second line answers "which bucket does this belong to?".
-  const activeSublabel = activeTask
-    ? (activeTask.goal?.title ?? null)
-    : (activeGoal?.category ?? null);
+  // The goal row's second line — which bucket this belongs to.
+  const goalCategory = cleanLabel(activeGoal?.category);
+
+  /**
+   * The block that's live right now, offered as a one-tap attribution
+   * whenever the goal slot is empty. This is the same resolution the
+   * auto-select effect above performs, and it is deliberately still shown in
+   * the cases that effect refuses to touch — above all a genuinely RUNNING
+   * session with no goal, where silently re-attributing would be wrong but
+   * offering the obvious answer is exactly right. Cheap enough to do on every
+   * render (a plain array scan, no fetch), and doing it unmemoised is what
+   * keeps it honest as the clock crosses out of one block and into the next.
+   */
+  const scheduledTarget = resolveScheduledTarget(
+    scheduleQuery.data,
+    goalsQuery.data,
+    tasksQuery.data,
+    new Date(),
+    DEVICE_TIMEZONE,
+  );
 
   // Puts a persistent entry in the notification shade for the life of the
   // session, so a running timer is visible from outside the app. Degrades to
@@ -672,13 +766,17 @@ export default function TimerScreen() {
           });
         return;
       }
+      // A task implies its goal, so picking one fills BOTH slots. Setting the
+      // goal explicitly (rather than leaving it implied by the task) is what
+      // lets "No task" later leave a goal still attached instead of silently
+      // detaching the session from everything.
       setSelectedTask(task);
-      setSelectedGoal(null);
+      setSelectedGoal(task.goalId ? (goalsQuery.data?.find((g) => g.id === task.goalId) ?? null) : null);
       // A session already in flight gets re-pointed in the store; the local
       // selection above only governs the *next* start.
       retarget(task.id, task.goalId);
     },
-    [attachToEntry, hasServerSession, pickerTarget, retarget],
+    [attachToEntry, goalsQuery.data, hasServerSession, pickerTarget, retarget],
   );
 
   const handlePickGoal = useCallback(
@@ -689,9 +787,29 @@ export default function TimerScreen() {
         void attachToEntry(target.entry, { goalId: goal.id });
         return;
       }
+      // A task only makes sense under its own goal, so switching goals drops
+      // a task that belongs to a different one — but keeps it when it's a
+      // task of the goal just picked, which is what makes the two slots feel
+      // independent rather than one resetting the other.
+      const keptTask = activeTask && activeTask.goalId === goal.id ? activeTask : null;
       if (hasServerSession) {
         void apiClient.timerSession
-          .update({ goalId: goal.id, taskId: null })
+          .update({
+            goalId: goal.id,
+            taskId: keptTask?.id ?? null,
+            // The session's denormalised name is what a server-side stop
+            // writes into the TimeEntry, so a name left over from a task
+            // we're detaching would file this session under something it is
+            // no longer tracking. `undefined` means "leave it alone" (see
+            // ActiveTimerAttributionInput), which is what protects a name the
+            // user actually chose — a Coach session named "gym" keeps that
+            // name when a goal is added to it.
+            taskName: keptTask
+              ? keptTask.title
+              : effectiveTaskId !== null || sessionName === null
+                ? goal.title
+                : undefined,
+          })
           .then(() => {
             void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
           })
@@ -701,8 +819,8 @@ export default function TimerScreen() {
         return;
       }
       setSelectedGoal(goal);
-      setSelectedTask(null);
-      retarget(undefined, goal.id);
+      setSelectedTask(keptTask);
+      retarget(keptTask?.id, goal.id);
       // Deliberately does NOT close the sheet (contrast handlePickTask,
       // which does via `setPickerTarget(null)` above it). Picking a goal is
       // step one of the cascading flow TrackingPicker now offers: if the
@@ -711,10 +829,10 @@ export default function TimerScreen() {
       // `onClose` — immediately if the goal has no tasks to narrow to,
       // otherwise once the user picks one of them or backs out.
     },
-    [attachToEntry, hasServerSession, pickerTarget, retarget],
+    [activeTask, attachToEntry, effectiveTaskId, hasServerSession, pickerTarget, retarget, sessionName],
   );
 
-  /** "Just track time" — clears the target, pre-start or mid-run. */
+  /** "Just track time" — clears both slots, pre-start or mid-run. */
   const handlePickNone = useCallback(() => {
     setPickerTarget(null);
     userSelectedRef.current = true;
@@ -733,6 +851,36 @@ export default function TimerScreen() {
     }
     retarget(undefined, undefined);
   }, [hasServerSession, retarget]);
+
+  /**
+   * "No task" — drops the task and keeps the goal. The other half of making
+   * the two slots independent: without it the only way to remove a task was
+   * to clear the attribution entirely and re-pick the goal.
+   */
+  const handleClearTask = useCallback(() => {
+    setPickerTarget(null);
+    userSelectedRef.current = true;
+    setSelectedTask(null);
+    if (hasServerSession) {
+      void apiClient.timerSession
+        .update({
+          taskId: null,
+          // Same reasoning as handlePickGoal: the leftover name would file
+          // this session under the task it no longer has.
+          taskName: goalTitle ?? null,
+        })
+        .then(() => {
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        })
+        .catch(() => {
+          Alert.alert("Couldn't clear that", "Please try again.");
+        });
+      return;
+    }
+    // Reads the store rather than `selectedGoal`, which is null for a session
+    // that was already running when this screen mounted.
+    retarget(undefined, useTimerStore.getState().goalId ?? selectedGoal?.id ?? selectedTask?.goalId);
+  }, [goalTitle, hasServerSession, retarget, selectedGoal, selectedTask]);
 
   const handleStart = useCallback(() => {
     // A server session already showing as running/paused means TimerControls
@@ -754,6 +902,23 @@ export default function TimerScreen() {
       start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
       hapticLight();
       analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
+
+      // Clean up the empty cross-device row this screen has been ignoring
+      // (see `dormantServerSession`), now that the user has actually started
+      // something. Deliberately here and not on sight: merely LOOKING at the
+      // Timer screen shouldn't write to the server. Best-effort and silent —
+      // it holds no time and no attribution, so there is nothing to report
+      // and nothing to lose if it fails; the row stays dormant either way and
+      // keeps being ignored. Left in place it would go on 409-ing every
+      // start from the Coach and web.
+      if (dormantServerSession !== null) {
+        void apiClient.timerSession
+          .discard()
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          })
+          .catch(() => {});
+      }
     };
 
     // A soft warning, not a hard gate — one-tap tracking is the whole point
@@ -777,7 +942,7 @@ export default function TimerScreen() {
     }
 
     beginSession();
-  }, [analytics, hasServerSession, recentQuery.data, selectedGoal, selectedTask, start, user]);
+  }, [analytics, dormantServerSession, hasServerSession, recentQuery.data, selectedGoal, selectedTask, start, user]);
 
   const handlePause = useCallback(() => {
     if (hasServerSession) {
@@ -1094,12 +1259,30 @@ export default function TimerScreen() {
   // so what counts as "currently selected" depends on which one opened it.
   const pickerMode =
     pickerTarget?.kind === "entry" ? "logged" : effectiveStatus === "idle" ? "prestart" : "running";
-  const pickerSelectedId =
-    pickerTarget?.kind === "entry"
-      ? (pickerTarget.entry.taskId ?? pickerTarget.entry.goalId ?? null)
-      : effectiveStatus === "idle"
-        ? (selectedTask?.id ?? selectedGoal?.id ?? null)
-        : (effectiveTaskId ?? effectiveGoalId);
+  const pickerSlot = pickerTarget?.kind === "session" ? pickerTarget.slot : undefined;
+  // Both ids, separately: the sheet check-marks the goal AND the task, and
+  // uses the goal to lead the task list with that goal's own tasks.
+  const pickerSelectedGoalId =
+    pickerTarget?.kind === "entry" ? (pickerTarget.entry.goalId ?? null) : slotGoalId;
+  const pickerSelectedTaskId =
+    pickerTarget?.kind === "entry" ? (pickerTarget.entry.taskId ?? null) : slotTaskId;
+
+  /**
+   * Applies the live schedule block's goal (and its task, when it names one)
+   * in a single tap from the attribution row. Routed through the same
+   * handlers a picker tap uses, so it is one code path to the server and one
+   * to the local store — including `userSelectedRef`, which is what stops the
+   * auto-select effect from second-guessing the choice afterwards.
+   */
+  const applyScheduledTarget = () => {
+    if (!scheduledTarget) return;
+    if (scheduledTarget.task) {
+      handlePickTask(scheduledTarget.task);
+      return;
+    }
+    handlePickGoal(scheduledTarget.goal);
+    setPickerTarget(null);
+  };
 
   const statusMeta = STATUS_META[effectiveStatus];
   const ringSize = Math.max(
@@ -1189,12 +1372,27 @@ export default function TimerScreen() {
         <TrackerVoiceButton onStopSession={() => void handleStop()} serverSessionActive={hasServerSession} />
 
         <TrackingTarget
-          label={activeLabel}
-          sublabel={activeSublabel}
+          goalLabel={goalTitle}
+          goalSublabel={goalCategory}
+          taskLabel={taskTitle}
+          sessionName={sessionName}
           accentColor={activeColor}
-          hasTarget={hasTarget}
+          goalUnresolved={goalUnresolved}
+          taskUnresolved={taskUnresolved}
           running={effectiveStatus !== "idle"}
-          onPress={() => setPickerTarget({ kind: "session" })}
+          suggestion={
+            scheduledTarget
+              ? {
+                  blockTitle: scheduledTarget.block.title,
+                  goalTitle: scheduledTarget.goal.title,
+                  taskTitle: scheduledTarget.task?.title ?? null,
+                  color: scheduledTarget.goal.color,
+                }
+              : null
+          }
+          onApplySuggestion={applyScheduledTarget}
+          onPressGoal={() => setPickerTarget({ kind: "session", slot: "goal" })}
+          onPressTask={() => setPickerTarget({ kind: "session", slot: "task" })}
         />
 
         <ReminderIntervalPicker
@@ -1261,11 +1459,14 @@ export default function TimerScreen() {
         visible={pickerTarget !== null}
         tasks={tasksQuery.data ?? []}
         goals={goalsQuery.data ?? []}
-        selectedId={pickerSelectedId}
+        selectedGoalId={pickerSelectedGoalId}
+        selectedTaskId={pickerSelectedTaskId}
         mode={pickerMode}
+        slot={pickerSlot}
         onPickTask={handlePickTask}
         onPickGoal={handlePickGoal}
         onPickNone={handlePickNone}
+        onClearTask={handleClearTask}
         onClose={() => setPickerTarget(null)}
       />
     </SafeAreaView>
