@@ -36,7 +36,7 @@
 // auth provider was built and nothing called it until this screen shipped.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import Constants from "expo-constants";
@@ -89,11 +89,15 @@ function formatLimit(value: number | null | undefined): string {
 
 // Read-only build info for the "About" row below. Every field here has a
 // legitimate reason to be missing (a local dev build has no EAS commit hash,
-// an Expo Go session has no android.versionCode) so each one falls back to
-// "—" rather than rendering "undefined" or crashing the row.
+// an Expo Go session has no android.versionCode/ios.buildNumber) so each one
+// falls back to "—" rather than rendering "undefined" or crashing the row.
+// Platform-specific: app.json sets android.versionCode (a number) and
+// ios.buildNumber (a string) separately, so reading only the Android field
+// left this row permanently "—" on iOS devices.
 const appVersion = Constants.expoConfig?.version ?? "—";
-const androidVersionCode = Constants.expoConfig?.android?.versionCode;
-const buildNumber = androidVersionCode !== undefined ? String(androidVersionCode) : "—";
+const platformBuildNumber =
+  Platform.OS === "ios" ? Constants.expoConfig?.ios?.buildNumber : Constants.expoConfig?.android?.versionCode;
+const buildNumber = platformBuildNumber !== undefined ? String(platformBuildNumber) : "—";
 const gitCommitHash = (Constants.expoConfig?.extra?.gitCommitHash as string | null | undefined) ?? null;
 // Short enough to sit on one settings row, long enough to be unambiguous
 // against a `git log --oneline` on the machine that built it.

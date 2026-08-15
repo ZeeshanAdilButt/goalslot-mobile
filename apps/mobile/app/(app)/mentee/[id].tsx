@@ -345,7 +345,12 @@ export default function MenteeReportScreen() {
                     <View style={styles.dayBreakdown}>
                       <View style={styles.dayBreakdownHeader}>
                         <Text style={styles.dayBreakdownTitle}>{selectedBucket.label}</Text>
-                        <Pressable onPress={() => setSelectedDayKey(null)} hitSlop={spacing.sm}>
+                        <Pressable
+                          onPress={() => setSelectedDayKey(null)}
+                          hitSlop={spacing.sm}
+                          accessibilityRole="button"
+                          accessibilityLabel="Close day breakdown"
+                        >
                           <Text style={styles.dayBreakdownCloseText}>Close</Text>
                         </Pressable>
                       </View>
@@ -399,7 +404,12 @@ export default function MenteeReportScreen() {
                         <View style={styles.dayBreakdown}>
                           <View style={styles.dayBreakdownHeader}>
                             <Text style={styles.dayBreakdownTitle}>{selectedGoalSlice.name}</Text>
-                            <Pressable onPress={() => setSelectedGoalKey(null)} hitSlop={spacing.sm}>
+                            <Pressable
+                              onPress={() => setSelectedGoalKey(null)}
+                              hitSlop={spacing.sm}
+                              accessibilityRole="button"
+                              accessibilityLabel="Close task breakdown"
+                            >
                               <Text style={styles.dayBreakdownCloseText}>Close</Text>
                             </Pressable>
                           </View>
