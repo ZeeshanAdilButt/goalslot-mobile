@@ -45,6 +45,12 @@ module.exports = ({ config }) => {
       ...config.extra,
       messagingUrl,
       messagingWsUrl,
+      // EAS Build sets this to the exact commit the build was compiled
+      // from; unset for a local dev build. Surfaced read-only in Settings
+      // (see the "About" section in app/(app)/settings.tsx) so "which
+      // build is this phone actually running" is answerable from inside
+      // the app instead of by cross-referencing EAS dashboards.
+      gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? null,
     },
   };
 };

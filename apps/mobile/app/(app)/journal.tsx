@@ -60,6 +60,7 @@ import {
   journalEntryPreview,
   removeJournalEntry,
 } from "@/components/journal/recent-entries";
+import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -239,6 +240,16 @@ export default function JournalScreen() {
       analytics.track({ name: "screenViewed", payload: { screenName: "journal" } });
     }, [analytics]),
   );
+
+  // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
+  // pushed stack entry, so the OS back gesture/button doesn't reliably return
+  // to where the user came from — it was landing here regardless (Today's
+  // default tab). Same fix note/[id].tsx and notification-settings.tsx
+  // already use for the identical problem. Today is the destination rather
+  // than Settings (also a valid entry point via its More links) because
+  // Today is where journal is actually surfaced now — both the "Jump back
+  // in" grid and the prominent JournalPromptCard just under the hero.
+  useHiddenTabBackHandler("/");
 
   // --- "Talk about my day" voice capture ------------------------------
   // Deep link contract: `/journal?voice=1` (goalslot://journal?voice=1),
@@ -1169,6 +1180,7 @@ export default function JournalScreen() {
     // date navigation rendered underneath the system status bar on devices
     // with a tall status bar (reported on a Samsung S22).
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <HiddenTabBackButton label="Today" destination="/" />
       {body}
 
       <ConfirmDialog

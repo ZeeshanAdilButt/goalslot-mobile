@@ -24,10 +24,10 @@
 //   - src/features/goals/components/goal-item.tsx — the card itself; see
 //     src/components/goals/GoalCard.tsx.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
@@ -295,6 +295,28 @@ export default function GoalsScreen() {
   const openEdit = useCallback((goal: Goal) => {
     editGoalRef.current?.present(goal);
   }, []);
+
+  // `/goals?goalId=…` — see deep-links.ts's goalDeepLink and its "until a
+  // screen reads it, the query param is simply ignored" note; this is that
+  // screen reading it. Mirrors tasks.tsx's taskId handling below exactly,
+  // including the same limitation: the match is only tried against `data`,
+  // this screen's currently loaded tab/filter, so a goal search result for a
+  // paused/completed goal opened while this screen is still on the Active
+  // tab silently finds nothing, same as tasks.tsx's own no-op-if-absent.
+  //
+  // Guarded by a ref rather than by clearing the param — same reasoning as
+  // tasks.tsx: the sheet must open once per link, not again on every
+  // re-render or tab re-focus.
+  const { goalId: deepLinkGoalId } = useLocalSearchParams<{ goalId?: string }>();
+  const handledGoalDeepLinkRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!deepLinkGoalId || handledGoalDeepLinkRef.current === deepLinkGoalId) return;
+    const target = data?.find((goal) => goal.id === deepLinkGoalId);
+    if (!target) return;
+    handledGoalDeepLinkRef.current = deepLinkGoalId;
+    openEdit(target);
+  }, [data, deepLinkGoalId, openEdit]);
 
   const openQuickAdd = useCallback(() => {
     quickAddRef.current?.present();

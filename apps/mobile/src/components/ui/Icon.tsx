@@ -38,6 +38,7 @@ import {
   EyeOff,
   Flag,
   Inbox,
+  Info,
   Key,
   KeyRound,
   Keyboard,
@@ -143,6 +144,8 @@ const ICONS = {
   // — previously only messaging's own OfflineBanner said anything about
   // connectivity, and it drew no icon at all.
   "wifi-off": WifiOff,
+  // Settings screen's "About" row — a neutral glyph for read-only build info.
+  info: Info,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

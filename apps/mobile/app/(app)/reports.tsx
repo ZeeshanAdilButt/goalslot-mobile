@@ -16,6 +16,7 @@ import { useQuery } from "@tanstack/react-query";
 import { calculateProgressPercent, formatDuration, getLocalDateString } from "@goalslot/shared";
 
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
+import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import {
   buildCategoryBreakdown,
   buildDayBuckets,
@@ -110,6 +111,17 @@ export default function ReportsScreen() {
       );
     }, [analytics]),
   );
+
+  // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
+  // pushed stack entry, so the OS back gesture/button doesn't reliably return
+  // to Settings — it was landing on the Today dashboard instead. Same fix
+  // note/[id].tsx and notification-settings.tsx already use for the identical
+  // problem. Settings is the documented, deliberate way to reach this screen;
+  // it's also reachable from Today's "Jump back in" grid, the drawer and
+  // global search, which this can't distinguish from here — accepted
+  // limitation of a single-destination fix rather than a full
+  // navigation-stack rework.
+  useHiddenTabBackHandler("/settings");
 
   const ranges = useMemo(() => getPeriodRanges(period, periodAnchor), [period, periodAnchor]);
 
@@ -284,6 +296,7 @@ export default function ReportsScreen() {
   if (initialLoad) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
+        <HiddenTabBackButton label="Settings" destination="/settings" />
         <View style={styles.header}>
           <Skeleton width="30%" height={13} />
           <Skeleton width="40%" height={22} style={styles.headerSkeletonTitle} />
@@ -305,6 +318,7 @@ export default function ReportsScreen() {
   if (initialError) {
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
+        <HiddenTabBackButton label="Settings" destination="/settings" />
         <QueryErrorState
           // Any one of the three carries the same failure here (a cold
           // cache with no network path reaching the server fails all three
@@ -324,6 +338,7 @@ export default function ReportsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <HiddenTabBackButton label="Settings" destination="/settings" />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={

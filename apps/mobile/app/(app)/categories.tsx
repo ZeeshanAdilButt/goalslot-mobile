@@ -69,6 +69,7 @@ import {
 } from "@goalslot/shared";
 
 import { QueryErrorState, SkeletonListItem } from "@/components";
+import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -131,10 +132,21 @@ export default function CategoriesScreen() {
     }, [analytics]),
   );
 
+  // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
+  // pushed stack entry, so the OS back gesture/button doesn't reliably return
+  // to Settings — it was landing on the Today dashboard instead. Same fix
+  // note/[id].tsx and notification-settings.tsx already use for the identical
+  // problem. Settings is the only documented way to reach this screen (also
+  // reachable from the drawer and global search, which this can't distinguish
+  // from here) — accepted limitation of a single-destination fix rather than
+  // a full navigation-stack rework.
+  useHiddenTabBackHandler("/settings");
+
   return (
     // edges={["top"]} — this route renders with `headerShown: false` like
     // every other tab, so nothing else keeps the title clear of the status bar.
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <HiddenTabBackButton label="Settings" destination="/settings" />
       <ScreenHeader
         eyebrow="Organize"
         title="Categories"

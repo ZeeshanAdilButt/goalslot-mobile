@@ -3,13 +3,24 @@
 // converts into this full search bar when tapped, rather than pushing a new
 // screen. See search-index.ts for what's indexed and its matching rules.
 //
-// SCOPE, FIRST PASS: navigates to screens/sections only (Settings, Reports,
-// Coach AI, every drawer destination) — not a specific goal, task or note by
-// name. Real content search would mean querying live user data instead of a
-// fixed list, which is a bigger, separate piece of work; this pass covers
-// exactly what the feature request named explicitly ("setting reports ai
-// coach other settings everything"), and content search is deferred, not
-// silently dropped.
+// Covers both the static screens/sections index (search-index.ts) and live
+// content — goals, tasks and notes by name (content-search.ts). Content
+// results only appear while actively searching; the no-query browse view
+// stays exactly the static screen list it always was.
+//
+// Content is sourced with `useQuery` against the SAME query keys
+// goals.tsx/tasks.tsx/notes.tsx (and index.tsx, for goals) already populate
+// — see content-search.ts's header and the query hooks below — so opening
+// search is a cache read, not a new network round-trip, whenever one of
+// those screens has already been visited this session. `enabled: open`
+// means the fetch only ever fires once the overlay is actually opened
+// (never eagerly at app boot), and only when nothing is cached yet or it's
+// gone stale — the same lazy, cache-first behavior every other screen's
+// `useQuery` call already gets for free. Goals are searched via the ACTIVE
+// filter specifically because that's the one key `index.tsx` (the landing
+// tab) and `goals.tsx`'s own default tab already warm — the most likely
+// cache hit — at the cost of not searching paused/completed goals unless
+// that tab happens to already be cached too.
 //
 // DELIBERATELY NOT a React Native <Modal>. A Modal renders in its own native
 // window/layer, above every plain view in the tree — including
@@ -35,10 +46,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { useRouter, type Href } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
+import { goalQueries, noteQueries, taskQueries } from "@/lib/queries";
 import { useTrackingBannerHeight } from "@/lib/tracking-banner-store";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { searchGoals, searchNotes, searchTasks, type ContentSearchResult } from "./content-search";
 import { filterSearchItems, getSearchItems, type SearchHref, type SearchItem } from "./search-index";
 
 /** Hamburger row's own footprint: marginTop spacing.sm + 40pt button — mirrors _layout.tsx's hamburgerButton. */
@@ -55,9 +70,17 @@ export interface SearchOverlayProps {
 
 export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const trackingBannerHeight = useTrackingBannerHeight((state) => state.height);
   const [query, setQuery] = useState("");
   const inputRef = useRef<TextInput>(null);
+
+  // `enabled: open` — see this file's header for why these read the same
+  // keys goals.tsx/tasks.tsx/notes.tsx/index.tsx already populate instead of
+  // firing their own independent fetches.
+  const goalsQuery = useQuery({ ...goalQueries.list({ status: "ACTIVE" }), enabled: open });
+  const tasksQuery = useQuery({ ...taskQueries.list(), enabled: open });
+  const notesQuery = useQuery({ ...noteQueries.list(), enabled: open });
 
   // Focuses on the OPENING edge only (mirrors TrackingPicker's
   // wasVisibleRef), so re-renders while already open don't keep stealing
@@ -77,6 +100,32 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
   const items = useMemo(() => getSearchItems(), []);
   const results = useMemo(() => filterSearchItems(items, query), [items, query]);
   const searching = query.trim().length > 0;
+
+  // Content results only exist while actively searching — see
+  // content-search.ts's searchGoals/searchTasks/searchNotes, which already
+  // return [] for an empty query, so this stays cheap even before the
+  // no-query browse view's own `searching` check below.
+  const contentResults = useMemo<ContentSearchResult[]>(
+    () => [
+      ...searchGoals(goalsQuery.data ?? [], query),
+      ...searchTasks(tasksQuery.data ?? [], query),
+      ...searchNotes(notesQuery.data ?? [], query),
+    ],
+    [query, goalsQuery.data, tasksQuery.data, notesQuery.data],
+  );
+  // True only when every content query has both failed AND has nothing
+  // cached from a previous successful fetch to fall back on — e.g. offline
+  // on a session that never warmed any of these three caches. A single
+  // failed type (say, notes) with the other two fine just quietly
+  // contributes no results, same as it genuinely having none.
+  const contentUnavailable =
+    searching &&
+    goalsQuery.isError &&
+    !goalsQuery.data &&
+    tasksQuery.isError &&
+    !tasksQuery.data &&
+    notesQuery.isError &&
+    !notesQuery.data;
 
   // Grouped browse view when there's no query — same section order as
   // DrawerContent's NAV_GROUPS, so this reads as the same app the drawer
@@ -108,6 +157,16 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
     handleClose();
   };
 
+  // Content destinations carry a query param/route segment built at
+  // runtime (see content-search.ts), so they can never be one of
+  // expo-router's statically known literal paths — same `as Href` escape
+  // hatch app/_layout.tsx's own notification-tap routing already uses for
+  // the identical reason.
+  const handleSelectContent = (path: string) => {
+    router.push(path as Href);
+    handleClose();
+  };
+
   if (!open) return null;
 
   const barTop =
@@ -136,13 +195,13 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
               style={styles.searchInput}
               value={query}
               onChangeText={setQuery}
-              placeholder="Search settings, reports, coach…"
+              placeholder="Search screens, goals, tasks, notes…"
               placeholderTextColor={colors.mutedForeground}
               autoCorrect={false}
               autoCapitalize="none"
               returnKeyType="search"
               accessibilityLabel="Search the app"
-              accessibilityHint="Searches every screen and section, including Settings sub-sections"
+              accessibilityHint="Searches every screen and section, plus your goals, tasks and notes by name"
             />
             {searching ? (
               <Pressable
@@ -172,21 +231,56 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {results.length === 0 ? (
+          {results.length === 0 && contentResults.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>Nothing matches “{query.trim()}”</Text>
               <Text style={styles.emptyBody}>
-                Search covers every screen and settings section — try a shorter word.
+                Search covers every screen, plus your goals, tasks and notes — try a shorter word.
               </Text>
+              {contentUnavailable ? (
+                <Text style={styles.emptyBody}>
+                  Your goals, tasks and notes aren't available to search right now — check your connection.
+                </Text>
+              ) : null}
             </View>
           ) : searching ? (
-            results.map((item) => <ResultRow key={item.id} item={item} onPress={() => handleSelect(item.href)} />)
+            <>
+              {results.map((item) => (
+                <ResultRow
+                  key={item.id}
+                  icon={item.icon}
+                  label={item.label}
+                  description={item.description}
+                  onPress={() => handleSelect(item.href)}
+                />
+              ))}
+              {contentResults.length > 0 ? (
+                <View>
+                  <Text style={styles.sectionLabel}>Goals, tasks & notes</Text>
+                  {contentResults.map((item) => (
+                    <ResultRow
+                      key={`${item.kind}-${item.id}`}
+                      icon={item.icon}
+                      label={item.label}
+                      description={item.description}
+                      onPress={() => handleSelectContent(item.path)}
+                    />
+                  ))}
+                </View>
+              ) : null}
+            </>
           ) : (
             groups?.map((group, index) => (
               <View key={group.label ?? `group-${index}`}>
                 {group.label ? <Text style={styles.sectionLabel}>{group.label}</Text> : null}
                 {group.rows.map((item) => (
-                  <ResultRow key={item.id} item={item} onPress={() => handleSelect(item.href)} />
+                  <ResultRow
+                    key={item.id}
+                    icon={item.icon}
+                    label={item.label}
+                    description={item.description}
+                    onPress={() => handleSelect(item.href)}
+                  />
                 ))}
               </View>
             ))
@@ -197,23 +291,34 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
   );
 }
 
-function ResultRow({ item, onPress }: { item: SearchItem; onPress: () => void }) {
+/** Shared row shape for both a static SearchItem and a live ContentSearchResult — same label/description/icon fields, different sources. */
+function ResultRow({
+  icon,
+  label,
+  description,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  description: string;
+  onPress: () => void;
+}) {
   return (
     <Pressable
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${item.label}. ${item.description}`}
+      accessibilityLabel={`${label}. ${description}`}
     >
       <View style={styles.rowIcon}>
-        <Icon name={item.icon} size={18} color={colors.foreground} />
+        <Icon name={icon} size={18} color={colors.foreground} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowTitle} numberOfLines={1}>
-          {item.label}
+          {label}
         </Text>
         <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {item.description}
+          {description}
         </Text>
       </View>
       <Icon name="chevron" size={16} color={colors.mutedForegroundLight} />

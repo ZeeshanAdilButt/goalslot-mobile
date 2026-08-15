@@ -39,6 +39,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
+import Constants from "expo-constants";
 
 import type { NotificationPermissionStatus } from "@goalslot/shared";
 
@@ -85,6 +86,20 @@ const PLAN_LABELS: Record<string, string> = {
 function formatLimit(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? "Unlimited" : String(value);
 }
+
+// Read-only build info for the "About" row below. Every field here has a
+// legitimate reason to be missing (a local dev build has no EAS commit hash,
+// an Expo Go session has no android.versionCode) so each one falls back to
+// "—" rather than rendering "undefined" or crashing the row.
+const appVersion = Constants.expoConfig?.version ?? "—";
+const androidVersionCode = Constants.expoConfig?.android?.versionCode;
+const buildNumber = androidVersionCode !== undefined ? String(androidVersionCode) : "—";
+const gitCommitHash = (Constants.expoConfig?.extra?.gitCommitHash as string | null | undefined) ?? null;
+// Short enough to sit on one settings row, long enough to be unambiguous
+// against a `git log --oneline` on the machine that built it.
+const shortCommit = gitCommitHash ? gitCommitHash.slice(0, 7) : "dev";
+const aboutValue = `${appVersion} (${buildNumber})`;
+const aboutDescription = `Build ${shortCommit}`;
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
@@ -327,6 +342,19 @@ export default function SettingsScreen() {
             onPress={confirmLogout}
             divider={false}
             chevron={false}
+          />
+        </SettingsSection>
+
+        {/* Read-only: no onPress, so it draws no chevron and needs no sheet.
+            Exists so "which build is this" is answerable by looking at the
+            phone instead of cross-referencing an EAS dashboard. */}
+        <SettingsSection title="About">
+          <SettingsRow
+            label="GoalSlot"
+            icon="info"
+            value={aboutValue}
+            description={aboutDescription}
+            divider={false}
           />
         </SettingsSection>
       </ScrollView>
