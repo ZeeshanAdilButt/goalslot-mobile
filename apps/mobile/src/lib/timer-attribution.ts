@@ -36,6 +36,20 @@ export function cleanLabel(value: string | null | undefined): string | null {
  */
 export const DORMANT_ELAPSED_TOLERANCE_MS = 1000;
 
+/**
+ * Looser tolerance for exactly one caller: the ongoing shade notification's
+ * body always rounds elapsed time to whole minutes (see
+ * useTimerNotification's describeSession), so anything under a minute reads
+ * as "0m tracked so far" regardless of DORMANT_ELAPSED_TOLERANCE_MS's much
+ * tighter 1-second cutoff. A session in that gap — a few real seconds
+ * logged, nothing attached — is not dormant by the strict definition
+ * (data-loss-sensitive callers, like the schedule auto-start guard, correctly
+ * keep treating it as live so it's never silently overwritten) but reads as
+ * an identical stuck "Paused · Untitled session" entry to a user who can only
+ * ever see whole minutes. Notification suppression alone uses this instead.
+ */
+export const NOTIFICATION_DORMANT_TOLERANCE_MS = 60_000;
+
 /** First argument that is an actual finite number, or null if none is. */
 export function firstFinite(...values: unknown[]): number | null {
   for (const value of values) {
@@ -50,16 +64,20 @@ export function firstFinite(...values: unknown[]): number | null {
  *
  * ANY sign of content disqualifies it, and an elapsed time that can't be read
  * as a number counts as unknown rather than zero — a session whose duration
- * we can't establish is never called empty.
+ * we can't establish is never called empty. `toleranceMs` defaults to the
+ * strict cutoff; pass NOTIFICATION_DORMANT_TOLERANCE_MS for the shade entry.
  */
-export function isDormantServerSession(session: ActiveTimerSession | null | undefined): boolean {
+export function isDormantServerSession(
+  session: ActiveTimerSession | null | undefined,
+  toleranceMs: number = DORMANT_ELAPSED_TOLERANCE_MS,
+): boolean {
   if (!session) return false;
   if (session.status !== "PAUSED") return false;
   if (session.goalId || session.taskId || session.scheduleBlockId) return false;
   if (cleanLabel(session.taskName) !== null) return false;
   if (cleanLabel(session.notes) !== null) return false;
   const elapsedMs = firstFinite(session.accumulatedMs, session.elapsedMs);
-  return elapsedMs !== null && elapsedMs < DORMANT_ELAPSED_TOLERANCE_MS;
+  return elapsedMs !== null && elapsedMs < toleranceMs;
 }
 
 /** The local timer store's shape, narrowed to what dormancy depends on. */
@@ -74,13 +92,17 @@ export interface LocalTimerSnapshot {
  * The local-store equivalent of `isDormantServerSession`: paused, no measured
  * time, nothing attached. Deliberately excludes "running" — a running session
  * stays visible in the UI (Resume/Stop still work) rather than being treated
- * as dormant.
+ * as dormant. `toleranceMs` defaults to the strict cutoff; pass
+ * NOTIFICATION_DORMANT_TOLERANCE_MS for the shade entry.
  */
-export function isDormantLocalSession(state: LocalTimerSnapshot): boolean {
+export function isDormantLocalSession(
+  state: LocalTimerSnapshot,
+  toleranceMs: number = DORMANT_ELAPSED_TOLERANCE_MS,
+): boolean {
   if (state.status !== "paused") return false;
   if (state.taskId || state.goalId) return false;
   const elapsedMs = firstFinite(state.pausedElapsedMs);
-  return elapsedMs !== null && elapsedMs < DORMANT_ELAPSED_TOLERANCE_MS;
+  return elapsedMs !== null && elapsedMs < toleranceMs;
 }
 
 /** The goal (and optionally task) implied by whatever schedule block is live right now. */

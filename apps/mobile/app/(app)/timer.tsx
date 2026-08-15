@@ -72,6 +72,7 @@ import {
   firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
+  NOTIFICATION_DORMANT_TOLERANCE_MS,
   resolveScheduledTarget,
 } from "@/lib/timer-attribution";
 import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
@@ -633,9 +634,20 @@ export default function TimerScreen() {
   // The shade is a different cost — a "Paused · Untitled session · 0m" entry
   // that outlives the screen and never clears itself reads as a real stuck
   // session even though nothing is actually running. So the notification
-  // treats local dormancy as idle regardless of what the screen shows,
-  // matching how a dormant SERVER session is already fully hidden above.
-  const suppressDormantNotification = !hasServerSession && localDormant;
+  // treats dormancy as idle regardless of what the screen shows — using
+  // NOTIFICATION_DORMANT_TOLERANCE_MS rather than the stricter default
+  // (localDormant/dormantServerSession above), since a session with a few
+  // real seconds logged but nothing attached still displays as an identical
+  // "0m tracked so far" in a notification that only ever shows whole
+  // minutes. Checked against both flavours since either can be under a
+  // minute even when neither is dormant enough to trip the strict cutoff
+  // that keeps hasServerSession/effectiveStatus themselves honest.
+  const suppressDormantNotification = hasServerSession
+    ? isDormantServerSession(rawServerSession, NOTIFICATION_DORMANT_TOLERANCE_MS)
+    : isDormantLocalSession(
+        { status, pausedElapsedMs, taskId: timerTaskId, goalId: timerGoalId },
+        NOTIFICATION_DORMANT_TOLERANCE_MS,
+      );
   useTimerNotification({
     status: suppressDormantNotification ? "idle" : effectiveStatus,
     startedAt: effectiveStartedAt,
