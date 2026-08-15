@@ -1101,6 +1101,14 @@ export default function TimerScreen() {
       stop();
       setSelectedTask(null);
       setSelectedGoal(null);
+      // A stopped session is a genuinely fresh idle period, not a
+      // continuation of the one the user picked attribution for — without
+      // this, auto-select-on-open's userSelectedRef latch stays permanently
+      // true for the rest of the app's mount lifetime the moment a user
+      // interacts with the picker even once, so it would never again
+      // auto-fill the next schedule block that goes live, degrading every
+      // later session to the suggestion-chip-plus-manual-tap path instead.
+      userSelectedRef.current = false;
     };
 
     // Minted ONCE and reused by every attempt to persist this session (the
