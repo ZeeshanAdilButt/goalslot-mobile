@@ -248,14 +248,10 @@ export function TrackingPicker({
           ? "What are you tracking?"
           : "Attach to this session";
 
-  const sheetSubtitle =
-    slot === "task"
-      ? "Optional. A task narrows the session to one thing under the goal — the goal stays either way."
-      : mode === "running"
-        ? "Your time keeps counting either way — this just files it somewhere."
-        : mode === "logged"
-          ? "Files time you've already logged under a goal or task."
-          : "Optional. You can start now and attach a goal later, or never.";
+  // Deliberately terse. These used to be full explanatory sentences on every
+  // variant, which read as a lecture on a sheet the user opens dozens of
+  // times a day and already understands.
+  const sheetSubtitle = slot === "task" ? "Optional." : mode === "logged" ? "File time you already logged." : null;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
@@ -285,7 +281,7 @@ export function TrackingPicker({
         >
           <View style={styles.handle} />
           <Text style={styles.title}>{sheetTitle}</Text>
-          <Text style={styles.subtitle}>{sheetSubtitle}</Text>
+          {sheetSubtitle ? <Text style={styles.subtitle}>{sheetSubtitle}</Text> : null}
 
           <View style={styles.searchRow}>
             <Icon name="search" size={16} color={colors.mutedForeground} />
@@ -353,7 +349,7 @@ export function TrackingPicker({
               slot === "task" ? (
                 <PickerRow
                   title="No task"
-                  subtitle="Track the goal on its own"
+                  subtitle={null}
                   accentColor={null}
                   selected={!selectedTaskId}
                   accessibilityLabel="Track without a task"
@@ -362,7 +358,7 @@ export function TrackingPicker({
               ) : (
                 <PickerRow
                   title={mode === "running" ? "No goal — just track time" : "Just track time"}
-                  subtitle="Log the time without attaching it to anything"
+                  subtitle={null}
                   accentColor={null}
                   selected={!selectedGoalId && !selectedTaskId}
                   accessibilityLabel="Track without a goal or task"

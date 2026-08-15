@@ -1398,7 +1398,6 @@ export default function TimerScreen() {
           accentColor={activeColor}
           goalUnresolved={goalUnresolved}
           taskUnresolved={taskUnresolved}
-          running={effectiveStatus !== "idle"}
           suggestion={
             scheduledTarget
               ? {

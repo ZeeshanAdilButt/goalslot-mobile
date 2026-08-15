@@ -47,8 +47,6 @@ export interface TrackingTargetProps {
   goalUnresolved?: boolean;
   /** A task id is set but its title hasn't resolved yet. */
   taskUnresolved?: boolean;
-  /** True while a session is running or paused, which changes the copy. */
-  running: boolean;
   suggestion?: TrackingTargetSuggestion | null;
   onPressGoal: () => void;
   onPressTask: () => void;
@@ -63,7 +61,6 @@ export function TrackingTarget({
   accentColor,
   goalUnresolved = false,
   taskUnresolved = false,
-  running,
   suggestion,
   onPressGoal,
   onPressTask,
@@ -121,7 +118,7 @@ export function TrackingTarget({
         accent={goalTitle !== null ? accent : null}
         emptyIcon="goals"
         emptyTitle="No goal selected"
-        emptySubtitle={running ? "Tap to file this session under a goal" : "Tap to choose — or just press start"}
+        emptySubtitle={null}
         unresolvedTitle="Goal attached"
         accessibilityLabel={
           goalTitle !== null
@@ -141,9 +138,7 @@ export function TrackingTarget({
         accent={taskTitle !== null ? accent : null}
         emptyIcon="tasks"
         emptyTitle="Add a task"
-        emptySubtitle={
-          running ? "Optional — narrows this session to one task" : "Optional — you can add one while tracking"
-        }
+        emptySubtitle={null}
         unresolvedTitle="Task attached"
         accessibilityLabel={
           taskTitle !== null
@@ -166,7 +161,8 @@ interface SlotProps {
   accent: string | null;
   emptyIcon: IconName;
   emptyTitle: string;
-  emptySubtitle: string;
+  /** Null keeps an empty slot to a single line — the row's own title already says what it's for. */
+  emptySubtitle: string | null;
   unresolvedTitle: string;
   accessibilityLabel: string;
   onPress: () => void;
