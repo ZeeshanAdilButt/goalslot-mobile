@@ -698,6 +698,37 @@ export default function TimerScreen() {
     [],
   );
 
+  /**
+   * PATCHes the server timer session's attribution, with one shared
+   * carve-out: `/timer/session` is a singleton with no id (see
+   * timer-session.ts's header), so this races any other device or a
+   * server-side auto-stop that ends the session between when this screen
+   * last synced `hasServerSession` and when the PATCH actually lands — the
+   * API answers that with a 404. Offering the normal "Retry" action there
+   * would just repeat the identical 404 forever (this is what produced a
+   * stack of identical failing toasts from one tap in the field); resyncing
+   * the query instead lets `hasServerSession` fall to its real value so the
+   * next pick starts fresh rather than retrying a session that's gone.
+   */
+  const patchServerSession = useCallback(
+    async (patch: Parameters<typeof apiClient.timerSession.update>[0], errorMessage: string, retry: () => void) => {
+      try {
+        await apiClient.timerSession.update(patch);
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+      } catch (err) {
+        console.error(err);
+        const status = (err as { response?: { status?: number } } | undefined)?.response?.status;
+        if (status === 404) {
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          notify("That timer session already ended.", "error");
+          return;
+        }
+        notify(getErrorMessage(err, errorMessage), "error", { action: { label: "Retry", onPress: retry } });
+      }
+    },
+    [],
+  );
+
   const handlePickTask = useCallback(
     (task: Task) => {
       const target = pickerTarget;
@@ -717,17 +748,11 @@ export default function TimerScreen() {
         // session) can see. Elapsed time is untouched either way; the PATCH
         // only ever changes attribution (see dw-time-api's
         // ActiveTimerService#updateAttribution).
-        void apiClient.timerSession
-          .update({ taskId: task.id, goalId: task.goalId ?? null, taskName: task.title })
-          .then(() => {
-            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-          })
-          .catch((err) => {
-            console.error(err);
-            notify(getErrorMessage(err, "Couldn't attach that task. Your timer is still running."), "error", {
-              action: { label: "Retry", onPress: () => handlePickTask(task) },
-            });
-          });
+        void patchServerSession(
+          { taskId: task.id, goalId: task.goalId ?? null, taskName: task.title },
+          "Couldn't attach that task. Your timer is still running.",
+          () => handlePickTask(task),
+        );
         return;
       }
       // A task implies its goal, so picking one fills BOTH slots. Setting the
@@ -740,7 +765,7 @@ export default function TimerScreen() {
       // selection above only governs the *next* start.
       retarget(task.id, task.goalId);
     },
-    [attachToEntry, goalsQuery.data, hasServerSession, pickerTarget, retarget],
+    [attachToEntry, goalsQuery.data, hasServerSession, patchServerSession, pickerTarget, retarget],
   );
 
   const handlePickGoal = useCallback(
@@ -757,8 +782,8 @@ export default function TimerScreen() {
       // independent rather than one resetting the other.
       const keptTask = activeTask && activeTask.goalId === goal.id ? activeTask : null;
       if (hasServerSession) {
-        void apiClient.timerSession
-          .update({
+        void patchServerSession(
+          {
             goalId: goal.id,
             taskId: keptTask?.id ?? null,
             // The session's denormalised name is what a server-side stop
@@ -773,16 +798,10 @@ export default function TimerScreen() {
               : effectiveTaskId !== null || sessionName === null
                 ? goal.title
                 : undefined,
-          })
-          .then(() => {
-            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-          })
-          .catch((err) => {
-            console.error(err);
-            notify(getErrorMessage(err, "Couldn't attach that goal. Your timer is still running."), "error", {
-              action: { label: "Retry", onPress: () => handlePickGoal(goal) },
-            });
-          });
+          },
+          "Couldn't attach that goal. Your timer is still running.",
+          () => handlePickGoal(goal),
+        );
         return;
       }
       setSelectedGoal(goal);
@@ -796,7 +815,7 @@ export default function TimerScreen() {
       // `onClose` — immediately if the goal has no tasks to narrow to,
       // otherwise once the user picks one of them or backs out.
     },
-    [activeTask, attachToEntry, effectiveTaskId, hasServerSession, pickerTarget, retarget, sessionName],
+    [activeTask, attachToEntry, effectiveTaskId, hasServerSession, patchServerSession, pickerTarget, retarget, sessionName],
   );
 
   /** "Just track time" — clears both slots, pre-start or mid-run. */
@@ -806,21 +825,15 @@ export default function TimerScreen() {
     setSelectedTask(null);
     setSelectedGoal(null);
     if (hasServerSession) {
-      void apiClient.timerSession
-        .update({ taskId: null, goalId: null })
-        .then(() => {
-          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-        })
-        .catch((err) => {
-          console.error(err);
-          notify(getErrorMessage(err, "Couldn't clear that task. Your timer is still running."), "error", {
-            action: { label: "Retry", onPress: () => handleClearTask() },
-          });
-        });
+      void patchServerSession(
+        { taskId: null, goalId: null },
+        "Couldn't clear that attribution. Your timer is still running.",
+        () => handlePickNone(),
+      );
       return;
     }
     retarget(undefined, undefined);
-  }, [hasServerSession, retarget]);
+  }, [hasServerSession, patchServerSession, retarget]);
 
   /**
    * "No task" — drops the task and keeps the goal. The other half of making
@@ -832,28 +845,22 @@ export default function TimerScreen() {
     userSelectedRef.current = true;
     setSelectedTask(null);
     if (hasServerSession) {
-      void apiClient.timerSession
-        .update({
+      void patchServerSession(
+        {
           taskId: null,
           // Same reasoning as handlePickGoal: the leftover name would file
           // this session under the task it no longer has.
           taskName: goalTitle ?? null,
-        })
-        .then(() => {
-          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-        })
-        .catch((err) => {
-          console.error(err);
-          notify(getErrorMessage(err, "Couldn't clear that attribution. Your timer is still running."), "error", {
-            action: { label: "Retry", onPress: () => handlePickNone() },
-          });
-        });
+        },
+        "Couldn't clear that task. Your timer is still running.",
+        () => handleClearTask(),
+      );
       return;
     }
     // Reads the store rather than `selectedGoal`, which is null for a session
     // that was already running when this screen mounted.
     retarget(undefined, useTimerStore.getState().goalId ?? selectedGoal?.id ?? selectedTask?.goalId);
-  }, [goalTitle, hasServerSession, retarget, selectedGoal, selectedTask]);
+  }, [goalTitle, hasServerSession, patchServerSession, retarget, selectedGoal, selectedTask]);
 
   const handleStart = useCallback(() => {
     // A server session already showing as running/paused means TimerControls
