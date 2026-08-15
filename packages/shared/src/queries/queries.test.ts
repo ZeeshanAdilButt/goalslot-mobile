@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CategoriesApi } from '../api/categories'
@@ -168,9 +169,14 @@ describe('messaging queries', () => {
 
   it('wires the fetchers to the messaging service client', async () => {
     const { client, queries } = build()
+    const messagesOptions = queries.messages('c1')
 
     await queries.conversations().queryFn?.({} as never)
-    await queries.messages('c1').queryFn?.({} as never)
+    // messages()'s queryFn reads the QueryClient out of its context (to
+    // merge the fetched page against whatever's already cached — see its
+    // doc comment), so unlike the other fetchers here it needs a real one,
+    // not the empty stand-in `{} as never` works for everywhere else.
+    await messagesOptions.queryFn?.({ client: new QueryClient(), queryKey: messagesOptions.queryKey } as never)
 
     expect(client.listConversations).toHaveBeenCalled()
     expect(client.listMessages).toHaveBeenCalledWith('c1')

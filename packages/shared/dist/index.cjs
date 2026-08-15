@@ -2334,13 +2334,38 @@ function createMessagingQueries(client, sharingApi) {
       // (see ../messaging/cache.ts). Typing it as `MessagingMessage[]`
       // would make every optimistic write a cast at the call site and
       // quietly lose the `status`/`clientId` fields the UI renders.
-      queryFn: async () => fetchMessages(id),
-      // Not an optimisation — a correctness requirement. Every refetch
-      // (focus, resume, pull-to-refresh) returns only the newest page, so
-      // TanStack's default "replace the data" would drop both the older
-      // history the user paged in and any message queued offline. See
-      // `mergeServerMessages`.
-      structuralSharing: (previous, incoming) => mergeServerMessages(previous, incoming)
+      //
+      // `mergeServerMessages` runs HERE, inside the fetch itself, rather
+      // than as `structuralSharing`. That looks like the natural home for
+      // it — it is, after all, exactly "merge fetched data with what's
+      // cached" — but TanStack calls a custom `structuralSharing` on EVERY
+      // write to this query's cache, not only on fetch results: manual
+      // `queryClient.setQueryData` calls (confirmPendingMessage,
+      // reconcileIncomingMessage, removePendingMessage, ... — see
+      // ../../apps/mobile/src/lib/messaging-live.ts and
+      // useSendMessage.ts) go through the exact same `Query#setData` ->
+      // `replaceData` path. `mergeServerMessages` unconditionally keeps any
+      // still-pending message found in the PREVIOUS cache value, which is
+      // correct for a freshly fetched page that legitimately knows nothing
+      // about a local optimistic bubble — but wired up as
+      // `structuralSharing` it re-ran on every one of those other writes
+      // too, resurrecting the pending bubble each of them had just
+      // correctly replaced or removed. That's what turned one sent message
+      // into three rendered bubbles: a zombie "Sending…" copy plus two
+      // separate confirmed copies (one from the REST response, one from
+      // the socket push) that never got deduplicated against each other.
+      // Param renamed from TanStack's `client` to `queryClient`: this
+      // closure already captures the outer `client` (the jiffy-messaging
+      // `MessagingServiceClient` this factory takes), and shadowing it
+      // with the QueryClient here — even though `fetchMessages` above
+      // resolves its own `client` correctly regardless, since closures
+      // bind at definition site — reads as if `fetchMessages(id)` might
+      // suddenly mean something else.
+      queryFn: async ({ client: queryClient, queryKey }) => {
+        const serverMessages = await fetchMessages(id);
+        const previous = queryClient.getQueryData(queryKey);
+        return mergeServerMessages(previous, serverMessages);
+      }
     }),
     contacts: () => (0, import_react_query12.queryOptions)({
       queryKey: messagingQueries.contacts(),
