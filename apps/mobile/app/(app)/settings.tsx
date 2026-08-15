@@ -98,10 +98,21 @@ const appVersion = Constants.expoConfig?.version ?? "—";
 const platformBuildNumber =
   Platform.OS === "ios" ? Constants.expoConfig?.ios?.buildNumber : Constants.expoConfig?.android?.versionCode;
 const buildNumber = platformBuildNumber !== undefined ? String(platformBuildNumber) : "—";
-const gitCommitHash = (Constants.expoConfig?.extra?.gitCommitHash as string | null | undefined) ?? null;
+// Read defensively, not just cast: this crashed in production as
+// `TypeError: undefined is not a function` on `.slice` — `extra.gitCommitHash`
+// is typed `string | null` in app.config.js, but that's a build-time TS
+// assertion, not a runtime guarantee. Confirmed via a source-mapped device
+// crash log pointing straight at the old `gitCommitHash.slice(0, 7)` call:
+// whatever actually lands in the embedded/OTA manifest here, a non-string
+// truthy value (seen on both iOS and Android, since this runs at module load
+// for every user) must fall back to "dev" instead of calling a method that
+// doesn't exist on it.
+const rawGitCommitHash = Constants.expoConfig?.extra?.gitCommitHash;
 // Short enough to sit on one settings row, long enough to be unambiguous
 // against a `git log --oneline` on the machine that built it.
-const shortCommit = gitCommitHash ? gitCommitHash.slice(0, 7) : "dev";
+const shortCommit = typeof rawGitCommitHash === "string" && rawGitCommitHash.length > 0
+  ? rawGitCommitHash.slice(0, 7)
+  : "dev";
 const aboutValue = `${appVersion} (${buildNumber})`;
 const aboutDescription = `Build ${shortCommit}`;
 
