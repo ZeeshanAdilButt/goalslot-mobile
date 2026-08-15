@@ -15,14 +15,16 @@
 //     always derived from the selected category (or the linked goal's
 //     category) via a useEffect, never user-facing. Same derivation here,
 //     via the `resolvedColor` useMemo below.
-//   - category as a <SearchableSelect> of real Category records: this app's
-//     other edit sheets (EditGoalSheet.tsx, EditTaskSheet.tsx) both use a
-//     plain free-text field for category — there is no picker pattern
-//     established on mobile to reuse, and the brief was explicit not to
-//     invent one. Free text here matches that convention; color is still
-//     resolved automatically by matching the typed text against the user's
-//     real categories (categoryQueries), same intent as the web's derivation
-//     without adding new UI.
+//   - a standalone <SearchableSelect> of real Category records exactly like
+//     web's: this field is CategoryAutocomplete (src/components/ui/
+//     CategoryAutocomplete.tsx) instead, an inline browse-or-type dropdown
+//     built for this and EditGoalSheet.tsx's identical gap — a reported bug,
+//     since the free-text field it replaced never offered the user's real
+//     categories at all. It stays free text underneath (typing a brand-new
+//     name still works, still creates a category on first use), so this is
+//     additive, not web's closed <Select>. Color is still resolved
+//     automatically by matching the field's current text against the user's
+//     real categories (categoryQueries), same as before.
 //
 // GOAL BEFORE CATEGORY, and the dependency only ever runs that way. Picking
 // a goal fills in the category it belongs to; typing a category never
@@ -91,6 +93,7 @@ import { queryClient } from "@/lib/query-client";
 import { findLinkedBlocks } from "@/lib/schedule-series";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { useAnalytics } from "@/providers/growth-provider";
+import { CategoryAutocomplete } from "@/components/ui/CategoryAutocomplete";
 import { Icon } from "@/components/ui/Icon";
 import { TimePicker } from "@/components/ui/TimePicker";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -172,7 +175,10 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
   const [updateScope, setUpdateScope] = useState<ScheduleUpdateScope>("single");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<"title" | "category" | null>(null);
+  // "category" isn't in this union: CategoryAutocomplete now tracks its own
+  // focus state (it needs it anyway, to know when to show its dropdown), so
+  // this sheet no longer has to.
+  const [focusedField, setFocusedField] = useState<"title" | null>(null);
 
   useImperativeHandle(
     ref,
@@ -823,23 +829,17 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
           <Text style={styles.label}>Category</Text>
           <View style={styles.categoryInputRow}>
             {resolvedColor ? <View style={[styles.categorySwatch, { backgroundColor: resolvedColor }]} /> : null}
-            <BottomSheetTextInput
-              style={[
-                styles.input,
-                styles.categoryInput,
-                focusedField === "category" && styles.inputFocused,
-              ]}
-              placeholder="e.g. Work"
-              placeholderTextColor={colors.mutedForeground}
+            <CategoryAutocomplete
+              style={styles.categoryInput}
               value={category}
               onChangeText={(next) => {
                 setCategory(next);
-                // Now the user's value, so a later goal pick must not
-                // overwrite it.
+                // Now the user's value (whether typed or picked from the
+                // dropdown), so a later goal pick must not overwrite it.
                 setAutoFilledCategory(null);
               }}
-              onFocus={() => setFocusedField("category")}
-              onBlur={() => setFocusedField(null)}
+              categories={categories}
+              placeholder="e.g. Work"
               accessibilityLabel="Time slot category"
             />
           </View>
@@ -1019,7 +1019,12 @@ const styles = StyleSheet.create({
   },
   categoryInputRow: {
     flexDirection: "row",
-    alignItems: "center",
+    // flex-start, not center: CategoryAutocomplete's own root can grow taller
+    // than the input alone once its dropdown opens, and centering against
+    // that whole block would pull the swatch away from the input row it's
+    // meant to sit beside. `categorySwatch`'s marginTop compensates so it
+    // still lands roughly centered on just the input.
+    alignItems: "flex-start",
     gap: spacing.sm,
   },
   categoryInput: {
@@ -1028,6 +1033,7 @@ const styles = StyleSheet.create({
   categorySwatch: {
     width: 14,
     height: 14,
+    marginTop: spacing.md + spacing.xxs,
     borderRadius: radii.sm,
     borderWidth: 1,
     borderColor: colors.border,

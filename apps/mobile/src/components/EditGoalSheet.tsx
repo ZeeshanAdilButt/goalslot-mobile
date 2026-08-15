@@ -59,12 +59,13 @@ import {
 import { apiClient, notify } from "../lib/api-client";
 import { getErrorMessage } from "../lib/get-error-message";
 import { queueOfflineEdit } from "../lib/offline";
-import { goalQueries, labelQueries } from "../lib/queries";
+import { categoryQueries, goalQueries, labelQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { formatDeadlineLong, GoalColorPicker, toDeadlineKey } from "@/components/goals";
 import { DEFAULT_SWATCH, safeColor, SegmentedControl, withAlpha } from "@/components/lists";
+import { CategoryAutocomplete } from "@/components/ui/CategoryAutocomplete";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 
@@ -91,7 +92,10 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   const [labelIds, setLabelIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<"title" | "category" | "targetHours" | null>(null);
+  // "category" isn't in this union: CategoryAutocomplete now tracks its own
+  // focus state (it needs it anyway, to know when to show its dropdown), so
+  // this sheet no longer has to.
+  const [focusedField, setFocusedField] = useState<"title" | "targetHours" | null>(null);
   // Calendar grid stays collapsed behind a summary row by default — it's tall
   // enough (full month, 6 possible rows) that showing it inline unconditionally
   // would push title/category/hours/color below the fold on every open, even
@@ -111,6 +115,12 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
   // edited. Shares its cache entry with the Categories screen's own list.
   const labelsQuery = useQuery({ ...labelQueries.list(), enabled: goal !== null });
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
+
+  // Same `enabled` reasoning as `labelsQuery` just above — feeds
+  // CategoryAutocomplete's browse list, so there's no reason to pay for it
+  // before this sheet actually has a goal to edit.
+  const categoriesQuery = useQuery({ ...categoryQueries.list(), enabled: goal !== null });
+  const categories = useMemo(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
 
   /** The label ids PERSISTED on this goal, from its expanded join rows. */
   const savedLabelIds = useMemo(() => (goal?.labels ?? []).map((entry) => entry.labelId), [goal]);
@@ -373,17 +383,14 @@ export const EditGoalSheet = forwardRef<EditGoalSheetRef, object>(function EditG
 
         <View style={styles.field}>
           <Text style={styles.label}>Category</Text>
-          <BottomSheetTextInput
-            style={[styles.input, focusedField === "category" && styles.inputFocused]}
-            placeholder="e.g. Fitness"
-            placeholderTextColor={colors.mutedForeground}
+          <CategoryAutocomplete
             value={category}
             onChangeText={(next) => {
               clearError();
               setCategory(next);
             }}
-            onFocus={() => setFocusedField("category")}
-            onBlur={() => setFocusedField(null)}
+            categories={categories}
+            placeholder="e.g. Fitness"
             accessibilityLabel="Goal category"
           />
         </View>
