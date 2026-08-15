@@ -211,7 +211,7 @@ export default function MenteesScreen() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <HiddenTabBackButton label="Today" destination="/" />
       <ScreenHeader
-        title="Mentees"
+        title="Sharing"
         eyebrow="Mentor view"
         subtitle="People sharing their progress with you."
       />

@@ -311,7 +311,7 @@ export default function AppLayout() {
           {/* Mentees: same "pushed, not tabbed" shape as Messages just above —
               a list screen plus a detail route that hides the tab bar. See
               DrawerContent for the entry point. */}
-          <Tabs.Screen name="mentees" options={{ title: "Mentees", href: null }} />
+          <Tabs.Screen name="mentees" options={{ title: "Sharing", href: null }} />
           <Tabs.Screen
             name="mentee/[id]"
             options={{ href: null, tabBarStyle: { display: "none" } }}
