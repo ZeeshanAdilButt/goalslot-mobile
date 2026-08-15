@@ -39,9 +39,9 @@
 // on it — same pattern the picker underneath it already uses for the timer.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { BackHandler, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 
 import type { NotificationPermissionStatus } from "@goalslot/shared";
 
@@ -57,7 +57,7 @@ import { useJournalReminderSync } from "@/lib/useJournalReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, spacing } from "@/theme/tokens";
+import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 export default function NotificationSettingsScreen() {
   const { notifications } = useCapabilities();
@@ -90,6 +90,25 @@ export default function NotificationSettingsScreen() {
         cancelled = true;
       };
     }, [notifications]),
+  );
+
+  // This route is a hidden Tabs.Screen (see the note in app/(app)/_layout.tsx),
+  // not a pushed stack entry, so the OS back gesture/button doesn't reliably
+  // return to Settings — it was landing on the Today dashboard instead.
+  // Same fix note/[id].tsx already uses for the identical problem: intercept
+  // hardware back and navigate to the known correct destination explicitly.
+  // Settings is the documented, primary way to reach this screen; a second,
+  // undocumented entry exists from Schedule's reminder-permission prompt,
+  // which this can't distinguish from here — accepted limitation of a
+  // single-destination fix rather than a full navigation-stack rework.
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+        router.replace("/settings");
+        return true;
+      });
+      return () => subscription.remove();
+    }, []),
   );
 
   // Remote push needs a device token, and a token can only be minted once
@@ -159,6 +178,15 @@ export default function NotificationSettingsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        <Pressable
+          onPress={() => router.replace("/settings")}
+          hitSlop={12}
+          style={({ pressed }) => [styles.backButton, pressed ? styles.backButtonPressed : null]}
+          accessibilityRole="button"
+          accessibilityLabel="Back to settings"
+        >
+          <Text style={styles.backButtonText}>‹ Settings</Text>
+        </Pressable>
         <ScreenHeader
           eyebrow="Notifications"
           title="Notifications"
@@ -259,6 +287,20 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  backButton: {
+    alignSelf: "flex-start",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.control,
+  },
+  backButtonPressed: {
+    backgroundColor: colors.secondary,
+  },
+  backButtonText: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
   },
   scrollContent: {
     paddingBottom: spacing.xxxl,
