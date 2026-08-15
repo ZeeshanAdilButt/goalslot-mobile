@@ -80,6 +80,7 @@ import { isPlanLimitError } from "@/lib/plan-limit";
 import { coachQueries, goalQueries, journalQueries, noteQueries, taskQueries, timeEntryQueries, timerSessionQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
+import { isDormantServerSession } from "@/lib/timer-attribution";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
@@ -254,7 +255,14 @@ export default function VoiceScreen() {
   // a command is spoken, and `handleMicPress`/the focus effect below refresh
   // it before that moment rather than every few seconds in the background.
   const serverSessionQuery = useQuery(timerSessionQueries.active());
-  const serverSession = serverSessionQuery.data ?? null;
+  const rawServerSession = serverSessionQuery.data ?? null;
+  // A dormant session (paused, zero elapsed, no attribution) reads as "no
+  // real session" everywhere else in the app (timer.tsx) — this screen must
+  // agree, or a dormant session started elsewhere makes this screen falsely
+  // claim "a session is already running" and refuse every voice command that
+  // would actually start one. See isDormantServerSession in
+  // timer-attribution.ts.
+  const serverSession = isDormantServerSession(rawServerSession) ? null : rawServerSession;
   const hasServerSession = serverSession !== null;
   const localTimerStatus = useTimerStore((s) => s.status);
   const timerStart = useTimerStore((s) => s.start);

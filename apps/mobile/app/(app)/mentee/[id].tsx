@@ -414,48 +414,54 @@ export default function MenteeReportScreen() {
                   )}
                 </View>
               </Reveal>
-
-              <Reveal delay={340} style={styles.section}>
-                <View style={styles.card}>
-                  <View style={styles.cardHeader}>
-                    <Text style={styles.cardTitle}>Instructions</Text>
-                  </View>
-                  {menteeInstructions.length === 0 ? (
-                    <Text style={styles.emptyChartText}>Nothing assigned yet.</Text>
-                  ) : (
-                    <View style={styles.instructionsList}>
-                      {menteeInstructions.slice(0, MAX_INSTRUCTIONS_SHOWN).map((instruction) => (
-                        <View key={instruction.id} style={styles.instructionRow}>
-                          <View style={styles.instructionBody}>
-                            <Text style={styles.instructionTitle} numberOfLines={2}>
-                              {instruction.title}
-                            </Text>
-                            {instruction.note ? (
-                              <Text style={styles.instructionNote} numberOfLines={2}>
-                                {instruction.note}
-                              </Text>
-                            ) : null}
-                          </View>
-                          <StatusPill
-                            label={instruction.status === "DONE" ? "Done" : "Pending"}
-                            tone={instruction.status === "DONE" ? "success" : "warning"}
-                          />
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                  <Button
-                    label="Assign another instruction"
-                    icon="instructions"
-                    variant="secondary"
-                    size="sm"
-                    onPress={() => assignSheetRef.current?.present()}
-                    style={styles.assignButton}
-                  />
-                </View>
-              </Reveal>
             </>
           )}
+
+          {/* Always rendered, regardless of hasAnyActivity: assigning or
+              viewing instructions doesn't depend on the mentee having logged
+              any goal/time activity yet. Gating this behind that flag hid
+              both the assign button and any already-assigned instructions
+              for a brand-new mentee, which is what made assignment look
+              broken even when the request had actually succeeded. */}
+          <Reveal delay={hasAnyActivity ? 340 : 0} style={styles.section}>
+            <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                <Text style={styles.cardTitle}>Instructions</Text>
+              </View>
+              {menteeInstructions.length === 0 ? (
+                <Text style={styles.emptyChartText}>Nothing assigned yet.</Text>
+              ) : (
+                <View style={styles.instructionsList}>
+                  {menteeInstructions.slice(0, MAX_INSTRUCTIONS_SHOWN).map((instruction) => (
+                    <View key={instruction.id} style={styles.instructionRow}>
+                      <View style={styles.instructionBody}>
+                        <Text style={styles.instructionTitle} numberOfLines={2}>
+                          {instruction.title}
+                        </Text>
+                        {instruction.note ? (
+                          <Text style={styles.instructionNote} numberOfLines={2}>
+                            {instruction.note}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <StatusPill
+                        label={instruction.status === "DONE" ? "Done" : "Pending"}
+                        tone={instruction.status === "DONE" ? "success" : "warning"}
+                      />
+                    </View>
+                  ))}
+                </View>
+              )}
+              <Button
+                label="Assign another instruction"
+                icon="instructions"
+                variant="secondary"
+                size="sm"
+                onPress={() => assignSheetRef.current?.present()}
+                style={styles.assignButton}
+              />
+            </View>
+          </Reveal>
         </ScrollView>
       )}
 

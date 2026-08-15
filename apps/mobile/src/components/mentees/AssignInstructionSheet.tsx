@@ -104,6 +104,12 @@ export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstruc
         enablePanDownToClose
         keyboardBehavior="interactive"
         keyboardBlurBehavior="restore"
+        // Without this the sheet relies on adjustResize, which Android
+        // ignores under edge-to-edge — the same bug fixed in every other
+        // BottomSheetModal in the app tonight (QuickAddSheet, EditTaskSheet,
+        // EditGoalSheet, ScheduleBlockSheet), just missed here since this
+        // sheet was built after that fix instead of alongside it.
+        android_keyboardInputMode="adjustPan"
         handleIndicatorStyle={styles.handleIndicator}
         backgroundStyle={styles.sheetBackground}
       >
