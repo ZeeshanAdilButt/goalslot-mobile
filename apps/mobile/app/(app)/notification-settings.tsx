@@ -49,6 +49,7 @@ import { ScreenHeader } from "@/components/lists";
 import { JournalReminderTimePicker } from "@/components/journal/JournalReminderTimePicker";
 import { SettingsRow, SettingsSection } from "@/components/settings";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
+import { useScreenView } from "@/hooks/useScreenView";
 import { useScheduleRemindersStore } from "@/lib/schedule-reminders-store";
 import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore } from "@/lib/timer-store";
@@ -56,12 +57,10 @@ import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-reg
 import { useJournalReminderSync } from "@/lib/useJournalReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
-import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, spacing, typography } from "@/theme/tokens";
 
 export default function NotificationSettingsScreen() {
   const { notifications } = useCapabilities();
-  const analytics = useAnalytics();
 
   // Reconciles the journal reminder against today's entry and the toggle
   // below the moment either changes while this screen is open — the other
@@ -71,11 +70,7 @@ export default function NotificationSettingsScreen() {
 
   const [permission, setPermission] = useState<NotificationPermissionStatus | null>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "notificationSettings" } });
-    }, [analytics]),
-  );
+  useScreenView("notificationSettings");
 
   // Same re-read-on-focus rule the old Settings row used: granting
   // permission means leaving for the OS settings app and coming back, and

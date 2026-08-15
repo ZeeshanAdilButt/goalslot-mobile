@@ -19,11 +19,11 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
 
-import { calculateProgressPercent, formatDuration, hasResponse } from "@goalslot/shared";
+import { calculateProgressPercent, formatDuration } from "@goalslot/shared";
 
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { StatusPill } from "@/components/lists";
@@ -50,11 +50,12 @@ import { Avatar } from "@/components/messaging";
 import { AssignInstructionSheet } from "@/components/mentees/AssignInstructionSheet";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { messagingEnabled } from "@/lib/messaging-config";
+import { describeCreateConversationError } from "@/lib/messaging-error";
 import { instructionsQueries, messagingQueries, sharingQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
-import { useAnalytics } from "@/providers/growth-provider";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 const CHART_BLOCK_HEIGHT = 150;
@@ -78,7 +79,6 @@ export default function MenteeReportScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const ownerId = typeof params.id === "string" ? params.id : "";
 
-  const analytics = useAnalytics();
   const { width } = useWindowDimensions();
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [chartWidth, setChartWidth] = useState(0);
@@ -89,11 +89,7 @@ export default function MenteeReportScreen() {
   const [messagingError, setMessagingError] = useState<string | null>(null);
   const assignSheetRef = useRef<BottomSheetModal>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "mentee-report" } });
-    }, [analytics]),
-  );
+  useScreenView("mentee-report");
 
   // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx's header
   // note above), not a pushed stack entry, so the OS back gesture/button
@@ -216,11 +212,14 @@ export default function MenteeReportScreen() {
       await queryClient.invalidateQueries({ queryKey: messagingQueries.messagingQueries.conversations() });
       router.push(`/message/${response.data.conversationId}`);
     } catch (err) {
-      const status = (err as { response?: { status?: number } } | undefined)?.response?.status;
-      if (status === 403) {
-        setMessagingError(`You can't message ${menteeName} — that sharing connection isn't active any more.`);
-      } else if (!hasResponse(err)) {
-        setMessagingError("You're offline. Check your connection and try again.");
+      // forbidden/network get a persistent inline banner — the user needs to
+      // know the sharing connection (or their own connectivity) is the
+      // problem before trying again. Anything else is a one-off toast: a
+      // genuine server rejection is worth retrying, not worth leaving a
+      // banner up about.
+      const { kind, message } = describeCreateConversationError(err, menteeName);
+      if (kind === "forbidden" || kind === "network") {
+        setMessagingError(message);
       } else {
         notify("Couldn't open that conversation.", "error");
       }

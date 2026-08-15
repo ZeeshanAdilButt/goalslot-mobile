@@ -41,7 +41,7 @@ import {
   type GoalStatus,
 } from "@goalslot/shared";
 
-import { ErrorState, Skeleton, SkeletonCard } from "@/components";
+import { QueryErrorState, Skeleton, SkeletonCard } from "@/components";
 import { EditGoalSheet, type EditGoalSheetRef } from "@/components/EditGoalSheet";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -55,6 +55,7 @@ import {
   withAlpha,
   type SegmentOption,
 } from "@/components/lists";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
@@ -119,11 +120,12 @@ export default function GoalsScreen() {
   // bailout, so this costs nothing on a normal focus.
   const [todayKey, setTodayKey] = useState(() => getLocalDateString());
 
+  useScreenView("goals");
+
   useFocusEffect(
     useCallback(() => {
       setTodayKey(getLocalDateString());
-      analytics.track({ name: "screenViewed", payload: { screenName: "goals" } });
-    }, [analytics]),
+    }, []),
   );
 
   // The Categories screen's two lists, read here only to build the filter row
@@ -176,7 +178,7 @@ export default function GoalsScreen() {
   // `isPending: false`, so no blocking skeleton flashes on cached-first loads.
   // Never `isLoading`/`isFetching` here — both are true on a background
   // revalidation and would blank a perfectly good list on every revisit.
-  const { data, isPending, isError, isFetching, refetch } = useQuery(goalQueries.list(filters));
+  const { data, error, isPending, isError, isFetching, refetch } = useQuery(goalQueries.list(filters));
 
   // Web spends three StatCards on these counts (goals-stats.tsx:40-44). One
   // extra query, and deliberately not part of any loading gate: if /goals/stats
@@ -382,7 +384,7 @@ export default function GoalsScreen() {
       </View>
     );
   } else if (showError) {
-    content = <ErrorState message="Couldn't load goals." onRetry={() => void refetch()} />;
+    content = <QueryErrorState error={error} message="Couldn't load goals." onRetry={() => void refetch()} />;
   } else if (showEmpty && isFiltered) {
     // The unfiltered copy ("Create your first goal") would be a lie here —
     // there may be plenty of goals, just none in this category or label.

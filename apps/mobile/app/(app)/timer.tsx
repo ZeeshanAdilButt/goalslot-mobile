@@ -37,6 +37,7 @@ import {
   formatDuration,
   genId,
   getLocalDateString,
+  hasResponse,
   namedTarget,
   resolveSpokenTarget,
   updateTimeEntrySchema,
@@ -58,6 +59,7 @@ import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { buildTrackingCandidates } from "@/components/voice/tracking-commands";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion, hapticLight } from "@/lib/haptics";
@@ -121,11 +123,6 @@ const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;
 
 /** How often to poll for a server-side session while this screen is mounted. See the header note above. */
 const SERVER_SESSION_POLL_MS = 20_000;
-
-/** Matches `hasResponse` in src/hooks/useQuickAdd.ts and packages/shared/src/offline/sync.ts. */
-function hasResponse(err: unknown): boolean {
-  return Boolean((err as { response?: unknown } | undefined)?.response);
-}
 
 /**
  * What the tracking picker is currently choosing for: one of the live
@@ -272,15 +269,16 @@ export default function TimerScreen() {
   const serverSession = dormantServerSession === null ? rawServerSession : null;
   const hasServerSession = serverSession !== null;
 
+  useScreenView("timer");
+
   useFocusEffect(
     useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "timer" } });
       // Tabs stay mounted in this app (see TrackerVoiceButton.tsx's header),
       // so the query's own on-mount fetch only ever catches the first time
       // this tab is opened. Re-checking on every focus is what catches
       // "started tracking from the Coach screen, then switched to this tab".
       void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-    }, [analytics]),
+    }, []),
   );
 
   // Belt-and-braces for the case a focus event doesn't fire on its own — the

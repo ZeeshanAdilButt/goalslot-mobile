@@ -66,6 +66,7 @@ import {
 } from "@/components/messaging";
 import { useMessagingConnection } from "@/hooks/useMessagingConnection";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { useScreenView } from "@/hooks/useScreenView";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { useThreadScroll } from "@/hooks/useThreadScroll";
 import { messagingClient } from "@/lib/messaging-client";
@@ -74,7 +75,6 @@ import { subscribeToIncomingMessages } from "@/lib/messaging-live";
 import { useMessagingUiStore } from "@/lib/messaging-ui-store";
 import { messagingQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
-import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
@@ -107,7 +107,6 @@ export default function MessageThreadScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const conversationId = typeof params.id === "string" ? params.id : "";
 
-  const analytics = useAnalytics();
   const { user } = useAuth();
   const currentUserId = user?.id ?? "";
   const reduceMotion = useReduceMotion();
@@ -188,10 +187,11 @@ export default function MessageThreadScreen() {
 
   const refetchMessages = messagesQuery.refetch;
 
+  useScreenView("message-thread");
+
   useFocusEffect(
     useCallback(() => {
       isFocusedRef.current = true;
-      analytics.track({ name: "screenViewed", payload: { screenName: "message-thread" } });
       if (messagingEnabled && conversationId) {
         // A tab, not a stack entry — returning to a thread is a focus event,
         // not a mount, so `refetchOnMount` never fires again. Anything that
@@ -203,7 +203,7 @@ export default function MessageThreadScreen() {
       return () => {
         isFocusedRef.current = false;
       };
-    }, [analytics, conversationId, markRead, refetchMessages]),
+    }, [conversationId, markRead, refetchMessages]),
   );
 
   // --- Live messages: announce + keep read state current ------------------

@@ -54,9 +54,9 @@ import {
   SettingsSection,
 } from "@/components/settings";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useScreenView } from "@/hooks/useScreenView";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { useCapabilities } from "@/providers/capabilities-provider";
-import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -108,7 +108,6 @@ const aboutDescription = `Build ${shortCommit}`;
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
   const { notifications } = useCapabilities();
-  const analytics = useAnalytics();
   const router = useRouter();
 
   const [openSheet, setOpenSheet] = useState<SheetName | null>(null);
@@ -117,11 +116,7 @@ export default function SettingsScreen() {
 
   const closeSheet = useCallback(() => setOpenSheet(null), []);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "settings" } });
-    }, [analytics]),
-  );
+  useScreenView("settings");
 
   // Re-read on every focus rather than once on mount. Granting notifications
   // means leaving for the OS settings app and coming back, and the row has to

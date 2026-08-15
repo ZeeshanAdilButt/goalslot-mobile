@@ -32,6 +32,7 @@ import {
   createTimeEntrySchema,
   genId,
   getLocalDateString,
+  hasResponse,
   parseVoiceCommand,
   type ActionableVoiceIntent,
   type CreateTimeEntryInput,
@@ -52,11 +53,6 @@ import { useTimerStore } from "@/lib/timer-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
-
-/** Matches `hasResponse` in src/hooks/useQuickAdd.ts and packages/shared/src/offline/sync.ts. */
-function hasResponse(err: unknown): boolean {
-  return Boolean((err as { response?: unknown } | undefined)?.response);
-}
 
 /** Same shared constant timer.tsx's UNRESOLVED_TARGET_LABEL points at — see src/lib/session-label.ts. */
 const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;

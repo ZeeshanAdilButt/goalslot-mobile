@@ -46,9 +46,9 @@
 // fit a phone-width chat screen in this pass.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BackHandler, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -68,6 +68,7 @@ import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { formatMessageTime } from "@/components/messaging/format";
+import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { FormattedText } from "@/components/ui/FormattedText";
@@ -75,6 +76,7 @@ import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
+import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
@@ -300,30 +302,16 @@ export default function CoachScreen() {
     historySheetRef.current?.present();
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "coach" } });
-    }, [analytics]),
-  );
+  useScreenView("coach");
 
   // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
   // pushed stack entry, so the OS back gesture/button doesn't reliably
   // return to wherever Coach was opened from — it was landing on the Today
-  // dashboard instead. Same fix note/[id].tsx and notification-settings.tsx
-  // already use for the identical problem: intercept hardware back and
-  // navigate to a known destination explicitly. Voice is the primary,
-  // constantly-used entry ("Type instead" chip); Settings' "Open Coach" row
-  // is a second, undistinguishable origin — accepted limitation, same as
-  // notification-settings.tsx documents for its own second entry point.
-  useFocusEffect(
-    useCallback(() => {
-      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-        router.replace("/voice");
-        return true;
-      });
-      return () => subscription.remove();
-    }, []),
-  );
+  // dashboard instead. Voice is the primary, constantly-used entry ("Type
+  // instead" chip); Settings' "Open Coach" row is a second, undistinguishable
+  // origin — accepted limitation, same as notification-settings.tsx documents
+  // for its own second entry point. See HiddenTabBackButton.tsx.
+  useHiddenTabBackHandler("/voice");
 
   const historyQuery = useQuery({
     ...coachQueries.chat(scopeKey),
@@ -733,15 +721,7 @@ export default function CoachScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <Pressable
-        onPress={() => router.replace("/voice")}
-        hitSlop={12}
-        style={({ pressed }) => [styles.backButton, pressed ? styles.backButtonPressed : null]}
-        accessibilityRole="button"
-        accessibilityLabel="Back to voice"
-      >
-        <Text style={styles.backButtonText}>‹ Voice</Text>
-      </Pressable>
+      <HiddenTabBackButton label="Voice" destination="/voice" />
       <View style={styles.header}>
         <Text style={styles.headerTitle} accessibilityRole="header">
           Coach
@@ -935,22 +915,6 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
-  },
-  backButton: {
-    alignSelf: "flex-start",
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.sm,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.control,
-  },
-  backButtonPressed: {
-    backgroundColor: colors.secondary,
-  },
-  backButtonText: {
-    ...typography.body,
-    fontWeight: "600",
-    color: colors.foreground,
   },
   header: {
     flexDirection: "row",

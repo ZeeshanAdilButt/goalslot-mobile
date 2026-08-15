@@ -49,7 +49,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { useQuery } from "@tanstack/react-query";
-import { router, useFocusEffect } from "expo-router";
+import { router } from "expo-router";
 
 import {
   buildNoteTree,
@@ -66,10 +66,11 @@ import {
   type NoteTreeItem,
 } from "@goalslot/shared";
 
-import { ErrorState, SkeletonListItem } from "@/components";
+import { QueryErrorState, SkeletonListItem } from "@/components";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { ListEmptyState, ScreenHeader } from "@/components/lists";
+import { useScreenView } from "@/hooks/useScreenView";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 // `shadows.raised` (the lifted-row elevation) is only surfaced by the theme's
 // other entry point — `@/theme/tokens` re-exports just {card, fab}. Both files
@@ -150,11 +151,7 @@ export default function NotesScreen() {
   const [isCreating, setIsCreating] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "notes" } });
-    }, [analytics]),
-  );
+  useScreenView("notes");
 
   useEffect(() => {
     let mounted = true;
@@ -861,15 +858,11 @@ export default function NotesScreen() {
       </View>
     );
   } else if (isError && !notes) {
-    // `hasResponse` (the same duck-type check the mutations on this screen
-    // use, and offline.ts/timer.tsx elsewhere) tells a genuine server
-    // rejection apart from a request that never reached the server at all —
-    // conflating them here would tell an offline user their notes failed to
-    // load for a reason a retry can't fix, instead of the true, actionable
-    // "you're offline" story.
     body = (
-      <ErrorState
-        message={hasResponse(error) ? "Couldn't load your notes." : "You're offline — reconnect to load your notes."}
+      <QueryErrorState
+        error={error}
+        message="Couldn't load your notes."
+        offlineMessage="Reconnect to load your notes."
         onRetry={() => void refetch()}
       />
     );

@@ -52,7 +52,7 @@ import Animated, { Easing, useAnimatedStyle, useSharedValue, withSpring, withTim
 
 import { genId, getLocalDateString, hasResponse, todayKey, type JournalEntry } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, Skeleton, SkeletonListItem } from "@/components";
+import { EmptyState, ErrorState, QueryErrorState, Skeleton, SkeletonListItem } from "@/components";
 import {
   countJournalWords,
   describeJournalDelete,
@@ -68,6 +68,7 @@ import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
@@ -235,11 +236,7 @@ export default function JournalScreen() {
     [],
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "journal" } });
-    }, [analytics]),
-  );
+  useScreenView("journal");
 
   // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
   // pushed stack entry, so the OS back gesture/button doesn't reliably return
@@ -1110,24 +1107,19 @@ export default function JournalScreen() {
       </ScrollView>
     );
   } else if (recentQuery.isError && !recentQuery.data) {
-    // Same offline-vs-server-error distinction as `entryQuery` above: a
-    // network failure (no `.response`) just means this device couldn't ask,
-    // not that the server said no — the copy and icon say so instead of the
-    // generic "something went wrong" framing, though Retry stays available
-    // either way since connectivity can return at any moment.
+    // Same offline-vs-server-error distinction as `entryQuery` above, via the
+    // shared classifier — Retry stays available either way since
+    // connectivity can return at any moment.
     body = (
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {header}
-        {hasResponse(recentQuery.error) ? (
-          <ErrorState compact message="Couldn't load recent entries." onRetry={() => void recentQuery.refetch()} />
-        ) : (
-          <ErrorState
-            compact
-            iconName="wifi-off"
-            message="Recent entries aren't available offline."
-            onRetry={() => void recentQuery.refetch()}
-          />
-        )}
+        <QueryErrorState
+          compact
+          error={recentQuery.error}
+          message="Couldn't load recent entries."
+          offlineMessage="Recent entries aren't available offline."
+          onRetry={() => void recentQuery.refetch()}
+        />
       </ScrollView>
     );
   } else if (recentEntries.length === 0) {

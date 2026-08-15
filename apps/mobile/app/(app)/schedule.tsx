@@ -45,6 +45,7 @@ import {
   type ScheduleBlockSheetRef,
 } from "@/components/schedule";
 import { Icon } from "@/components/ui/Icon";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticLight } from "@/lib/haptics";
@@ -137,15 +138,7 @@ export default function ScheduleScreen() {
   // Day the viewport has already been positioned for. Null until data arrives.
   const landedDay = useRef<number | null>(null);
 
-  // expo-router re-exports react-navigation's useFocusEffect directly (see
-  // node_modules/expo-router/build/useFocusEffect.js) — no extra dependency
-  // needed. Fires on every tab return, not just the first mount, matching
-  // the other v1 screens' screenViewed timing.
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "schedule" } });
-    }, [analytics]),
-  );
+  useScreenView("schedule");
 
   useFocusEffect(
     useCallback(() => {

@@ -70,6 +70,7 @@ import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
+import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
@@ -82,7 +83,6 @@ import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { isDormantServerSession } from "@/lib/timer-attribution";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
-import { useAnalytics } from "@/providers/growth-provider";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -211,7 +211,6 @@ function turnsToArchiveSnapshot(turns: readonly Turn[]): ConversationTurnSnapsho
 
 export default function VoiceScreen() {
   const router = useRouter();
-  const analytics = useAnalytics();
   const { voice } = useCapabilities();
   const scopeKey = useMemo(() => currentCoachWeekScopeKey(), []);
   const { apply } = useApplyCoachProposals();
@@ -963,9 +962,9 @@ export default function VoiceScreen() {
   // silently reopen the mic), and a transcript forwarded from the tracker,
   // which is run instead of asking the user to repeat themselves.
   const hasAnswer = history.length > 0;
+  useScreenView("voice");
   useFocusEffect(
     useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "voice" } });
       // Re-checked on every focus, same reason timer.tsx does this: a
       // session started from the Coach, from another device, or from the
       // Time Tracker's own mic while this tab wasn't visible would otherwise
@@ -1008,7 +1007,7 @@ export default function VoiceScreen() {
       // the moment a reply starts arriving, and re-running this effect then
       // would fire the cleanup below and cancel the very stream that
       // produced it. It is read once per focus, which is when it matters.
-    }, [analytics, cancel, forwarded, handleCommand, start]),
+    }, [cancel, forwarded, handleCommand, start]),
   );
 
   const handleMicPress = useCallback(() => {

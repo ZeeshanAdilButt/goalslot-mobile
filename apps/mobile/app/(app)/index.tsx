@@ -72,9 +72,9 @@ import { TaskRow } from "@/components/today/TaskRow";
 import { TimelineRow } from "@/components/today/TimelineRow";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
+import { useScreenView } from "@/hooks/useScreenView";
 import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { useAuth } from "@/providers/auth-provider";
-import { useAnalytics } from "@/providers/growth-provider";
 import { motion } from "@/theme";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -146,7 +146,6 @@ function sortByStatusThenTitle(a: Task, b: Task): number {
 
 export default function TodayScreen() {
   const { user } = useAuth();
-  const analytics = useAnalytics();
   const router = useRouter();
   const reduceMotion = useReduceMotion();
 
@@ -217,14 +216,7 @@ export default function TodayScreen() {
     }, []),
   );
 
-  // useFocusEffect (not a mount-only useEffect) because Today is the tab
-  // users bounce back to constantly — each return to it is a real "viewed
-  // the agenda" moment worth its own analytics event, not just the first.
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "today" } });
-    }, [analytics]),
-  );
+  useScreenView("today");
 
   const onRefresh = useCallback(() => {
     void Promise.all([

@@ -27,7 +27,6 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   contactsWithoutConversation,
-  toMessagingError,
   type MessagingContact,
 } from "@goalslot/shared";
 
@@ -35,6 +34,7 @@ import { QueryErrorState } from "@/components/QueryErrorState";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { apiClient } from "@/lib/api-client";
 import { hapticLight } from "@/lib/haptics";
+import { describeCreateConversationError } from "@/lib/messaging-error";
 import { messagingQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -89,12 +89,7 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
           sheetRef.current?.dismiss();
           onConversationReady(response.data.conversationId);
         } catch (err) {
-          const messagingError = toMessagingError(err);
-          setError(
-            messagingError.kind === "forbidden"
-              ? `You can't message ${contact.name} — that sharing connection isn't active any more.`
-              : messagingError.message,
-          );
+          setError(describeCreateConversationError(err, contact.name).message);
         } finally {
           setCreatingFor(null);
         }

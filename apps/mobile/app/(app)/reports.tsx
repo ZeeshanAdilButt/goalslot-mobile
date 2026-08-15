@@ -35,9 +35,9 @@ import { FocusBarChart } from "@/components/reports/FocusBarChart";
 import { PeriodSelector } from "@/components/reports/PeriodSelector";
 import { Reveal } from "@/components/reports/Reveal";
 import { StatCard } from "@/components/reports/StatCard";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient } from "@/lib/api-client";
 import { categoryQueries, goalQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
-import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const CHART_BLOCK_HEIGHT = 150;
@@ -72,7 +72,6 @@ function formatDayHeading(dateKey: string): string {
 }
 
 export default function ReportsScreen() {
-  const analytics = useAnalytics();
   const { width } = useWindowDimensions();
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [chartWidth, setChartWidth] = useState(0);
@@ -100,16 +99,17 @@ export default function ReportsScreen() {
   // charting the previous reporting week indefinitely.
   const [periodAnchor, setPeriodAnchor] = useState(() => new Date());
 
+  useScreenView("reports");
+
   useFocusEffect(
     useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "reports" } });
       // Re-anchor only when the calendar day has actually turned over.
       // Replacing it on every focus would churn the query key (it feeds
       // `ranges.fetch`) and refetch for nothing.
       setPeriodAnchor((previous) =>
         getLocalDateString(previous) === getLocalDateString() ? previous : new Date(),
       );
-    }, [analytics]),
+    }, []),
   );
 
   // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a

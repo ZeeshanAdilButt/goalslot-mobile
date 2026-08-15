@@ -56,7 +56,6 @@ import {
   type ViewStyle,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -84,11 +83,11 @@ import {
   StatusPill,
   withAlpha,
 } from "@/components/lists";
+import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
-import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 const SKELETON_ROWS = 3;
@@ -102,8 +101,6 @@ const SKELETON_ROWS = 3;
 type FormState<T> = { mode: "create" } | { mode: "edit"; entity: T };
 
 export default function CategoriesScreen() {
-  const analytics = useAnalytics();
-
   // Both lists are read again inside the two sections below. Mounting the
   // same query options here costs no extra request — react-query serves both
   // observers from one cache entry and dedupes concurrent fetches — and it's
@@ -126,11 +123,7 @@ export default function CategoriesScreen() {
     (categoriesQuery.isFetching && !categoriesQuery.isPending) ||
     (labelsQuery.isFetching && !labelsQuery.isPending);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "categories" } });
-    }, [analytics]),
-  );
+  useScreenView("categories");
 
   // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
   // pushed stack entry, so the OS back gesture/button doesn't reliably return

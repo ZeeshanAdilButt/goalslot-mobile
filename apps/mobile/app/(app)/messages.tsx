@@ -43,9 +43,9 @@ import {
   OfflineBanner,
 } from "@/components/messaging";
 import { useMessagingConnection } from "@/hooks/useMessagingConnection";
+import { useScreenView } from "@/hooks/useScreenView";
 import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { messagingQueries } from "@/lib/queries";
-import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, spacing } from "@/theme/tokens";
 
@@ -53,7 +53,6 @@ import { colors, spacing } from "@/theme/tokens";
 const UNKNOWN_PERSON = "Someone you shared with";
 
 export default function MessagesScreen() {
-  const analytics = useAnalytics();
   const { user } = useAuth();
   const currentUserId = user?.id ?? "";
   const connection = useMessagingConnection();
@@ -79,9 +78,10 @@ export default function MessagesScreen() {
 
   const refetchConversations = conversationsQuery.refetch;
 
+  useScreenView("messages");
+
   useFocusEffect(
     useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "messages" } });
       // `refetchOnMount` isn't enough here. This screen is a tab, so it stays
       // mounted after the user navigates away — returning to it is a FOCUS
       // event, not a mount, and without this the list would show whatever the
@@ -89,7 +89,7 @@ export default function MessagesScreen() {
       if (messagingEnabled) {
         void refetchConversations();
       }
-    }, [analytics, refetchConversations]),
+    }, [refetchConversations]),
   );
 
   const contactIndex = useMemo(() => contactsByUserId(contactsQuery.data ?? []), [contactsQuery.data]);

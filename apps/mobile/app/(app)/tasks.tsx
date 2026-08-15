@@ -60,7 +60,7 @@ import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomSheetBackdropProps } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
-import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 
 import {
   genId,
@@ -72,9 +72,10 @@ import {
 } from "@goalslot/shared";
 
 import { EditTaskSheet, type EditTaskSheetRef } from "@/components/EditTaskSheet";
-import { ErrorState } from "@/components/ErrorState";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
+import { useScreenView } from "@/hooks/useScreenView";
 import { SkeletonListItem } from "@/components/Skeleton";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import {
@@ -272,11 +273,7 @@ export default function TasksScreen() {
   const [rescheduleTarget, setRescheduleTarget] = useState<Task | null>(null);
   const [moveTarget, setMoveTarget] = useState<Task | null>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      analytics.track({ name: "screenViewed", payload: { screenName: "tasks" } });
-    }, [analytics]),
-  );
+  useScreenView("tasks");
 
   // Snapshot-based rollback: capture the list as it was right before the
   // optimistic patch, and if the live call fails, restore that exact
@@ -655,7 +652,7 @@ export default function TasksScreen() {
         </View>
       );
   } else if (isError && !tasks) {
-    content = <ErrorState message={getErrorMessage(error, "Couldn't load tasks.")} onRetry={refetch} />;
+    content = <QueryErrorState error={error} message="Couldn't load tasks." onRetry={refetch} />;
   } else if ((tasks?.length ?? 0) === 0) {
     // Emptiness is a property of the DATA, not of the list view's grouped
     // rows: the board renders four columns from the same tasks, so testing

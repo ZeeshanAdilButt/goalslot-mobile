@@ -49,9 +49,9 @@ import {
   useEditorContent,
 } from "@10play/tentap-editor";
 
-import { hasResponse, type Note, type NoteDetailResponse } from "@goalslot/shared";
+import { type Note, type NoteDetailResponse } from "@goalslot/shared";
 
-import { ErrorState, LoadingState } from "@/components";
+import { LoadingState, QueryErrorState } from "@/components";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
 import { decodeNoteEntities, normalizeContent } from "@/lib/note-content";
@@ -99,22 +99,15 @@ export default function NoteScreen() {
   // sitting right there. Matches the pattern goals.tsx/tasks.tsx/notes.tsx
   // already use correctly.
   if (detailQuery.isError && !detailQuery.data) {
-    // Same `hasResponse` split notes.tsx's list query uses: a genuine server
-    // rejection (the request landed, the server said no) reads differently
-    // from a request that never reached the server at all (offline/timeout)
-    // — the latter told the user to "try again" when a retry couldn't
-    // possibly help without connectivity back first.
     return (
       <SafeAreaView style={styles.container} edges={["top"]}>
         <View style={styles.headerRow}>
           <BackButton />
         </View>
-        <ErrorState
-          message={
-            hasResponse(detailQuery.error)
-              ? "Couldn't load this page."
-              : "You're offline — reconnect to load this page."
-          }
+        <QueryErrorState
+          error={detailQuery.error}
+          message="Couldn't load this page."
+          offlineMessage="Reconnect to load this page."
           onRetry={() => void detailQuery.refetch()}
         />
       </SafeAreaView>
