@@ -176,6 +176,7 @@ __export(index_exports, {
   summariseTurnsForArchive: () => summariseTurnsForArchive,
   taskStatusSchema: () => taskStatusSchema,
   timeToMinutes: () => timeToMinutes,
+  toActiveTimerSession: () => toActiveTimerSession,
   toMessagingError: () => toMessagingError,
   todayKey: () => todayKey,
   truncateConversationText: () => truncateConversationText,
@@ -2160,6 +2161,11 @@ function createTimeEntryQueries(timeEntriesApi) {
 
 // src/queries/timer-session.ts
 var import_react_query8 = require("@tanstack/react-query");
+function toActiveTimerSession(data) {
+  if (!data || typeof data !== "object") return null;
+  if (typeof data.status !== "string") return null;
+  return data;
+}
 function createTimerSessionQueries(timerSessionApi) {
   const timerSessionQueries = {
     all: ["timer-session"],
@@ -2167,7 +2173,7 @@ function createTimerSessionQueries(timerSessionApi) {
   };
   const fetchActive = async () => {
     const res = await timerSessionApi.getActive();
-    return res.data;
+    return toActiveTimerSession(res.data);
   };
   return {
     timerSessionQueries,
@@ -3896,6 +3902,7 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   summariseTurnsForArchive,
   taskStatusSchema,
   timeToMinutes,
+  toActiveTimerSession,
   toMessagingError,
   todayKey,
   truncateConversationText,

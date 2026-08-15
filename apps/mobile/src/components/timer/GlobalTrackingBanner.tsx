@@ -19,14 +19,23 @@
 // only while THIS component is mounted (the store itself owns no interval —
 // see timer-store.ts's header for why — so nothing ticks when no screen is
 // showing the clock).
+//
+// It also watches the CROSS-DEVICE session (`/timer/session`), not just the
+// local store. Reading the local store alone was why "if there is a session
+// running anywhere, show me that it is running so I can stop it" wasn't true:
+// a timer started on the web app, on another phone, or by the Coach lives
+// only on the server, so this banner stayed blank and the only place in the
+// whole app that showed it was the Timer tab itself.
 
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
-import { goalQueries, taskQueries } from "@/lib/queries";
+import { goalQueries, taskQueries, timerSessionQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
+import { cleanLabel, isDormantServerSession, resolveEffectiveTimer } from "@/lib/timer-attribution";
 import { getElapsedMs, useTimerStore } from "@/lib/timer-store";
 import { useTrackingBannerHeight } from "@/lib/tracking-banner-store";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -42,6 +51,19 @@ import { Icon } from "@/components/ui/Icon";
 const HAMBURGER_CLEARANCE = 64;
 
 const TICK_MS = 1000;
+
+/**
+ * How often this banner re-checks for a session started elsewhere.
+ *
+ * Deliberately slower than the Timer screen's own 20s (see timer.tsx's
+ * SERVER_SESSION_POLL_MS): this component is mounted for the entire
+ * authenticated life of the app, not just while one tab is open, so its poll
+ * is the app's permanent background cost. A minute is well inside "I opened
+ * my phone and it already knows" while being three times cheaper on battery
+ * and data. Both share one query key, so react-query keeps a single request
+ * in flight and the screen's faster cadence simply wins while it is open.
+ */
+const SERVER_SESSION_POLL_MS = 60_000;
 
 /**
  * Placeholder for a session tracked without a task or goal attached.
@@ -86,11 +108,42 @@ export function GlobalTrackingBanner({
 }: GlobalTrackingBannerProps) {
   const router = useRouter();
 
-  const status = useTimerStore((s) => s.status);
-  const startedAt = useTimerStore((s) => s.startedAt);
-  const pausedElapsedMs = useTimerStore((s) => s.pausedElapsedMs);
-  const timerTaskId = useTimerStore((s) => s.taskId);
-  const timerGoalId = useTimerStore((s) => s.goalId);
+  const localStatus = useTimerStore((s) => s.status);
+  const localStartedAt = useTimerStore((s) => s.startedAt);
+  const localPausedElapsedMs = useTimerStore((s) => s.pausedElapsedMs);
+  const localTaskId = useTimerStore((s) => s.taskId);
+  const localGoalId = useTimerStore((s) => s.goalId);
+
+  const serverSessionQuery = useQuery({
+    ...timerSessionQueries.active(),
+    refetchInterval: SERVER_SESSION_POLL_MS,
+  });
+  // A dormant row (paused, no time, nothing attached) is excluded so the
+  // banner never advertises a session the user has no way to recognise —
+  // the same exclusion the Timer screen applies to its own rendering.
+  const rawServerSession = serverSessionQuery.data ?? null;
+  const serverSession = isDormantServerSession(rawServerSession) ? null : rawServerSession;
+
+  // A poll alone can be up to a minute stale, and the most common way to
+  // find out about a session started elsewhere is picking the phone back up.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
+  // Exactly the merge the Timer screen performs, from the same helper, so
+  // the banner and the hero can never disagree about what is running.
+  const { status, startedAt, pausedElapsedMs, taskId, goalId } = resolveEffectiveTimer(serverSession, {
+    status: localStatus,
+    startedAt: localStartedAt,
+    pausedElapsedMs: localPausedElapsedMs,
+    taskId: localTaskId,
+    goalId: localGoalId,
+  });
 
   // Same resolution pattern timer.tsx's activeTask/activeGoal use: the store
   // only persists ids, so the title comes from matching those ids against
@@ -98,18 +151,21 @@ export function GlobalTrackingBanner({
   // doesn't add a network request beyond what Today/Timer/etc. already make).
   const tasksQuery = useQuery(taskQueries.list());
   const goalsQuery = useQuery(goalQueries.list());
-  const activeTask = useMemo(
-    () => tasksQuery.data?.find((t) => t.id === timerTaskId) ?? null,
-    [tasksQuery.data, timerTaskId],
-  );
-  const activeGoal = useMemo(
-    () => goalsQuery.data?.find((g) => g.id === timerGoalId) ?? null,
-    [goalsQuery.data, timerGoalId],
-  );
+  const activeTask = useMemo(() => tasksQuery.data?.find((t) => t.id === taskId) ?? null, [tasksQuery.data, taskId]);
+  const activeGoal = useMemo(() => goalsQuery.data?.find((g) => g.id === goalId) ?? null, [goalsQuery.data, goalId]);
+  // A server session carries its own titles, so it can name itself before —
+  // or without — the goal/task lists ever loading, including its free-text
+  // `taskName` (a Coach session logged as "gym" has no goal or task behind
+  // it at all).
   const label =
-    activeTask?.title ?? activeGoal?.title ?? UNTITLED_SESSION_LABEL;
+    cleanLabel(activeTask?.title) ??
+    cleanLabel(activeGoal?.title) ??
+    cleanLabel(serverSession?.task?.title) ??
+    cleanLabel(serverSession?.goal?.title) ??
+    cleanLabel(serverSession?.taskName) ??
+    UNTITLED_SESSION_LABEL;
   const accentColor =
-    activeGoal?.color ?? activeTask?.goal?.color ?? colors.primary;
+    activeGoal?.color ?? activeTask?.goal?.color ?? serverSession?.goal?.color ?? colors.primary;
 
   // Re-renders once a second while running so the clock actually moves.
   // Skipped entirely while paused/idle — a paused elapsed value is a fixed

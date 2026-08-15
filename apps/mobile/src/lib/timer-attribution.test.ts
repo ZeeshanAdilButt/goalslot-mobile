@@ -5,13 +5,17 @@
 import type { ActiveTimerSession, Goal, ScheduleBlock, Task, WeekSchedule } from "@goalslot/shared";
 
 import {
+  activeSessionElapsedMs,
   canAttemptAutoSelect,
   DORMANT_ELAPSED_TOLERANCE_MS,
   cleanLabel,
+  describeStartConflict,
   firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
   isLiveStoreIdleForAutoSelect,
+  readStartConflict,
+  resolveEffectiveTimer,
   resolveScheduledTarget,
   type AutoSelectGuardInput,
   type LocalTimerSnapshot,
@@ -364,5 +368,157 @@ describe("resolveScheduledTarget", () => {
         ZONE,
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveEffectiveTimer", () => {
+  const idleLocal = { status: "idle" as const, startedAt: null, pausedElapsedMs: 0, taskId: null, goalId: null };
+  const runningLocal = {
+    status: "running" as const,
+    startedAt: 1_700_000_000_000,
+    pausedElapsedMs: 5_000,
+    taskId: "task-1",
+    goalId: "goal-1",
+  };
+
+  it("falls back to the local store when there is no server session", () => {
+    expect(resolveEffectiveTimer(null, runningLocal)).toEqual(runningLocal);
+    expect(resolveEffectiveTimer(undefined, runningLocal)).toEqual(runningLocal);
+  });
+
+  it("lets a running server session win over the local store entirely", () => {
+    const server = dormantSession({
+      status: "RUNNING",
+      segmentStartedAt: "2026-08-14T09:00:00.000Z",
+      accumulatedMs: 120_000,
+      taskId: "server-task",
+      goalId: "server-goal",
+    });
+    expect(resolveEffectiveTimer(server, runningLocal)).toEqual({
+      status: "running",
+      startedAt: Date.parse("2026-08-14T09:00:00.000Z"),
+      pausedElapsedMs: 120_000,
+      taskId: "server-task",
+      goalId: "server-goal",
+    });
+  });
+
+  it("reports a paused server session with no open segment", () => {
+    const server = dormantSession({ accumulatedMs: 90_000, goalId: "server-goal" });
+    expect(resolveEffectiveTimer(server, idleLocal)).toEqual({
+      status: "paused",
+      startedAt: null,
+      pausedElapsedMs: 90_000,
+      taskId: null,
+      goalId: "server-goal",
+    });
+  });
+
+  it("never lets an unreadable number or timestamp reach the clock", () => {
+    // Both are live cases: `accumulatedMs` has arrived absent (rendering the
+    // ring as NaN:NaN:NaN), and an unparseable segmentStartedAt would do the
+    // same via `now - NaN`.
+    const server = dormantSession({
+      status: "RUNNING",
+      segmentStartedAt: "not-a-date",
+      accumulatedMs: undefined as unknown as number,
+    });
+    expect(resolveEffectiveTimer(server, idleLocal)).toEqual({
+      status: "running",
+      startedAt: null,
+      pausedElapsedMs: 0,
+      taskId: null,
+      goalId: null,
+    });
+  });
+});
+
+describe("activeSessionElapsedMs", () => {
+  const AT = new Date("2026-08-14T09:10:00.000Z");
+
+  it("rolls a running session forward from the server's own clock", () => {
+    // elapsedMs was measured at serverTime; AT is ten minutes later.
+    const session = dormantSession({
+      status: "RUNNING",
+      elapsedMs: 60_000,
+      serverTime: "2026-08-14T09:00:00.000Z",
+    });
+    expect(activeSessionElapsedMs(session, AT)).toBe(60_000 + 600_000);
+  });
+
+  it("leaves a paused session exactly where it was", () => {
+    const session = dormantSession({ elapsedMs: 60_000, serverTime: "2026-08-14T09:00:00.000Z" });
+    expect(activeSessionElapsedMs(session, AT)).toBe(60_000);
+  });
+
+  it("never runs backwards when the device clock is behind the server's", () => {
+    const session = dormantSession({
+      status: "RUNNING",
+      elapsedMs: 60_000,
+      serverTime: "2026-08-14T09:20:00.000Z",
+    });
+    expect(activeSessionElapsedMs(session, AT)).toBe(60_000);
+  });
+
+  it("falls back to accumulatedMs when elapsedMs is missing", () => {
+    const session = dormantSession({ elapsedMs: undefined as unknown as number, accumulatedMs: 30_000 });
+    expect(activeSessionElapsedMs(session, AT)).toBe(30_000);
+  });
+});
+
+describe("readStartConflict", () => {
+  it("is null for anything that is not a 409", () => {
+    // These must NOT be presented to the user as "a timer is already
+    // running": offline, a timeout, and the plan's daily-entry refusal.
+    expect(readStartConflict(new Error("Network Error"))).toBeNull();
+    expect(readStartConflict({ response: { status: 403, data: {} } })).toBeNull();
+    expect(readStartConflict(undefined)).toBeNull();
+  });
+
+  it("extracts the session the 409 body carries", () => {
+    const session = dormantSession({ status: "RUNNING", accumulatedMs: 5_000 });
+    expect(readStartConflict({ response: { status: 409, data: { activeSession: session } } })).toEqual({ session });
+  });
+
+  it("is a conflict with no session when the body carries none", () => {
+    // The API re-reads the row after the failed insert; it can be gone by then.
+    expect(readStartConflict({ response: { status: 409, data: { activeSession: null } } })).toEqual({ session: null });
+    expect(readStartConflict({ response: { status: 409, data: {} } })).toEqual({ session: null });
+    // Same empty-body-as-'' shape the GET path has to survive.
+    expect(readStartConflict({ response: { status: 409, data: { activeSession: "" } } })).toEqual({ session: null });
+  });
+});
+
+describe("describeStartConflict", () => {
+  const AT = new Date("2026-08-14T09:42:00.000Z");
+
+  it("names what is running, for how long, and where", () => {
+    const session = dormantSession({
+      status: "RUNNING",
+      task: { id: "t1", title: "Deep work" },
+      elapsedMs: 42 * 60_000,
+      serverTime: "2026-08-14T09:42:00.000Z",
+      lastClient: "web",
+    });
+    const description = describeStartConflict(session, AT);
+    expect(description).toContain('"Deep work"');
+    expect(description).toContain("has been running");
+    expect(description).toContain("the web app");
+    expect(description).toContain("42m");
+  });
+
+  it("degrades gracefully when the session has no name and no known device", () => {
+    const session = dormantSession({ accumulatedMs: 30 * 60_000, elapsedMs: 30 * 60_000 });
+    const description = describeStartConflict(session, AT);
+    expect(description).toContain("A timer");
+    expect(description).toContain("is paused");
+    expect(description).toContain("another device");
+  });
+
+  it("falls back through task, goal, then the session's own free-text name", () => {
+    const goalOnly = dormantSession({ goal: { id: "g1", title: "Fitness", color: "#000000" } });
+    expect(describeStartConflict(goalOnly, AT)).toContain('"Fitness"');
+    const nameOnly = dormantSession({ taskName: "gym" });
+    expect(describeStartConflict(nameOnly, AT)).toContain('"gym"');
   });
 });

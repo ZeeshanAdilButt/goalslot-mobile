@@ -1966,6 +1966,11 @@ function createTimeEntryQueries(timeEntriesApi) {
 
 // src/queries/timer-session.ts
 import { queryOptions as queryOptions8 } from "@tanstack/react-query";
+function toActiveTimerSession(data) {
+  if (!data || typeof data !== "object") return null;
+  if (typeof data.status !== "string") return null;
+  return data;
+}
 function createTimerSessionQueries(timerSessionApi) {
   const timerSessionQueries = {
     all: ["timer-session"],
@@ -1973,7 +1978,7 @@ function createTimerSessionQueries(timerSessionApi) {
   };
   const fetchActive = async () => {
     const res = await timerSessionApi.getActive();
-    return res.data;
+    return toActiveTimerSession(res.data);
   };
   return {
     timerSessionQueries,
@@ -3701,6 +3706,7 @@ export {
   summariseTurnsForArchive,
   taskStatusSchema,
   timeToMinutes,
+  toActiveTimerSession,
   toMessagingError,
   todayKey,
   truncateConversationText,

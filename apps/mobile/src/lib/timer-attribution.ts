@@ -6,9 +6,17 @@
 //      with nothing attached to it.
 //   3. `resolveScheduledTarget` — resolves the schedule block live right now
 //      into its Goal/Task.
+//   4. `resolveEffectiveTimer` — collapses "the server session (if any) wins,
+//      otherwise the local store" into one snapshot, so every surface that
+//      renders a timer agrees on what is running.
+//   5. `activeSessionElapsedMs` / `describeStartConflict` — what to tell the
+//      user about a session that is already running somewhere else when they
+//      press Start (the 409 path).
 
 import {
+  formatDuration,
   resolveActiveBlock,
+  toActiveTimerSession,
   type ActiveTimerSession,
   type Goal,
   type ScheduleBlock,
@@ -103,6 +111,128 @@ export function isDormantLocalSession(
   if (state.taskId || state.goalId) return false;
   const elapsedMs = firstFinite(state.pausedElapsedMs);
   return elapsedMs !== null && elapsedMs < toleranceMs;
+}
+
+/**
+ * One timer, whichever side actually knows about it.
+ *
+ * A server session (`/timer/session`) is authoritative whenever one exists —
+ * it is the only thing that can see a timer started on the web app, the
+ * Coach, or another phone. The local zustand store is the fallback, and is
+ * also what carries a session started while offline.
+ *
+ * Shared by the Timer screen and the app-wide tracking banner so the two can
+ * never disagree about what is running: before this existed only the screen
+ * did the merge, and the banner read the local store alone — so a timer
+ * started on web was invisible everywhere except the Timer tab.
+ */
+export function resolveEffectiveTimer(
+  server: ActiveTimerSession | null | undefined,
+  local: LocalTimerSnapshot & { startedAt: number | null },
+): LocalTimerSnapshot & { startedAt: number | null } {
+  if (!server) return local;
+
+  const running = server.status === "RUNNING";
+  // `Date.parse` of a malformed/absent timestamp is NaN, which would
+  // propagate into `now - startedAt` and render the clock as NaN. Treat an
+  // unreadable segment start as "no open segment" instead: the accumulated
+  // total still shows, it just stops ticking.
+  const segmentStartedAt = running && server.segmentStartedAt ? Date.parse(server.segmentStartedAt) : NaN;
+
+  return {
+    status: running ? "running" : "paused",
+    startedAt: Number.isFinite(segmentStartedAt) ? segmentStartedAt : null,
+    // `accumulatedMs` crosses the network with no runtime validation despite
+    // its `number` type — a live case produced a paused session whose ring
+    // read "NaN:NaN:NaN".
+    pausedElapsedMs: firstFinite(server.accumulatedMs) ?? 0,
+    taskId: server.taskId ?? null,
+    goalId: server.goalId ?? null,
+  };
+}
+
+/**
+ * Elapsed ms for a session as of `now`, not as of when the server built the
+ * response.
+ *
+ * `elapsedMs` is a snapshot paired with `serverTime` (see the API's
+ * `toResponse`), so for a RUNNING session it is already stale by the time it
+ * reaches the phone — a session the user is being asked about could have
+ * been sitting in the react-query cache for a poll interval. Rolling it
+ * forward by (now - serverTime) is what stops the conflict dialog from
+ * under-reporting how long the other device has been tracking.
+ */
+export function activeSessionElapsedMs(session: ActiveTimerSession, now: Date): number {
+  const base = firstFinite(session.elapsedMs, session.accumulatedMs) ?? 0;
+  if (session.status !== "RUNNING") return Math.max(0, base);
+  const serverTime = Date.parse(session.serverTime);
+  if (!Number.isFinite(serverTime)) return Math.max(0, base);
+  return Math.max(0, base + Math.max(0, now.getTime() - serverTime));
+}
+
+/**
+ * Which device the conflicting session came from, in words. `lastClient` is
+ * set purely so a takeover prompt can name the other device (see the API's
+ * StartTimerSessionDto) and is free-text as far as this client is concerned,
+ * so anything unrecognised degrades to the honest vague answer rather than
+ * being echoed back at the user.
+ */
+function describeClient(lastClient: string | null | undefined): string {
+  switch (lastClient) {
+    case "web":
+      return "the web app";
+    case "ios":
+      return "an iPhone or iPad";
+    case "android":
+      return "an Android device";
+    default:
+      return "another device";
+  }
+}
+
+/**
+ * A `POST /timer/session` rejection, read as "a session is already running"
+ * or not.
+ *
+ * Returns null for anything that is not a 409 — offline, a timeout, a
+ * plan-limit 403 — because those must not be presented to the user as a
+ * conflict. `session` is null for a 409 whose body carries no session (the
+ * row can vanish between the failed insert and the API's re-read of it), and
+ * the body is validated through the same `toActiveTimerSession` guard the
+ * GET path uses rather than trusted, since this is unvalidated network JSON.
+ */
+export interface StartConflict {
+  session: ActiveTimerSession | null;
+}
+
+export function readStartConflict(err: unknown): StartConflict | null {
+  const response = (err as { response?: { status?: number; data?: unknown } } | undefined)?.response;
+  if (!response || response.status !== 409) return null;
+  const body = response.data as { activeSession?: unknown } | undefined;
+  return { session: toActiveTimerSession(body?.activeSession) };
+}
+
+/**
+ * The body copy for the "already running somewhere else" dialog.
+ *
+ * States the two facts the user needs to choose between resuming it here and
+ * replacing it — what it is tracking and how long it has been going — and is
+ * explicit that replacing it SAVES that time rather than throwing it away,
+ * because that is what this app's "Stop & Start Fresh" actually does (it
+ * calls the API's own stop, which writes a TimeEntry, before starting the
+ * new session — NOT the bare `takeOver: true`, which the API documents as
+ * discarding the replaced session with no entry written).
+ */
+export function describeStartConflict(session: ActiveTimerSession, now: Date): string {
+  const label =
+    cleanLabel(session.task?.title) ?? cleanLabel(session.goal?.title) ?? cleanLabel(session.taskName);
+  const subject = label === null ? "A timer" : `"${label}"`;
+  const duration = formatDuration(Math.floor(activeSessionElapsedMs(session, now) / 60_000));
+  const verb = session.status === "RUNNING" ? "has been running" : "is paused";
+  return (
+    `${subject} ${verb} on ${describeClient(session.lastClient)}, with ${duration} tracked so far. ` +
+    `Resume it here to keep going, or stop it — that saves the ${duration} as an entry — and start a new session.`
+  );
 }
 
 /** Everything the auto-select-on-open effect's up-front guard needs, besides the live-store recheck it performs separately — see `isLiveStoreIdleForAutoSelect`. */

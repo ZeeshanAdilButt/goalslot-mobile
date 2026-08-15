@@ -19,7 +19,7 @@
 // exact local-only flow this screen always had.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { AppState, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -41,6 +41,8 @@ import {
   namedTarget,
   resolveSpokenTarget,
   updateTimeEntrySchema,
+  type ActiveTimerClient,
+  type ActiveTimerSession,
   type CreateTimeEntryInput,
   type Goal,
   type Task,
@@ -72,11 +74,14 @@ import { useSettingsStore } from "@/lib/settings-store";
 import {
   canAttemptAutoSelect,
   cleanLabel,
+  describeStartConflict,
   firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
   isLiveStoreIdleForAutoSelect,
   NOTIFICATION_DORMANT_TOLERANCE_MS,
+  readStartConflict,
+  resolveEffectiveTimer,
   resolveScheduledTarget,
 } from "@/lib/timer-attribution";
 import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
@@ -125,6 +130,22 @@ const UNRESOLVED_TARGET_LABEL = DEFAULT_SESSION_LABEL;
 
 /** How often to poll for a server-side session while this screen is mounted. See the header note above. */
 const SERVER_SESSION_POLL_MS = 20_000;
+
+/**
+ * Tags a session this device starts with which device started it. Purely
+ * informational — it is what lets the OTHER client's takeover prompt say
+ * "has been running on an iPhone" instead of "on another device" (see the
+ * API's StartTimerSessionDto). The API accepts exactly these four values.
+ */
+const TIMER_CLIENT: ActiveTimerClient =
+  Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "unknown";
+
+/** What a start is being attempted against — carried through the conflict dialog so "Stop & Start Fresh" retries the SAME target. */
+interface StartTarget {
+  taskId?: string;
+  goalId?: string;
+  taskName: string | null;
+}
 
 /**
  * What the tracking picker is currently choosing for: one of the live
@@ -234,6 +255,18 @@ export default function TimerScreen() {
   // this render happens to have.
   const serverStopRetryRef = useRef<(() => Promise<void>) | null>(null);
 
+  // The "a timer is already running somewhere else" dialog — the 409 the API
+  // answers a second start with (see ActiveTimerService#start, whose whole
+  // reason for 409-ing instead of silently taking over is that the takeover
+  // would destroy however long the other device had been tracking). The 409
+  // body carries the full session, so this needs no extra fetch to describe
+  // what is blocking the start.
+  const [startConflict, setStartConflict] = useState<{ session: ActiveTimerSession; target: StartTarget } | null>(
+    null,
+  );
+  const [startConflictBusy, setStartConflictBusy] = useState(false);
+  const [startConflictError, setStartConflictError] = useState<string | null>(null);
+
   // The local-stop save-failure dialog (handleStop's purely-local branch).
   // Genuinely 3-way — Keep Tracking / Discard / Retry — because unlike the
   // server-stop case above, the elapsed time is sitting in this app's memory
@@ -299,27 +332,23 @@ export default function TimerScreen() {
   // every bit of render logic below this point can stay written in terms of
   // ONE timer instead of branching everywhere. When a server session exists
   // it is authoritative — same rule the local store used to have to itself.
-  const effectiveStatus: TimerStatus = hasServerSession
-    ? serverSession.status === "RUNNING"
-      ? "running"
-      : "paused"
-    : status;
-  const effectiveStartedAt =
-    hasServerSession && serverSession.status === "RUNNING" && serverSession.segmentStartedAt !== null
-      ? new Date(serverSession.segmentStartedAt).getTime()
-      : hasServerSession
-        ? null
-        : startedAt;
-  // `serverSession.accumulatedMs` crosses the network with no runtime
-  // validation despite its `number` type — a live case, not a hypothetical
-  // one, produced a paused session whose ring read "NaN:NaN:NaN" instead of
-  // a duration. `?? 0` here (not just inside getElapsedMs, which only
-  // covers callers that route through it) is what protects
-  // useTimerNotification below, which does its own `pausedElapsedMs / 60000`
-  // arithmetic directly rather than through that helper.
-  const effectivePausedElapsedMs = hasServerSession ? (serverSession.accumulatedMs ?? 0) : pausedElapsedMs;
-  const effectiveTaskId = hasServerSession ? (serverSession.taskId ?? null) : timerTaskId;
-  const effectiveGoalId = hasServerSession ? (serverSession.goalId ?? null) : timerGoalId;
+  //
+  // The merge itself lives in timer-attribution.ts so <GlobalTrackingBanner/>
+  // can perform the IDENTICAL one, rather than reading the local store alone
+  // the way it used to (which is why a timer started on the web app never
+  // appeared anywhere in this app except this one screen).
+  const effective = resolveEffectiveTimer(serverSession, {
+    status,
+    startedAt,
+    pausedElapsedMs,
+    taskId: timerTaskId,
+    goalId: timerGoalId,
+  });
+  const effectiveStatus: TimerStatus = effective.status;
+  const effectiveStartedAt = effective.startedAt;
+  const effectivePausedElapsedMs = effective.pausedElapsedMs;
+  const effectiveTaskId = effective.taskId;
+  const effectiveGoalId = effective.goalId;
 
   // See isDormantLocalSession in timer-attribution.ts. Unlike the server
   // flavour, this is shown on screen — transport controls still offer
@@ -447,6 +476,57 @@ export default function TimerScreen() {
   // track time", which clears both ids and would otherwise look identical to
   // "nothing selected yet" to that effect.
   const userSelectedRef = useRef(false);
+
+  /** Set once a start this screen issued has been accepted by the server — see the reconciliation effect below for what that fact is used for. */
+  const publishedServerSessionRef = useRef(false);
+  const lastServerSessionIdRef = useRef<string | null>(null);
+
+  /**
+   * Puts the local store and this screen's pre-start selection back to idle.
+   *
+   * Shared by every path that ends a session — the local save, a server-side
+   * stop, and the reconciliation effect below — because the local store is
+   * now a MIRROR of the server session whenever one exists (Start writes to
+   * both; see `publishSessionStart`). A mirror left saying "running" after
+   * the thing it mirrors has gone is exactly the phantom session this screen
+   * has to stop producing.
+   *
+   * `userSelectedRef` resets here too: a stopped session is a genuinely
+   * fresh idle period, not a continuation of the one the user picked
+   * attribution for — without this, auto-select-on-open's latch stays
+   * permanently true for the rest of the app's mount lifetime the moment a
+   * user interacts with the picker even once, so it would never again
+   * auto-fill the next schedule block that goes live.
+   */
+  const resetLocalSessionState = useCallback(() => {
+    publishedServerSessionRef.current = false;
+    stop();
+    setSelectedTask(null);
+    setSelectedGoal(null);
+    userSelectedRef.current = false;
+  }, [stop]);
+
+  /**
+   * Reconciles the local store when the session it was mirroring ends
+   * somewhere else — stopped on the web app, on another phone, or by the
+   * Coach.
+   *
+   * Both guards are load-bearing. `publishedServerSessionRef` limits this to
+   * a local session THIS screen mirrored onto the server, and `previousId`
+   * requires that the mirror was actually OBSERVED before it vanished. A
+   * session started offline (the start POST failed, so there is no server
+   * row and never was one) satisfies neither, and its elapsed time — which
+   * is real, unsaved, and only in this app's memory — is left strictly
+   * alone.
+   */
+  useEffect(() => {
+    const previousId = lastServerSessionIdRef.current;
+    const currentId = serverSession?.id ?? null;
+    lastServerSessionIdRef.current = currentId;
+    if (previousId === null || currentId !== null) return;
+    if (!publishedServerSessionRef.current) return;
+    resetLocalSessionState();
+  }, [resetLocalSessionState, serverSession]);
 
   /**
    * FEATURE: auto-select-on-open — defaults the tracker to whatever schedule
@@ -900,6 +980,90 @@ export default function TimerScreen() {
     applyLocally();
   }, [goalTitle, hasServerSession, patchServerSession, retarget, selectedGoal, selectedTask]);
 
+  /**
+   * The bare `POST /timer/session`. Separated from the error handling around
+   * it because the conflict dialog's "Stop & Start Fresh" has to re-issue
+   * exactly this request with `takeOver: true` once the user has decided.
+   */
+  const postServerSessionStart = useCallback(async (target: StartTarget, takeOver: boolean) => {
+    await apiClient.timerSession.start({
+      taskId: target.taskId ?? null,
+      goalId: target.goalId ?? null,
+      taskName: target.taskName,
+      client: TIMER_CLIENT,
+      takeOver,
+    });
+    publishedServerSessionRef.current = true;
+    // The local session this row was created for can end while the request
+    // is in flight — the request has up to 20s to time out (see the shared
+    // client's REQUEST_TIMEOUT_MS) and the Stop button is live throughout.
+    // A row outliving the session it mirrors would 409 the next start, so
+    // clear it rather than leave it behind. Every caller starts the local
+    // session BEFORE awaiting this, which is what makes an idle store here
+    // mean "ended", not "not begun yet".
+    if (useTimerStore.getState().status === "idle") {
+      publishedServerSessionRef.current = false;
+      void apiClient.timerSession.discard().catch(() => {});
+    }
+    void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+  }, []);
+
+  /**
+   * Mirrors a just-started local session onto `/timer/session`, so it is
+   * visible — and stoppable — from the web app, the Coach and any other
+   * device. This is the half of "it should be synced between the web and the
+   * mobile" that was missing: this screen READ the cross-device session but
+   * never WROTE one, so a timer started on the phone existed nowhere else.
+   *
+   * Optimistic, exactly like web's own `start()`: the local store has
+   * already flipped to running by the time this fires, so the button feels
+   * instant and a session started with no connection still runs locally (and
+   * still saves, via handleStop's outbox path) — it simply isn't visible
+   * elsewhere until connectivity returns.
+   */
+  const publishSessionStart = useCallback(
+    async (target: StartTarget, takeOver: boolean) => {
+      try {
+        await postServerSessionStart(target, takeOver);
+      } catch (err) {
+        console.error(err);
+        const conflict = readStartConflict(err);
+        if (!conflict) {
+          // Not a conflict: offline, a timeout, or the plan's daily-entry
+          // cap. The local session is real regardless — it keeps running
+          // here and stopping it takes handleStop's local path. Deliberately
+          // silent: a toast on every offline start would punish the one flow
+          // this app most needs to work without a connection, and the cap is
+          // already surfaced by the pre-start warning and again on save.
+          return;
+        }
+        // A row carrying nothing — no time, no attribution — is not a
+        // session the user could recognise, so replacing it needs no prompt;
+        // this is the same judgement `isDormantServerSession` already
+        // encodes for what this screen renders. Same for a 409 whose body
+        // carries no session at all (the row can go away between the failed
+        // insert and the API's re-read): there is nothing to show and
+        // nothing to lose.
+        if (conflict.session === null || isDormantServerSession(conflict.session)) {
+          try {
+            await postServerSessionStart(target, true);
+          } catch (retryErr) {
+            console.error(retryErr);
+          }
+          return;
+        }
+        // A real session, running somewhere else. Roll the optimistic local
+        // start back — the server refused it, so leaving a second running
+        // timer on this screen would be a lie — and hand the choice to the
+        // user.
+        resetLocalSessionState();
+        setStartConflictError(null);
+        setStartConflict({ session: conflict.session, target });
+      }
+    },
+    [postServerSessionStart, resetLocalSessionState],
+  );
+
   const handleStart = useCallback(() => {
     // A server session already showing as running/paused means TimerControls
     // never renders a Start button in the first place (see effectiveStatus).
@@ -917,26 +1081,23 @@ export default function TimerScreen() {
       // the timer begins immediately and the session can be attributed
       // during the run or from its history row afterwards — or left
       // unattributed for good.
-      start(selectedTask?.id, selectedTask?.goalId ?? selectedGoal?.id);
+      const target: StartTarget = {
+        taskId: selectedTask?.id,
+        goalId: selectedTask?.goalId ?? selectedGoal?.id,
+        taskName: selectedTask?.title ?? selectedGoal?.title ?? null,
+      };
+      start(target.taskId, target.goalId);
       hapticLight();
-      analytics.track({ name: "timerStarted", payload: { taskId: selectedTask?.id } });
+      analytics.track({ name: "timerStarted", payload: { taskId: target.taskId } });
 
-      // Clean up the empty cross-device row this screen has been ignoring
-      // (see `dormantServerSession`), now that the user has actually started
-      // something. Deliberately here and not on sight: merely LOOKING at the
-      // Timer screen shouldn't write to the server. Best-effort and silent —
-      // it holds no time and no attribution, so there is nothing to report
-      // and nothing to lose if it fails; the row stays dormant either way and
-      // keeps being ignored. Left in place it would go on 409-ing every
-      // start from the Coach and web.
-      if (dormantServerSession !== null) {
-        void apiClient.timerSession
-          .discard()
-          .then(() => {
-            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-          })
-          .catch(() => {});
-      }
+      // `takeOver` when an empty cross-device row this screen has been
+      // ignoring (see `dormantServerSession`) is already known to be sitting
+      // there. It holds no time and no attribution, so replacing it in the
+      // same request is strictly better than the fire-and-forget discard
+      // this used to do, which raced the very start it was clearing the way
+      // for. Left in place, such a row 409s every start from here, the Coach
+      // and web alike.
+      void publishSessionStart(target, dormantServerSession !== null);
     };
 
     // A soft warning, not a hard gate — one-tap tracking is the whole point
@@ -957,7 +1118,112 @@ export default function TimerScreen() {
     }
 
     beginSession();
-  }, [analytics, dormantServerSession, hasServerSession, recentQuery.data, selectedGoal, selectedTask, start, user]);
+  }, [
+    analytics,
+    dormantServerSession,
+    hasServerSession,
+    publishSessionStart,
+    recentQuery.data,
+    selectedGoal,
+    selectedTask,
+    start,
+    user,
+  ]);
+
+  /**
+   * "Resume Here" — adopt the session that blocked the start instead of
+   * replacing it, which is what makes a timer left running on the web app
+   * something the user can actually take over from the phone.
+   *
+   * Nothing local is created: once the dialog closes, the polled server
+   * session IS this screen's session (see `resolveEffectiveTimer`), so the
+   * ring, the shade notification and Pause/Stop all point at it. A PAUSED
+   * session is resumed first — the user pressed Start, so leaving it paused
+   * would answer that press with a stopped clock. A RUNNING one needs no
+   * request at all.
+   */
+  const handleResumeConflictingSession = useCallback(() => {
+    const conflict = startConflict;
+    if (!conflict) return;
+    setStartConflictBusy(true);
+    setStartConflictError(null);
+    const adopt =
+      conflict.session.status === "RUNNING"
+        ? Promise.resolve()
+        : apiClient.timerSession.resume().then(() => undefined);
+    void adopt
+      .then(() => {
+        setStartConflict(null);
+        hapticLight();
+      })
+      .catch((err) => {
+        console.error(err);
+        setStartConflictError(getErrorMessage(err, "Couldn't pick that session up. Please try again."));
+      })
+      .finally(() => {
+        setStartConflictBusy(false);
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+      });
+  }, [startConflict]);
+
+  /**
+   * "Stop & Start Fresh" — end the other device's session, keeping its time,
+   * then start the one the user asked for.
+   *
+   * Deliberately a real `stop()` and not the bare `takeOver: true` the API
+   * also offers: takeOver DISCARDS the session it replaces with no TimeEntry
+   * written (StartTimerSessionDto says so explicitly), which would silently
+   * destroy however long the other device had been tracking — the exact
+   * outcome the 409 exists to prevent, and not what a button labelled "stop
+   * it" means. Web's equivalent choice also writes the outgoing session's
+   * entry before switching; it just does that client-side, because on web
+   * the local store rather than the server holds that elapsed time.
+   *
+   * The follow-up start still passes `takeOver: true`: the stop above
+   * cleared the row, but another device could have claimed it in the gap,
+   * and this is the one branch where the user has already said "replace
+   * whatever is there".
+   */
+  const handleReplaceConflictingSession = useCallback(() => {
+    const conflict = startConflict;
+    if (!conflict) return;
+    setStartConflictBusy(true);
+    setStartConflictError(null);
+    void (async () => {
+      let startedLocally = false;
+      try {
+        await apiClient.timerSession.stop({});
+        // The outgoing session's time is banked as a TimeEntry by the line
+        // above, so these two lists are stale from here on whichever way the
+        // rest of this goes.
+        void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+
+        // Local first, then the server row — the same order `beginSession`
+        // uses, and required by postServerSessionStart's own "did this
+        // session end while I was in flight?" check.
+        start(conflict.target.taskId, conflict.target.goalId);
+        startedLocally = true;
+        await postServerSessionStart(conflict.target, true);
+
+        hapticCompletion();
+        analytics.track({ name: "timerStarted", payload: { taskId: conflict.target.taskId } });
+        setStartConflict(null);
+      } catch (err) {
+        console.error(err);
+        // Roll back a local session started before the failure, so the user
+        // isn't left with a timer running silently behind a dialog that says
+        // the operation failed.
+        if (startedLocally) resetLocalSessionState();
+        setStartConflictError(
+          getErrorMessage(err, "Couldn't switch sessions. Nothing was lost — please try again."),
+        );
+      } finally {
+        setStartConflictBusy(false);
+        void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+      }
+    })();
+  }, [analytics, postServerSessionStart, resetLocalSessionState, start, startConflict]);
 
   const handlePause = useCallback(() => {
     if (hasServerSession) {
@@ -1027,6 +1293,12 @@ export default function TimerScreen() {
             durationSeconds: Math.round((firstFinite(res.data.elapsedMs) ?? 0) / 1000),
           },
         });
+        // The local store mirrors the server session while one exists (Start
+        // writes to both), so ending the server session has to end the
+        // mirror too. Without this the store stays "running" forever, and
+        // the moment `hasServerSession` goes false the screen falls back to
+        // it — resurrecting the session the user just stopped.
+        resetLocalSessionState();
         void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
         void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
         if (res.data.timeEntry.goalId) {
@@ -1120,23 +1392,28 @@ export default function TimerScreen() {
       return;
     }
 
-    // The ONLY place the local store actually resets. Called once the entry
-    // is confirmed saved, durably queued offline, or the user explicitly
-    // discards it — never merely because the server rejected a save, so a
-    // rejected save (the plan-limit cap being the common case) can never
-    // take the elapsed time down with it.
+    // Called once the entry is confirmed saved, durably queued offline, or
+    // the user explicitly discards it — never merely because the server
+    // rejected a save, so a rejected save (the plan-limit cap being the
+    // common case) can never take the elapsed time down with it.
+    //
+    // The server row, if this session ever got one published, goes with it.
+    // Best-effort and silent: the TimeEntry is already written by this
+    // point, so a failure here leaves a stale row for the dormant-session
+    // handling to absorb, not lost time. Only fired when there IS one to
+    // clear — a session that never reached the server (offline) has nothing
+    // to delete and shouldn't pay for a request to find that out.
     const finalizeLocalStop = () => {
-      stop();
-      setSelectedTask(null);
-      setSelectedGoal(null);
-      // A stopped session is a genuinely fresh idle period, not a
-      // continuation of the one the user picked attribution for — without
-      // this, auto-select-on-open's userSelectedRef latch stays permanently
-      // true for the rest of the app's mount lifetime the moment a user
-      // interacts with the picker even once, so it would never again
-      // auto-fill the next schedule block that goes live, degrading every
-      // later session to the suggestion-chip-plus-manual-tap path instead.
-      userSelectedRef.current = false;
+      const hadServerRow = publishedServerSessionRef.current;
+      resetLocalSessionState();
+      if (hadServerRow) {
+        void apiClient.timerSession
+          .discard()
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+          })
+          .catch(() => {});
+      }
     };
 
     // Minted ONCE and reused by every attempt to persist this session (the
@@ -1264,10 +1541,10 @@ export default function TimerScreen() {
     hasServerSession,
     knownLabel,
     pausedElapsedMs,
+    resetLocalSessionState,
     serverSession,
     startedAt,
     status,
-    stop,
     timerGoalId,
     timerTaskId,
     user,
@@ -1503,6 +1780,31 @@ export default function TimerScreen() {
           setDailyCapWarning(null);
         }}
         onCancel={() => setDailyCapWarning(null)}
+      />
+
+      {/* The 409 path. Three genuine choices, so this uses ConfirmDialog's
+          tertiary slot rather than two stacked dialogs: Resume Here is the
+          primary because the user's session already exists and picking it up
+          loses nothing, while Stop & Start Fresh — the one that ends
+          something running on another device — sits in the demoted ghost
+          slot. Cancel changes nothing at all; the optimistic local start was
+          already rolled back when the conflict was detected. */}
+      <ConfirmDialog
+        visible={startConflict !== null}
+        title="A timer is already running"
+        description={startConflict ? describeStartConflict(startConflict.session, new Date()) : undefined}
+        confirmLabel="Resume Here"
+        cancelLabel="Cancel"
+        tertiaryLabel="Stop & Start Fresh"
+        busy={startConflictBusy}
+        error={startConflictError}
+        onConfirm={handleResumeConflictingSession}
+        onTertiary={handleReplaceConflictingSession}
+        onCancel={() => {
+          setStartConflict(null);
+          setStartConflictError(null);
+          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        }}
       />
 
       <ConfirmDialog
