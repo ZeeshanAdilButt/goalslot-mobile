@@ -419,9 +419,22 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
       const queuedOptimisticIds = new Set<string>();
       let rejectionErr: unknown = null;
 
+      // One key per day's create attempt, minted before the live call and
+      // reused verbatim if that attempt has to queue — never a fresh one at
+      // outbox time. A create that times out client-side after already
+      // committing server-side, then gets queued and replayed with a
+      // DIFFERENT key, is indistinguishable from a brand-new request to the
+      // server: nothing stops the replay's own conflict check from racing
+      // its own already-created row and inserting a second, overlapping
+      // block for the same day/time. See schedule.ts's `create` for the full
+      // mechanism this closes.
+      const idempotencyKeys = payloads.map(() => genId());
+
       for (let i = 0; i < payloads.length; i++) {
         try {
-          const result = await apiClient.schedule.create(payloads[i]);
+          const result = await apiClient.schedule.create(payloads[i], {
+            idempotencyKey: idempotencyKeys[i],
+          });
           created.push(result.data);
         } catch (err) {
           if (hasResponse(err)) {
@@ -432,7 +445,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
             id: genId(),
             kind: "schedule-block-create",
             payload: payloads[i],
-            idempotencyKey: genId(),
+            idempotencyKey: idempotencyKeys[i],
             createdAt: Date.now(),
             retries: 0,
           });

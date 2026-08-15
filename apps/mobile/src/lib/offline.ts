@@ -147,8 +147,15 @@ operationRegistry.registerOperation<CreateTaskInput, Task>("task-create", {
   invalidateKeys: [taskQueries.taskQueries.all],
 });
 
+// `idempotencyKey` forwarded, same reasoning as "time-entry-create" below:
+// ScheduleBlockSheet.tsx's handleCreate mints one key per create attempt and
+// reuses it here on replay, so a create that actually committed server-side
+// before the client's live attempt timed out gets recognised as the same
+// request instead of racing its own conflict check into a real duplicate row
+// (see packages/shared/src/api/schedule.ts's `create` for the full mechanism).
 operationRegistry.registerOperation<CreateScheduleBlockInput, ScheduleBlock>("schedule-block-create", {
-  execute: async (payload) => (await apiClient.schedule.create(payload)).data,
+  execute: async (payload, idempotencyKey) =>
+    (await apiClient.schedule.create(payload, { idempotencyKey })).data,
   invalidateKeys: [scheduleQueries.scheduleQueries.root()],
 });
 

@@ -139,6 +139,20 @@ interface RunQuickAddArgs<TInput, TCreated> {
   outboxKind: string;
   invalidateKey: QueryKey;
   create: (payload: TInput) => Promise<TCreated>;
+  /**
+   * Reused verbatim for the outbox entry queued below on a "no response"
+   * failure, so a create that actually committed server-side before the live
+   * attempt timed out gets replayed under the SAME key rather than a fresh
+   * one minted at queue time. Goal/task creates have no server-side
+   * conflict check to race, so a duplicate row there is merely untidy;
+   * schedule-block creates do (`ScheduleService.create`'s time-conflict
+   * check, which races the check against the insert with no transaction) —
+   * see schedule.ts's `create` for the failure mode this closes. Callers
+   * that don't pass one keep the previous behaviour (a key minted only at
+   * queue time, which is a no-op for the live attempt either way since
+   * nothing forwarded it there before this existed).
+   */
+  idempotencyKey?: string;
   applyOptimistic: () => void;
   rollbackOptimistic: () => void;
   /** Tags the still-showing optimistic entry `pendingSync: true` once its create has queued. */
@@ -161,6 +175,7 @@ async function runQuickAdd<TInput, TCreated>({
   outboxKind,
   invalidateKey,
   create,
+  idempotencyKey,
   applyOptimistic,
   rollbackOptimistic,
   markPendingSync,
@@ -185,7 +200,7 @@ async function runQuickAdd<TInput, TCreated>({
         id: genId(),
         kind: outboxKind,
         payload,
-        idempotencyKey: genId(),
+        idempotencyKey: idempotencyKey ?? genId(),
         createdAt: Date.now(),
         retries: 0,
       });
@@ -324,11 +339,17 @@ async function submitSlot(input: QuickAddSlotInput, analytics: AnalyticsCapabili
     });
   };
 
+  // Minted once and forwarded to both the live call and (on failure) the
+  // outbox entry above — see `RunQuickAddArgs.idempotencyKey`'s own comment
+  // for why the schedule-block path specifically needs this held constant.
+  const idempotencyKey = genId();
+
   await runQuickAdd<CreateScheduleBlockInput, ScheduleBlock>({
     payload,
     outboxKind: "schedule-block-create",
     invalidateKey: scheduleQueries.scheduleQueries.root(),
-    create: (p) => apiClient.schedule.create(p).then((res) => res.data),
+    idempotencyKey,
+    create: (p) => apiClient.schedule.create(p, { idempotencyKey }).then((res) => res.data),
     applyOptimistic: () => patchDay((blocks) => [optimistic, ...blocks]),
     rollbackOptimistic: () => patchDay((blocks) => blocks.filter((block) => block.id !== optimisticId)),
     markPendingSync: () =>

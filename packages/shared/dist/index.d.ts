@@ -2052,7 +2052,7 @@ declare function createApiClient(config: ApiClientConfig): {
         getAll: () => Promise<axios.AxiosResponse<ScheduleBlock[], any, {}, any>>;
         getWeekly: () => Promise<axios.AxiosResponse<WeekSchedule, any, {}, any>>;
         getByDay: (dayOfWeek: number) => Promise<axios.AxiosResponse<ScheduleBlock[], any, {}, any>>;
-        create: (data: CreateScheduleBlockInput) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
+        create: (data: CreateScheduleBlockInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
         update: (id: string, data: UpdateScheduleBlockInput) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
         delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
         clearAll: () => Promise<axios.AxiosResponse<{
@@ -2232,7 +2232,25 @@ declare function createScheduleApi(api: AxiosInstance): {
     getAll: () => Promise<axios.AxiosResponse<ScheduleBlock[], any, {}, any>>;
     getWeekly: () => Promise<axios.AxiosResponse<WeekSchedule, any, {}, any>>;
     getByDay: (dayOfWeek: number) => Promise<axios.AxiosResponse<ScheduleBlock[], any, {}, any>>;
-    create: (data: CreateScheduleBlockInput) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
+    /**
+     * `options.idempotencyKey` guards the same failure mode
+     * ./time-entries.ts's `create` documents in detail: a create that times
+     * out client-side after the row already committed server-side, then gets
+     * queued to the offline outbox and replayed with no way for the server to
+     * recognise the replay as the same request. For schedule blocks that
+     * replay doesn't always land as an inert 400 — `ScheduleService.create`'s
+     * time-conflict check races the check against the insert (no transaction,
+     * no unique constraint), so two attempts close enough together (a live
+     * retry landing while a reconnect-triggered outbox drain is replaying the
+     * same create) can both pass the check and both insert, producing two
+     * real overlapping ScheduleBlock rows for one logical create — which the
+     * mobile Timeline then correctly, and confusingly, renders as two
+     * side-by-side blocks in what should be a single time slot. Callers must
+     * mint the key once per create attempt and reuse it for any outbox
+     * replay of that same attempt (see ScheduleBlockSheet.tsx's handleCreate
+     * and lib/offline.ts's "schedule-block-create" operation).
+     */
+    create: (data: CreateScheduleBlockInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
     update: (id: string, data: UpdateScheduleBlockInput) => Promise<axios.AxiosResponse<ScheduleBlock, any, {}, any>>;
     delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
     clearAll: () => Promise<axios.AxiosResponse<{

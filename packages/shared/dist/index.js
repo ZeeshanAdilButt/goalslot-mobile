@@ -1346,13 +1346,39 @@ function createSharingApi(api) {
   };
 }
 
+// src/api/idempotency.ts
+var IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+function idempotentConfig(options) {
+  const key = options?.idempotencyKey;
+  if (!key) return void 0;
+  return { headers: { [IDEMPOTENCY_KEY_HEADER]: key } };
+}
+
 // src/api/schedule.ts
 function createScheduleApi(api) {
   return {
     getAll: () => api.get("/schedule"),
     getWeekly: () => api.get("/schedule/week"),
     getByDay: (dayOfWeek) => api.get(`/schedule/day/${dayOfWeek}`),
-    create: (data) => api.post("/schedule", data),
+    /**
+     * `options.idempotencyKey` guards the same failure mode
+     * ./time-entries.ts's `create` documents in detail: a create that times
+     * out client-side after the row already committed server-side, then gets
+     * queued to the offline outbox and replayed with no way for the server to
+     * recognise the replay as the same request. For schedule blocks that
+     * replay doesn't always land as an inert 400 — `ScheduleService.create`'s
+     * time-conflict check races the check against the insert (no transaction,
+     * no unique constraint), so two attempts close enough together (a live
+     * retry landing while a reconnect-triggered outbox drain is replaying the
+     * same create) can both pass the check and both insert, producing two
+     * real overlapping ScheduleBlock rows for one logical create — which the
+     * mobile Timeline then correctly, and confusingly, renders as two
+     * side-by-side blocks in what should be a single time slot. Callers must
+     * mint the key once per create attempt and reuse it for any outbox
+     * replay of that same attempt (see ScheduleBlockSheet.tsx's handleCreate
+     * and lib/offline.ts's "schedule-block-create" operation).
+     */
+    create: (data, options) => api.post("/schedule", data, idempotentConfig(options)),
     update: (id, data) => api.put(`/schedule/${id}`, data),
     delete: (id) => api.delete(`/schedule/${id}`),
     clearAll: () => api.delete("/schedule")
@@ -1371,14 +1397,6 @@ function createTasksApi(api) {
     restore: (id) => api.post(`/tasks/${id}/restore`),
     reorder: (ids) => api.put("/tasks/reorder", { ids })
   };
-}
-
-// src/api/idempotency.ts
-var IDEMPOTENCY_KEY_HEADER = "idempotency-key";
-function idempotentConfig(options) {
-  const key = options?.idempotencyKey;
-  if (!key) return void 0;
-  return { headers: { [IDEMPOTENCY_KEY_HEADER]: key } };
 }
 
 // src/api/time-entries.ts
