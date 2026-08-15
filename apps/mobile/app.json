@@ -139,9 +139,13 @@
       "policy": "appVersion"
     },
     "updates": {
-      "_comment": "The EAS project (2522a293-1bc4-45b3-aba7-9a1054967145, owner zeeabutt) now exists, so `url` points at the real project rather than a placeholder. `enabled` stays false: turning on OTA updates for real needs build-profile `channel` values in eas.json plus a tested publish workflow, which is a separate, deliberate change from just fixing this URL.",
-      "enabled": false,
-      "url": "https://u.expo.dev/2522a293-1bc4-45b3-aba7-9a1054967145"
+      "_comment": "OTA updates, now on. `channel` is set per build profile in eas.json (preview -> 'preview', production -> 'production'); `eas update --branch <name>` publishes to whichever branch that channel points at. runtimeVersion below is the appVersion policy, so an update only reaches builds sharing this app version — bumping `version` deliberately cuts older installs off rather than shipping them JS their native code can't run. JS-only: a native change (new native module, permissions, the widget) still needs a real build.",
+      "enabled": true,
+      "url": "https://u.expo.dev/2522a293-1bc4-45b3-aba7-9a1054967145",
+      "_requestHeadersComment": "eas.json's per-profile `channel` is injected by EAS Build only. These builds are made locally (the free plan's Android build quota is exhausted), and a local gradle/xcodebuild run never sees eas.json — without this header the app subscribes to no channel and silently never finds an update. Keep in sync with the preview profile's channel; an EAS-built binary takes eas.json's value instead and ignores this.",
+      "requestHeaders": {
+        "expo-channel-name": "preview"
+      }
     },
     "owner": "zeeabutt"
   }
