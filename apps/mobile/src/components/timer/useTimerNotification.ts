@@ -62,12 +62,22 @@ function describeSession(args: TimerNotificationArgs): { title: string; body: st
   }
 
   if (args.status === "paused") {
+    // `formatDuration` takes whole minutes — the same summary formatting
+    // the recent-entries list uses, so a paused session reads in the same
+    // units as the entry it will eventually become. Rounding to 0 here means
+    // there is nothing worth pinning in the shade yet — "Paused · Goal · 0m
+    // tracked so far" reads as broken even when a real goal is attached, so
+    // this suppresses on elapsed time alone rather than only on the
+    // no-attribution dormancy check the caller already applies separately
+    // (see suppressDormantNotification in timer.tsx). A session that had
+    // real time banked from an earlier segment before this pause still
+    // shows normally — `pausedElapsedMs` is the cumulative total, not just
+    // this pause's own duration.
+    const minutes = Math.round(args.pausedElapsedMs / 60000);
+    if (minutes === 0) return null;
     return {
       title: `Paused · ${what}`,
-      // `formatDuration` takes whole minutes — the same summary formatting
-      // the recent-entries list uses, so a paused session reads in the same
-      // units as the entry it will eventually become.
-      body: `${formatDuration(Math.round(args.pausedElapsedMs / 60000))} tracked so far`,
+      body: `${formatDuration(minutes)} tracked so far`,
     };
   }
 
