@@ -39,7 +39,7 @@
 // on it — same pattern the picker underneath it already uses for the timer.
 
 import { useCallback, useEffect, useState } from "react";
-import { BackHandler, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { BackHandler, Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 
@@ -50,6 +50,7 @@ import { JournalReminderTimePicker } from "@/components/journal/JournalReminderT
 import { SettingsRow, SettingsSection } from "@/components/settings";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { useScreenView } from "@/hooks/useScreenView";
+import { openBatteryOptimizationSettings } from "@/lib/battery-optimization";
 import { useScheduleRemindersStore } from "@/lib/schedule-reminders-store";
 import { useSettingsStore } from "@/lib/settings-store";
 import { useTimerStore } from "@/lib/timer-store";
@@ -133,6 +134,16 @@ export default function NotificationSettingsScreen() {
     setPermission(granted ? "granted" : await notifications.getPermissionStatus());
   }, [notifications, permission]);
 
+  // Android only — see battery-optimization.ts for why this row exists at
+  // all: OS-level exact-alarm scheduling (the fix in notifications.ts) can
+  // still be silently deferred by the phone's own battery manager, and
+  // there's no permission-status API to reflect that in `value`/`description`
+  // the way the row above does, so this is deliberately just an action, not
+  // a state readout.
+  const handleBatteryOptimizationPress = useCallback(() => {
+    void openBatteryOptimizationSettings();
+  }, []);
+
   const permissionValue =
     permission === "granted" ? "On" : permission === "denied" ? "Blocked" : permission ? "Off" : "—";
   const permissionDescription =
@@ -201,6 +212,21 @@ export default function NotificationSettingsScreen() {
             divider={false}
           />
         </SettingsSection>
+
+        {Platform.OS === "android" ? (
+          <SettingsSection
+            title="Background activity"
+            footnote="Samsung and other Android phones can silently delay or skip a scheduled alarm to save battery, even with permission granted above. Exempting GoalSlot here is what makes the times below actually reliable."
+          >
+            <SettingsRow
+              label="Battery optimization"
+              icon="battery"
+              description="Allow GoalSlot to run unrestricted so schedule alarms fire on time."
+              onPress={handleBatteryOptimizationPress}
+              divider={false}
+            />
+          </SettingsSection>
+        ) : null}
 
         <SettingsSection
           title="Schedule alarms"

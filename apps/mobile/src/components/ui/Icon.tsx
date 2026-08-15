@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  BatteryFull,
   Bell,
   BellOff,
   Calendar,
@@ -146,6 +147,9 @@ const ICONS = {
   "wifi-off": WifiOff,
   // Settings screen's "About" row — a neutral glyph for read-only build info.
   info: Info,
+  // Notification settings' battery-optimization row — see
+  // src/lib/battery-optimization.ts for why that row exists at all.
+  battery: BatteryFull,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;
