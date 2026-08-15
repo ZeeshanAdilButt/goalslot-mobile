@@ -84,7 +84,7 @@ export default function MenteesScreen() {
       // lands back in that same conversation instead of a duplicate.
       const response = await apiClient.messaging.createConversation({ userId: mentee.id });
       await queryClient.invalidateQueries({ queryKey: messagingQueries.messagingQueries.conversations() });
-      router.push(`/message/${response.data.id}`);
+      router.push(`/message/${response.data.conversationId}`);
     } catch (err) {
       const status = (err as { response?: { status?: number } } | undefined)?.response?.status;
       if (status === 403) {

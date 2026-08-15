@@ -90,6 +90,31 @@ export interface CreateMessagingConversationInput {
 }
 
 /**
+ * Response body of POST /messaging/conversations. Deliberately NOT a
+ * `MessagingConversation` — that type mirrors jiffy-messaging's own shape
+ * (`id`, `participants: MessagingParticipant[]`), but this endpoint is
+ * GoalSlot's own wrapper around it, keyed `conversationId` and carrying the
+ * counterpart's identity (jiffy-messaging has never heard of GoalSlot users,
+ * so it can't supply that). Reading `.id` off this response is a silent
+ * `undefined`, not a type error, since both interfaces are structurally
+ * similar-looking objects — hence calling it out here instead of reusing
+ * `MessagingConversation`.
+ */
+export interface OpenMessagingConversationResponse {
+  conversationId: string
+  participantIds: string[]
+  createdAt: string
+  /** false when an existing conversation was reused instead of created. */
+  created: boolean
+  counterpart: {
+    id: string
+    name: string
+    email: string
+    avatar: string | null
+  }
+}
+
+/**
  * One person the signed-in user is allowed to message, assembled from the
  * sharing directory. Not a server shape — see ../messaging/contacts.ts.
  */

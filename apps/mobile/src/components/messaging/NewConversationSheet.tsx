@@ -87,7 +87,7 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
             queryKey: messagingQueries.messagingQueries.conversations(),
           });
           sheetRef.current?.dismiss();
-          onConversationReady(response.data.id);
+          onConversationReady(response.data.conversationId);
         } catch (err) {
           const messagingError = toMessagingError(err);
           setError(

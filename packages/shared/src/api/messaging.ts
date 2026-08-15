@@ -24,6 +24,7 @@ import type {
   MessagingConversation,
   MessagingMessage,
   MessagingTokenResponse,
+  OpenMessagingConversationResponse,
 } from '../types/messaging'
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ export function createMessagingApi(api: AxiosInstance) {
      * button, because the client's copy of the sharing graph is a cache.
      */
     createConversation: (input: CreateMessagingConversationInput) =>
-      api.post<MessagingConversation>('/messaging/conversations', input),
+      api.post<OpenMessagingConversationResponse>('/messaging/conversations', input),
   }
 }
 

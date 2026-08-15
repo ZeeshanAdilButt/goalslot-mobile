@@ -205,7 +205,7 @@ export default function MenteeReportScreen() {
     try {
       const response = await apiClient.messaging.createConversation({ userId: ownerId });
       await queryClient.invalidateQueries({ queryKey: messagingQueries.messagingQueries.conversations() });
-      router.push(`/message/${response.data.id}`);
+      router.push(`/message/${response.data.conversationId}`);
     } catch (err) {
       const status = (err as { response?: { status?: number } } | undefined)?.response?.status;
       if (status === 403) {

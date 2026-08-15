@@ -16,12 +16,21 @@ describe('createMessagingApi', () => {
     const api = axios.create({ baseURL: 'https://api.test/api' })
     const apiMock = new MockAdapter(api)
     apiMock.onPost('/messaging/token').reply(200, { token: 'jwt' })
-    apiMock.onPost('/messaging/conversations').reply(201, { id: 'c1', participants: [] })
+    // Real shape per goal-slot-api's OpenConversationResponse: keyed
+    // `conversationId`, not `id` — that field belongs to jiffy-messaging's
+    // own conversation object, which this endpoint does not return as-is.
+    apiMock.onPost('/messaging/conversations').reply(201, {
+      conversationId: 'c1',
+      participantIds: ['u1', 'u2'],
+      createdAt: '2026-08-15T00:00:00.000Z',
+      created: true,
+      counterpart: { id: 'u2', name: 'Mentee', email: 'mentee@test.com', avatar: null },
+    })
 
     const messaging = createMessagingApi(api)
 
     expect((await messaging.issueToken()).data.token).toBe('jwt')
-    expect((await messaging.createConversation({ userId: 'u2' })).data.id).toBe('c1')
+    expect((await messaging.createConversation({ userId: 'u2' })).data.conversationId).toBe('c1')
     expect(apiMock.history.post[1]?.data).toBe(JSON.stringify({ userId: 'u2' }))
   })
 })
