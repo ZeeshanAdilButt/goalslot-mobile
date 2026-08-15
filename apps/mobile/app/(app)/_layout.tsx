@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { AppState, Pressable, StyleSheet, View, type ColorValue } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
 import { Icon } from "@/components/ui/Icon";
@@ -19,19 +19,54 @@ import { colors, radii, shadows, spacing } from "@/theme/tokens";
 
 /**
  * Floor for the tab bar's bottom clearance above the system nav bar/gesture
- * pill, used as `Math.max(insets.bottom, MIN_BOTTOM_CLEARANCE)` — see the
- * `insets` comment below for why this exists at all. This used to be 16,
- * picked only to be "clearly nonzero" against the observed bug (insets.bottom
- * reading 0 on a Samsung Galaxy S22 Ultra, gesture nav, edge-to-edge). 16 is
- * actually BELOW Android's own standard gesture-nav inset (24dp — see
- * developer.android.com's edge-to-edge guide), so on exactly the device/bug
- * this floor exists for, it was still handing back less clearance than the
- * system bar the icons sit above, not zero clearance but not correct either.
- * 24 matches the documented standard so the floor is a real substitute for
- * the missing inset, not just a nonzero one. Still a no-op on any device
- * reporting a legitimate value (real gesture-nav/3-button insets are >= 24).
+ * pill, used inside `bottomClearance` below. Two earlier fixes (16, then 24
+ * to match Android's documented gesture-nav standard) both aimed at this
+ * number and neither stopped the report — see `bottomClearance` and
+ * `TAB_BAR_CONTENT_HEIGHT` below for what those fixes actually missed. Left
+ * at 24 here: nothing in this investigation found evidence the *number* was
+ * ever the problem, only where it was being spent (see `TAB_BAR_CONTENT_HEIGHT`).
  */
 const MIN_BOTTOM_CLEARANCE = 24;
+
+/**
+ * Height of the tab bar's own icon/label content row — separate from the
+ * clearance reserved below it for the system nav bar. VERIFIED (not just
+ * reasoned): react-native-safe-area-context's `useSafeAreaInsets()` is
+ * backed by a live native-view listener (`NativeSafeAreaProvider`'s
+ * `onInsetsChange`) that on some devices/timing never fires after its
+ * initial mount value, per multiple independent reports against this exact
+ * library/RN-version range (github.com/AppAndFlow/react-native-safe-area-context
+ * issues #546/#552) — including one where `useSafeAreaInsets()` stayed 0
+ * while `initialWindowMetrics` (a separate native *module constant*, read
+ * directly off the window at bridge init rather than via that listener) had
+ * the correct value the whole time. `bottomClearance` below now takes
+ * whichever of the two is largest, which is a second, independently-sourced
+ * reading rather than a bigger guess at the same one.
+ *
+ * REASONED BUT NOT DEVICE-VERIFIED: re-reading how that clearance was spent
+ * turned up a second, likely-larger bug. The tab bar's `tabBarStyle.height`
+ * used to be a flat `57` — a number picked (commit dcad29f) purely to give
+ * VoiceTabButton's raised orb enough room, on the assumption that 57 was the
+ * *content* row's height. It never was: the library's own default sizing is
+ * `TABBAR_HEIGHT_UIKIT (49) + insets.bottom` — the inset is *additive* to a
+ * fixed content height, not carved out of it — but our fixed `height: 57`
+ * combined with `paddingBottom: bottomClearance` in the same box means every
+ * dp handed to the clearance floor was a dp taken OUT of the icon/label/orb
+ * row, not added below it. VoiceTabButton's own LIFT comment says that row
+ * needs "~49-56dp" for the orb + caption to both fit; at the old
+ * `height: 57, paddingBottom: 24` combination the actual content row was
+ * `57 - 24 = 33dp` — well under that budget, which would show up as squeezed
+ * or clipped icons/labels at the very bottom of the screen. Raising the
+ * floor from 16 to 24 (commit 75cb788) shrank this same row by another 8dp,
+ * which is consistent with the report surviving that fix rather than being
+ * fixed by it. `height` below is now `TAB_BAR_CONTENT_HEIGHT + bottomClearance`
+ * so the content row keeps this full budget regardless of how large the
+ * clearance underneath it needs to be — matching the library's own additive
+ * pattern instead of fighting it. Confirming this actually resolves the
+ * on-device report still needs a real device; what's confirmed here is the
+ * arithmetic bug itself, read directly from the merged style object.
+ */
+const TAB_BAR_CONTENT_HEIGHT = 57;
 
 // Hoisted to module scope, sibling to `tabsScreenOptions` below: none of
 // these close over component state (just the static `color`/`size` a tab
@@ -83,17 +118,12 @@ export default function AppLayout() {
   const [bannerHeight, setBannerHeight] = useState(0);
 
   // The tab bar composes its own bottom padding from this value below
-  // (see tabBarStyle.paddingBottom) instead of trusting the library's
-  // automatic `paddingBottom: insets.bottom` — on at least one real device
-  // this session (Samsung Galaxy S22 Ultra, gesture nav, edge-to-edge
-  // enabled) that automatic value read as 0, leaving the entire tab bar
-  // flush against the screen edge with no clearance at all, so the
-  // system's own gesture-nav pill drew directly on top of every tab
-  // icon — not just Voice's raised orb overflowing by a few dp (a
-  // different, already-fixed bug), the whole row. `Math.max(insets.bottom,
-  // MIN_BOTTOM_CLEARANCE)` is a defensive floor: it changes nothing on a
-  // device correctly reporting a real inset (the real value already
-  // exceeds the floor), and guarantees real clearance on one that isn't.
+  // (see `bottomClearance` and tabBarStyle.paddingBottom) instead of
+  // trusting the library's automatic `paddingBottom: insets.bottom` — on at
+  // least one real device this session (Samsung Galaxy S22 Ultra, gesture
+  // nav, edge-to-edge enabled) that automatic value read as 0. See
+  // `TAB_BAR_CONTENT_HEIGHT`'s comment for the two fixes this went through
+  // and what the investigation into the third report actually found.
   const insets = useSafeAreaInsets();
 
   // One socket for the whole authenticated app, so an incoming message
@@ -131,14 +161,29 @@ export default function AppLayout() {
     [router],
   );
 
+  // Two independently-sourced readings of the same physical quantity, taken
+  // as `Math.max(...)` against the documented floor — see
+  // `TAB_BAR_CONTENT_HEIGHT`'s comment for why `insets.bottom` alone has been
+  // reported stuck at 0 on some devices/timing even on current library
+  // versions, and why `initialWindowMetrics` is a genuinely different
+  // reading rather than the same one re-asked. `initialWindowMetrics` is a
+  // module-level constant (read once, off the native module, not through
+  // React) so it's safe to reference directly here without adding it to the
+  // dependency array below.
+  const bottomClearance = Math.max(
+    insets.bottom,
+    initialWindowMetrics?.insets.bottom ?? 0,
+    MIN_BOTTOM_CLEARANCE,
+  );
+
   // This layout re-renders on every tab switch (usePathname changes),
   // drawer/search open-close, and timer transition (GlobalTrackingBanner's
   // onLayout -> setBannerHeight) — a fresh object literal here every render
   // means <Tabs> can never shallow-bail on unchanged options, so it
   // re-resolves the whole tab bar's chrome (all 5 icon closures, label
   // styles, bar height/padding) on renders that have nothing to do with the
-  // bar itself. Only insets.bottom actually varies; everything else below is
-  // a static theme token.
+  // bar itself. Only bottomClearance actually varies; everything else below
+  // is a static theme token.
   const tabsScreenOptions = useMemo(
     () => ({
       headerShown: false,
@@ -152,33 +197,26 @@ export default function AppLayout() {
         // the bar's top line. Without this it is clipped flat against it
         // and stops reading as raised at all.
         overflow: "visible" as const,
-        // The library's own default row height (49dp, a fixed UIKit-style
-        // constant applied on both platforms) is exactly tall enough for
-        // a plain icon+label pair, but VoiceTabButton's raised orb (its
-        // label sits below 36dp of orb instead of a normal ~24dp icon)
-        // overflows it by a few dp. `overflow: visible` above lets that
-        // spill past the row's top line on purpose, but at the *bottom*
-        // it was spilling into the safe-area inset padding below the
-        // row instead — invisible on devices that reserve real gesture-
-        // nav inset space, but merging the "Voice" label straight into
-        // the Android system bar on devices/nav-modes where that inset
-        // reads as zero or unreliable. Explicitly sizing the row itself
-        // (rather than relying on inset padding to happen to cover the
-        // gap) fixes it for every device, insets or not.
-        height: 57,
+        // TAB_BAR_CONTENT_HEIGHT is the icon/label/orb row's own budget —
+        // see its comment for why this used to be a flat `57` (which ate
+        // into that same budget every time `bottomClearance` grew) and is
+        // now added on top of the clearance instead, the same way the
+        // library's own default sizing (`TABBAR_HEIGHT_UIKIT + insets.bottom`)
+        // does it.
+        height: TAB_BAR_CONTENT_HEIGHT + bottomClearance,
         // Bottom clearance above the system nav bar/gesture pill, taken
         // over from the library's own automatic `paddingBottom:
         // insets.bottom` (this object is the last style merged into the
-        // bar, so it wins). See the `MIN_BOTTOM_CLEARANCE` comment above
-        // `insets` for why this can't just be `insets.bottom` on its own.
-        paddingBottom: Math.max(insets.bottom, MIN_BOTTOM_CLEARANCE),
+        // bar, so it wins). See `TAB_BAR_CONTENT_HEIGHT`'s comment for why
+        // this is `bottomClearance` rather than `insets.bottom` on its own.
+        paddingBottom: bottomClearance,
       },
       tabBarLabelStyle: {
         fontSize: 11,
         fontWeight: "600" as const,
       },
     }),
-    [insets.bottom],
+    [bottomClearance],
   );
 
   // Keeps the home-screen widget in step with the app on BOTH platforms —
