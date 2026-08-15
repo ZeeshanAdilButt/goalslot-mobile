@@ -14,6 +14,7 @@ import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomShee
 import { hasResponse } from "@goalslot/shared";
 
 import { Button } from "@/components/ui/Button";
+import { KeyboardSheet } from "@/components/ui/KeyboardSheet";
 import { TextField } from "@/components/ui/TextField";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { apiClient, notify } from "@/lib/api-client";
@@ -95,21 +96,13 @@ export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstruc
     );
 
     return (
-      <BottomSheetModal
+      <KeyboardSheet
         ref={sheetRef}
         snapPoints={["55%"]}
         onChange={handleSheetPositionChange}
         onDismiss={reset}
         backdropComponent={renderBackdrop}
         enablePanDownToClose
-        keyboardBehavior="interactive"
-        keyboardBlurBehavior="restore"
-        // Without this the sheet relies on adjustResize, which Android
-        // ignores under edge-to-edge — the same bug fixed in every other
-        // BottomSheetModal in the app tonight (QuickAddSheet, EditTaskSheet,
-        // EditGoalSheet, ScheduleBlockSheet), just missed here since this
-        // sheet was built after that fix instead of alongside it.
-        android_keyboardInputMode="adjustPan"
         handleIndicatorStyle={styles.handleIndicator}
         backgroundStyle={styles.sheetBackground}
       >
@@ -162,7 +155,7 @@ export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstruc
             style={styles.submitButton}
           />
         </BottomSheetView>
-      </BottomSheetModal>
+      </KeyboardSheet>
     );
   },
 );

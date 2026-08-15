@@ -786,7 +786,9 @@ export default function TasksScreen() {
           EditTaskSheet. The fixed "40%" snap point this used to carry left a
           three-option list floating in half a screen of blank sheet, and
           without `backdropComponent` there was no scrim and no
-          tap-outside-to-close — the only way out was a pan-down. */}
+          tap-outside-to-close — the only way out was a pan-down. No text
+          input in its content — nothing for the soft keyboard to cover. */}
+      {/* eslint-disable-next-line no-restricted-syntax */}
       <BottomSheetModal
         ref={rescheduleSheetRef}
         enableDynamicSizing
@@ -818,7 +820,9 @@ export default function TasksScreen() {
       {/* Board's column picker — the touch stand-in for web's drag-and-drop
           (see `handleMoveToStatus`). Column titles and helper lines come from
           the same BOARD_COLUMNS the board draws, so the sheet names the
-          destinations exactly as the columns do. */}
+          destinations exactly as the columns do. No text input in its
+          content — nothing for the soft keyboard to cover. */}
+      {/* eslint-disable-next-line no-restricted-syntax */}
       <BottomSheetModal
         ref={moveSheetRef}
         enableDynamicSizing

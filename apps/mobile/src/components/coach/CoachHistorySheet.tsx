@@ -258,6 +258,8 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
   );
 
   return (
+    // No text input in this sheet's content — nothing for the soft keyboard to cover.
+    // eslint-disable-next-line no-restricted-syntax
     <BottomSheetModal
       ref={sheetRef}
       snapPoints={["70%"]}
