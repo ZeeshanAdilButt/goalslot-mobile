@@ -716,14 +716,27 @@ export default function TimerScreen() {
    * timer-session.ts's header), so this races any other device or a
    * server-side auto-stop that ends the session between when this screen
    * last synced `hasServerSession` and when the PATCH actually lands — the
-   * API answers that with a 404. Offering the normal "Retry" action there
-   * would just repeat the identical 404 forever (this is what produced a
-   * stack of identical failing toasts from one tap in the field); resyncing
-   * the query instead lets `hasServerSession` fall to its real value so the
-   * next pick starts fresh rather than retrying a session that's gone.
+   * API answers that with a 404.
+   *
+   * A 404 here does NOT mean the user's pick failed to make sense — it
+   * means the server-side session it was going to be applied to is gone.
+   * What the user wanted (attach this goal/task) is still achievable, just
+   * locally instead: `onGone` is the caller's own local-only application of
+   * the identical pick, the same code path taken when `hasServerSession` is
+   * false to begin with. Without this, tapping the schedule suggestion's
+   * "Use" chip against a session that had just ended looked like the button
+   * was simply broken — a dead-end error with no visible effect — when the
+   * fix was one call away. The old bare-error behavior also produced a
+   * stack of identical failing toasts from one tap once retried, which is
+   * why this never offers "Retry" on a 404 specifically.
    */
   const patchServerSession = useCallback(
-    async (patch: Parameters<typeof apiClient.timerSession.update>[0], errorMessage: string, retry: () => void) => {
+    async (
+      patch: Parameters<typeof apiClient.timerSession.update>[0],
+      errorMessage: string,
+      retry: () => void,
+      onGone: () => void,
+    ) => {
       try {
         await apiClient.timerSession.update(patch);
         void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
@@ -732,7 +745,8 @@ export default function TimerScreen() {
         const status = (err as { response?: { status?: number } } | undefined)?.response?.status;
         if (status === 404) {
           void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
-          notify("That timer session already ended.", "error");
+          onGone();
+          notify("That timer session had already ended — applied to a fresh one instead.", "success");
           return;
         }
         notify(getErrorMessage(err, errorMessage), "error", { action: { label: "Retry", onPress: retry } });
@@ -754,6 +768,17 @@ export default function TimerScreen() {
         });
         return;
       }
+      // A task implies its goal, so picking one fills BOTH slots. Setting the
+      // goal explicitly (rather than leaving it implied by the task) is what
+      // lets "No task" later leave a goal still attached instead of silently
+      // detaching the session from everything.
+      const applyLocally = () => {
+        setSelectedTask(task);
+        setSelectedGoal(task.goalId ? (goalsQuery.data?.find((g) => g.id === task.goalId) ?? null) : null);
+        // A session already in flight gets re-pointed in the store; the local
+        // selection above only governs the *next* start.
+        retarget(task.id, task.goalId);
+      };
       if (hasServerSession) {
         // Re-points the SERVER session — a local `retarget()` here would
         // change nothing the server (or another device watching the same
@@ -764,18 +789,11 @@ export default function TimerScreen() {
           { taskId: task.id, goalId: task.goalId ?? null, taskName: task.title },
           "Couldn't attach that task. Your timer is still running.",
           () => handlePickTask(task),
+          applyLocally,
         );
         return;
       }
-      // A task implies its goal, so picking one fills BOTH slots. Setting the
-      // goal explicitly (rather than leaving it implied by the task) is what
-      // lets "No task" later leave a goal still attached instead of silently
-      // detaching the session from everything.
-      setSelectedTask(task);
-      setSelectedGoal(task.goalId ? (goalsQuery.data?.find((g) => g.id === task.goalId) ?? null) : null);
-      // A session already in flight gets re-pointed in the store; the local
-      // selection above only governs the *next* start.
-      retarget(task.id, task.goalId);
+      applyLocally();
     },
     [attachToEntry, goalsQuery.data, hasServerSession, patchServerSession, pickerTarget, retarget],
   );
@@ -793,6 +811,11 @@ export default function TimerScreen() {
       // task of the goal just picked, which is what makes the two slots feel
       // independent rather than one resetting the other.
       const keptTask = activeTask && activeTask.goalId === goal.id ? activeTask : null;
+      const applyLocally = () => {
+        setSelectedGoal(goal);
+        setSelectedTask(keptTask);
+        retarget(keptTask?.id, goal.id);
+      };
       if (hasServerSession) {
         void patchServerSession(
           {
@@ -813,12 +836,11 @@ export default function TimerScreen() {
           },
           "Couldn't attach that goal. Your timer is still running.",
           () => handlePickGoal(goal),
+          applyLocally,
         );
         return;
       }
-      setSelectedGoal(goal);
-      setSelectedTask(keptTask);
-      retarget(keptTask?.id, goal.id);
+      applyLocally();
       // Deliberately does NOT close the sheet (contrast handlePickTask,
       // which does via `setPickerTarget(null)` above it). Picking a goal is
       // step one of the cascading flow TrackingPicker now offers: if the
@@ -841,6 +863,7 @@ export default function TimerScreen() {
         { taskId: null, goalId: null },
         "Couldn't clear that attribution. Your timer is still running.",
         () => handlePickNone(),
+        () => retarget(undefined, undefined),
       );
       return;
     }
@@ -856,6 +879,10 @@ export default function TimerScreen() {
     setPickerTarget(null);
     userSelectedRef.current = true;
     setSelectedTask(null);
+    // Reads the store rather than `selectedGoal`, which is null for a session
+    // that was already running when this screen mounted.
+    const applyLocally = () =>
+      retarget(undefined, useTimerStore.getState().goalId ?? selectedGoal?.id ?? selectedTask?.goalId);
     if (hasServerSession) {
       void patchServerSession(
         {
@@ -866,12 +893,11 @@ export default function TimerScreen() {
         },
         "Couldn't clear that task. Your timer is still running.",
         () => handleClearTask(),
+        applyLocally,
       );
       return;
     }
-    // Reads the store rather than `selectedGoal`, which is null for a session
-    // that was already running when this screen mounted.
-    retarget(undefined, useTimerStore.getState().goalId ?? selectedGoal?.id ?? selectedTask?.goalId);
+    applyLocally();
   }, [goalTitle, hasServerSession, patchServerSession, retarget, selectedGoal, selectedTask]);
 
   const handleStart = useCallback(() => {
