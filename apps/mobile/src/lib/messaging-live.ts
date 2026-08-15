@@ -25,7 +25,7 @@
 import {
   applyMessageToConversations,
   createMessagingSocket,
-  upsertMessage,
+  reconcileIncomingMessage,
   type MessagingConversation,
   type MessagingMessage,
   type MessagingSocketStatus,
@@ -37,6 +37,7 @@ import { messagingTokenStore } from "./messaging-client";
 import { isOnline, subscribeOnline } from "./offline";
 import { messagingQueries } from "./queries";
 import { queryClient } from "./query-client";
+import { useAuthStore } from "@/providers/auth-provider";
 
 type IncomingListener = (message: MessagingMessage) => void;
 
@@ -58,8 +59,13 @@ function applyIncomingMessage(message: MessagingMessage): void {
 
   // Rule 1: patch only what already exists.
   if (queryClient.getQueryData<MessagingThreadMessage[]>(messagesKey)) {
+    // `reconcileIncomingMessage`, not a plain upsert: a socket push for the
+    // sender's OWN just-sent message can't match the optimistic bubble by id
+    // (see that function's own comment for why) and needs the current
+    // user's id to know which case it's even in.
+    const currentUserId = useAuthStore.getState().user?.id;
     queryClient.setQueryData<MessagingThreadMessage[]>(messagesKey, (existing) =>
-      upsertMessage(existing ?? [], message),
+      reconcileIncomingMessage(existing ?? [], message, currentUserId),
     );
   }
 

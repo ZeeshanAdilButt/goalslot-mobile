@@ -163,6 +163,7 @@ __export(index_exports, {
   parseVoiceCommand: () => parseVoiceCommand,
   postCoachStream: () => postCoachStream,
   rankTargets: () => rankTargets,
+  reconcileIncomingMessage: () => reconcileIncomingMessage,
   reconnectDelayMs: () => reconnectDelayMs,
   removeConversationIndexEntry: () => removeConversationIndexEntry,
   removePendingMessage: () => removePendingMessage,
@@ -607,6 +608,20 @@ function upsertMessage(existing, incoming) {
   }
   const next = [...existing];
   next[index] = incoming;
+  return sortMessages(next);
+}
+function reconcileIncomingMessage(existing, incoming, currentUserId) {
+  if (incoming.senderId !== currentUserId) {
+    return upsertMessage(existing, incoming);
+  }
+  const pendingIndex = existing.findIndex(
+    (message) => isPendingMessage(message) && message.body === incoming.body
+  );
+  if (pendingIndex === -1) {
+    return upsertMessage(existing, incoming);
+  }
+  const next = [...existing];
+  next[pendingIndex] = incoming;
   return sortMessages(next);
 }
 function confirmPendingMessage(existing, clientId, confirmed) {
@@ -3868,6 +3883,7 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   parseVoiceCommand,
   postCoachStream,
   rankTargets,
+  reconcileIncomingMessage,
   reconnectDelayMs,
   removeConversationIndexEntry,
   removePendingMessage,

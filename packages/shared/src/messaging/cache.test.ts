@@ -10,6 +10,7 @@ import {
   mergeServerMessages,
   newestServerMessage,
   oldestMessageTimestamp,
+  reconcileIncomingMessage,
   removePendingMessage,
   sortMessages,
   upsertMessage,
@@ -73,6 +74,45 @@ describe('confirmPendingMessage', () => {
     const next = confirmPendingMessage(existing, 'local-1', alreadyDelivered)
 
     expect(next.map((m) => m.id)).toEqual(['srv-1'])
+  })
+})
+
+describe('reconcileIncomingMessage', () => {
+  it('replaces the sender\'s own optimistic bubble instead of rendering a second copy of it', () => {
+    const existing = [pending('local-1', '2026-08-12T10:00:00.000Z')]
+
+    // Same body, sent by u1 (who pending() attributes to u1), delivered back
+    // over the socket with a real server id and no clientId at all.
+    const pushed = message('srv-1', '2026-08-12T10:00:01.000Z', { senderId: 'u1', body: 'hello' })
+    const next = reconcileIncomingMessage(existing, pushed, 'u1')
+
+    expect(next.map((m) => m.id)).toEqual(['srv-1'])
+    expect(next.some((m) => 'clientId' in m)).toBe(false)
+  })
+
+  it('keeps someone else\'s message alongside an unrelated pending bubble of the same text', () => {
+    const existing = [pending('local-1', '2026-08-12T10:00:00.000Z')]
+
+    // Identical body, but from the other participant — must NOT swallow the
+    // user's own still-sending bubble.
+    const pushed = message('srv-1', '2026-08-12T10:00:01.000Z', { senderId: 'u2', body: 'hello' })
+    const next = reconcileIncomingMessage(existing, pushed, 'u1')
+
+    expect(next).toHaveLength(2)
+    expect(next.map((m) => m.id)).toEqual(['local-1', 'srv-1'])
+  })
+
+  it('falls back to a plain upsert when the user has no pending bubble matching it', () => {
+    const existing = [message('m1', '2026-08-12T09:00:00.000Z')]
+    const pushed = message('srv-1', '2026-08-12T10:00:00.000Z', { senderId: 'u1', body: 'something else' })
+
+    expect(reconcileIncomingMessage(existing, pushed, 'u1').map((m) => m.id)).toEqual(['m1', 'srv-1'])
+  })
+
+  it('is idempotent when the socket redelivers a message already confirmed', () => {
+    const confirmed = message('srv-1', '2026-08-12T10:00:00.000Z', { senderId: 'u1', body: 'hello' })
+    const next = reconcileIncomingMessage([confirmed], confirmed, 'u1')
+    expect(next).toHaveLength(1)
   })
 })
 

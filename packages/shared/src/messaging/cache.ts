@@ -63,6 +63,53 @@ export function upsertMessage(
 }
 
 /**
+ * Reconciles a message delivered over the LIVE SOCKET specifically — the one
+ * case `upsertMessage`'s own clientId matching can never catch on its own.
+ *
+ * `upsertMessage`'s clientId branch only fires when the INCOMING item is
+ * itself pending-shaped (has a clientId). A message arriving over the socket
+ * is always a plain, server-confirmed `MessagingMessage` — it was never
+ * pending on THIS device, so it never carries the clientId the optimistic
+ * bubble was keyed by, and jiffy-messaging's broadcast payload doesn't echo
+ * one back either (there is no idempotency key on the wire at all). Matched
+ * purely by `upsertMessage`'s id fallback, a socket push for the sender's
+ * OWN just-sent message can't find the pending bubble (different ids) and
+ * gets appended as a second, separate entry — visible for the moment between
+ * the socket push and the POST response finishing, which is what turned one
+ * sent message into three renders (sending, a second "sending"-looking
+ * bubble alongside it, then the REST response's `confirmPendingMessage`
+ * collapsing them back to one).
+ *
+ * The fix is a client-side heuristic, not a protocol change: when the
+ * incoming message's sender is the current user, look for a still-pending
+ * bubble with the identical body and treat that as the match — the same
+ * "this is my own message coming back to me" case `confirmPendingMessage`
+ * already handles for the REST path, just recognised by content instead of
+ * an id neither side has yet. A message from anyone else has no pending
+ * bubble to find and falls straight through to a plain `upsertMessage`.
+ */
+export function reconcileIncomingMessage(
+  existing: MessagingThreadMessage[],
+  incoming: MessagingMessage,
+  currentUserId: string | null | undefined,
+): MessagingThreadMessage[] {
+  if (incoming.senderId !== currentUserId) {
+    return upsertMessage(existing, incoming)
+  }
+
+  const pendingIndex = existing.findIndex(
+    (message) => isPendingMessage(message) && message.body === incoming.body,
+  )
+  if (pendingIndex === -1) {
+    return upsertMessage(existing, incoming)
+  }
+
+  const next = [...existing]
+  next[pendingIndex] = incoming
+  return sortMessages(next)
+}
+
+/**
  * Replaces the optimistic bubble identified by `clientId` with the row the
  * server created. Separate from `upsertMessage` because the ids differ: the
  * pending copy is keyed by clientId and the confirmed one by the server's id,
