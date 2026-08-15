@@ -284,7 +284,12 @@ export default function TodayScreen() {
   // otherwise offer to "continue" an empty editor.
   const journalState: JournalPromptState = useMemo(() => {
     if (journalTodayQuery.data === undefined) return "unknown";
-    return journalTodayQuery.data?.content.trim() ? "started" : "empty";
+    // `content` itself can be missing/undefined on a real entry object (not
+    // just the whole `data` the outer `?.` already guards) — a bare
+    // `.trim()` here crashed the Today screen on launch for exactly that
+    // shape (confirmed via a real device crash: "Cannot read property
+    // 'trim' of undefined").
+    return journalTodayQuery.data?.content?.trim() ? "started" : "empty";
   }, [journalTodayQuery.data]);
 
   const dueTodayTasks = useMemo(
