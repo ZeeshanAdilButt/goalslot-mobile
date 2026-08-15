@@ -105,6 +105,66 @@ export function isDormantLocalSession(
   return elapsedMs !== null && elapsedMs < toleranceMs;
 }
 
+/** Everything the auto-select-on-open effect's up-front guard needs, besides the live-store recheck it performs separately — see `isLiveStoreIdleForAutoSelect`. */
+export interface AutoSelectGuardInput {
+  effectiveStatus: "idle" | "running" | "paused";
+  localDormant: boolean;
+  userSelected: boolean;
+  hasSelectedTask: boolean;
+  hasSelectedGoal: boolean;
+}
+
+/**
+ * The auto-select-on-open effect's (app/(app)/timer.tsx) render-time gate:
+ * whether it's even worth resolving the live schedule block. Cheap to
+ * compute before bothering to call `resolveScheduledTarget`, and pulled out
+ * here so this exact decision has a permanent regression test instead of
+ * living only inline in a 1000+ line screen component.
+ *
+ * Deliberately does NOT take the screen's `autostart` deep-link param,
+ * unlike an earlier version of this guard. That version gated on
+ * `autostart === undefined`, reasoning that one of the three deep-link
+ * effects (autostart=1/active/spoken) might be about to call `start()`
+ * itself, and a stale "idle" read here could clobber it with `retarget()`.
+ * That race is real, but the caller's live-store recheck right before
+ * mutating (`isLiveStoreIdleForAutoSelect`, called against
+ * `useTimerStore.getState()` synchronously, not a value closed over at
+ * render time) already catches it: a deep-link effect is declared earlier
+ * in the component and so runs earlier in the same effect flush, and its
+ * `start()` updates the zustand store synchronously — so by the time this
+ * guard's live recheck runs moments later in that same flush, it already
+ * observes the non-idle state. Gating on `autostart` here too was therefore
+ * both redundant AND the confirmed-by-reading-the-code root cause of this
+ * feature going permanently silent: expo-router's Tabs navigator never
+ * clears a route's params on refocus (only a fresh navigation with new ones
+ * does), so once a user opened this screen even once via the widget's Start
+ * button, a Siri Shortcut, or an Android App Action, `autostart` stayed a
+ * defined string in the route's params for the rest of that tab's mounted
+ * lifetime — effectively the rest of the app process's life, since tabs
+ * stay mounted in this app. Every later visit then failed this guard's
+ * first condition and silently skipped auto-select, with nothing on screen
+ * to suggest why. Confirmed by reading the effect ordering and expo-router's
+ * params-persist-on-refocus behavior, not verified on a physical device;
+ * removing the redundant check cannot reintroduce the race it existed for.
+ */
+export function canAttemptAutoSelect(input: AutoSelectGuardInput): boolean {
+  if (input.effectiveStatus !== "idle" && !input.localDormant) return false;
+  if (input.userSelected) return false;
+  if (input.hasSelectedTask || input.hasSelectedGoal) return false;
+  return true;
+}
+
+/**
+ * The auto-select-on-open effect's second gate, re-checked against LIVE
+ * store state immediately before mutating rather than the value closed over
+ * at render time — see `canAttemptAutoSelect`'s doc for why that
+ * distinction is what actually keeps this safe.
+ */
+export function isLiveStoreIdleForAutoSelect(live: LocalTimerSnapshot, hasServerSession: boolean): boolean {
+  if (hasServerSession) return false;
+  return live.status === "idle" || isDormantLocalSession(live);
+}
+
 /** The goal (and optionally task) implied by whatever schedule block is live right now. */
 export interface ScheduledTarget {
   block: ScheduleBlock;

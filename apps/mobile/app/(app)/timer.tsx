@@ -70,10 +70,12 @@ import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useSettingsStore } from "@/lib/settings-store";
 import {
+  canAttemptAutoSelect,
   cleanLabel,
   firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
+  isLiveStoreIdleForAutoSelect,
   NOTIFICATION_DORMANT_TOLERANCE_MS,
   resolveScheduledTarget,
 } from "@/lib/timer-attribution";
@@ -451,13 +453,10 @@ export default function TimerScreen() {
    * block is live right now, matching `app/(app)/index.tsx`'s "FOCUS NOW"
    * card.
    *
-   * Guarded four ways, all required:
-   *   - `autostart` unset — otherwise one of the three deep-link effects
-   *     above is about to call `start()` itself, and since a deep-link's
-   *     `start()` mutates the store synchronously without forcing a
-   *     re-render first, this effect could still see a stale "idle" in the
-   *     same flush and call `retarget()` right after, overwriting the
-   *     deep-link's target.
+   * Guarded three ways, all required (see `canAttemptAutoSelect` in
+   * timer-attribution.ts for the extracted, unit-tested version of this
+   * first check — including why it deliberately does NOT gate on the
+   * screen's `autostart` deep-link param the way an earlier version did):
    *   - not idle AND not dormant — never re-point a session that's genuinely
    *     running or paused with something in it (local or server-side); a
    *     dormant session (isDormantServerSession / isDormantLocalSession) is
@@ -472,11 +471,13 @@ export default function TimerScreen() {
    */
   useEffect(() => {
     if (
-      autostart !== undefined ||
-      (effectiveStatus !== "idle" && !localDormant) ||
-      userSelectedRef.current ||
-      selectedTask !== null ||
-      selectedGoal !== null
+      !canAttemptAutoSelect({
+        effectiveStatus,
+        localDormant,
+        userSelected: userSelectedRef.current,
+        hasSelectedTask: selectedTask !== null,
+        hasSelectedGoal: selectedGoal !== null,
+      })
     ) {
       return;
     }
@@ -497,10 +498,12 @@ export default function TimerScreen() {
     // closed over at render time: the local store rehydrates from
     // AsyncStorage asynchronously, and `hasServerSession` starts false until
     // the first query resolves, so a session already active before mount can
-    // still read as stale "idle" here. `retarget()`'s own idle check can't
-    // catch this — it protects the opposite direction (a truly idle store).
-    const liveState = useTimerStore.getState();
-    if ((liveState.status !== "idle" && !isDormantLocalSession(liveState)) || hasServerSession) return;
+    // still read as stale "idle" here — and, just as importantly, so does a
+    // deep-link effect (autostart=1/active/spoken, declared above this one)
+    // calling `start()` earlier in this same effect flush. `retarget()`'s
+    // own idle check can't catch either case — it protects the opposite
+    // direction (a truly idle store).
+    if (!isLiveStoreIdleForAutoSelect(useTimerStore.getState(), hasServerSession)) return;
 
     // BOTH slots, not one or the other: the goal is what the block is for,
     // and the task (when the block names one) narrows it. Setting the goal
@@ -510,7 +513,6 @@ export default function TimerScreen() {
     setSelectedTask(scheduled.task);
     retarget(scheduled.task?.id, scheduled.goal.id);
   }, [
-    autostart,
     effectiveStatus,
     goalsQuery.data,
     hasServerSession,

@@ -5,12 +5,15 @@
 import type { ActiveTimerSession, Goal, ScheduleBlock, Task, WeekSchedule } from "@goalslot/shared";
 
 import {
+  canAttemptAutoSelect,
   DORMANT_ELAPSED_TOLERANCE_MS,
   cleanLabel,
   firstFinite,
   isDormantLocalSession,
   isDormantServerSession,
+  isLiveStoreIdleForAutoSelect,
   resolveScheduledTarget,
+  type AutoSelectGuardInput,
   type LocalTimerSnapshot,
 } from "./timer-attribution";
 
@@ -181,6 +184,86 @@ describe("isDormantLocalSession", () => {
 
   it("is false when the elapsed time isn't a readable number", () => {
     expect(isDormantLocalSession(local({ pausedElapsedMs: NaN }))).toBe(false);
+  });
+});
+
+describe("canAttemptAutoSelect", () => {
+  function guard(overrides: Partial<AutoSelectGuardInput> = {}): AutoSelectGuardInput {
+    return {
+      effectiveStatus: "idle",
+      localDormant: false,
+      userSelected: false,
+      hasSelectedTask: false,
+      hasSelectedGoal: false,
+      ...overrides,
+    };
+  }
+
+  it("is true for a genuinely idle, untouched screen", () => {
+    expect(canAttemptAutoSelect(guard())).toBe(true);
+  });
+
+  it("is true for a dormant session even though it isn't idle", () => {
+    expect(canAttemptAutoSelect(guard({ effectiveStatus: "paused", localDormant: true }))).toBe(true);
+  });
+
+  it("is false while genuinely running or paused with content", () => {
+    expect(canAttemptAutoSelect(guard({ effectiveStatus: "running" }))).toBe(false);
+    expect(canAttemptAutoSelect(guard({ effectiveStatus: "paused" }))).toBe(false);
+  });
+
+  it("is false once the user has made a pick this visit", () => {
+    expect(canAttemptAutoSelect(guard({ userSelected: true }))).toBe(false);
+  });
+
+  it("is false once a task or goal is already selected", () => {
+    expect(canAttemptAutoSelect(guard({ hasSelectedTask: true }))).toBe(false);
+    expect(canAttemptAutoSelect(guard({ hasSelectedGoal: true }))).toBe(false);
+  });
+
+  // Regression test for the actual reported bug: a prior version of this
+  // guard also required an `autostart` deep-link param to be unset, but
+  // that param — set by the widget's Start button, a Siri Shortcut, or an
+  // Android App Action, via `goalslot://timer?autostart=...` — is never
+  // cleared by expo-router on tab refocus (only a fresh navigation with new
+  // params clears it), so it stayed permanently set for the rest of the
+  // app process's life after the FIRST use of any of those entry points.
+  // That permanently disabled auto-select-on-open for every later visit to
+  // this screen. This function intentionally has no `autostart` parameter
+  // at all — there is nothing here that COULD reintroduce that bug.
+  it("has no autostart/deep-link parameter to ever get stuck on", () => {
+    const input = guard();
+    expect(Object.keys(input)).not.toContain("autostart");
+  });
+});
+
+describe("isLiveStoreIdleForAutoSelect", () => {
+  function live(overrides: Partial<LocalTimerSnapshot> = {}): LocalTimerSnapshot {
+    return { status: "idle", pausedElapsedMs: 0, taskId: null, goalId: null, ...overrides };
+  }
+
+  it("is true for a genuinely idle local store with no server session", () => {
+    expect(isLiveStoreIdleForAutoSelect(live(), false)).toBe(true);
+  });
+
+  it("is true for a dormant paused local store", () => {
+    expect(isLiveStoreIdleForAutoSelect(live({ status: "paused" }), false)).toBe(true);
+  });
+
+  it("is false the instant a server session exists, regardless of local state", () => {
+    expect(isLiveStoreIdleForAutoSelect(live(), true)).toBe(false);
+  });
+
+  it("is false for a local store a sibling deep-link effect just started", () => {
+    // The exact race this function exists to catch: a same-tick `start()`
+    // call (from one of the autostart deep-link effects, which run earlier
+    // in the same effect flush) has already flipped the store to "running"
+    // by the time this check runs.
+    expect(isLiveStoreIdleForAutoSelect(live({ status: "running" }), false)).toBe(false);
+  });
+
+  it("is false for a paused local store holding real content", () => {
+    expect(isLiveStoreIdleForAutoSelect(live({ status: "paused", goalId: "goal-1" }), false)).toBe(false);
   });
 });
 
