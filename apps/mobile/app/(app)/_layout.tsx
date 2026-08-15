@@ -20,13 +20,18 @@ import { colors, radii, shadows, spacing } from "@/theme/tokens";
 /**
  * Floor for the tab bar's bottom clearance above the system nav bar/gesture
  * pill, used as `Math.max(insets.bottom, MIN_BOTTOM_CLEARANCE)` — see the
- * `insets` comment below for why this exists at all. 16dp is comfortably
- * inside every real Android gesture-nav/3-button inset this app has actually
- * measured, so it only ever kicks in when `insets.bottom` itself is
- * suspiciously low/zero, not on a device where the reported value is already
- * legitimate.
+ * `insets` comment below for why this exists at all. This used to be 16,
+ * picked only to be "clearly nonzero" against the observed bug (insets.bottom
+ * reading 0 on a Samsung Galaxy S22 Ultra, gesture nav, edge-to-edge). 16 is
+ * actually BELOW Android's own standard gesture-nav inset (24dp — see
+ * developer.android.com's edge-to-edge guide), so on exactly the device/bug
+ * this floor exists for, it was still handing back less clearance than the
+ * system bar the icons sit above, not zero clearance but not correct either.
+ * 24 matches the documented standard so the floor is a real substitute for
+ * the missing inset, not just a nonzero one. Still a no-op on any device
+ * reporting a legitimate value (real gesture-nav/3-button insets are >= 24).
  */
-const MIN_BOTTOM_CLEARANCE = 16;
+const MIN_BOTTOM_CLEARANCE = 24;
 
 export default function AppLayout() {
   const { status } = useAuth();
