@@ -1127,12 +1127,25 @@ export default function VoiceScreen() {
   // when its own reply changes" true, rather than just documented.
   const parseCacheRef = useRef(new Map<number, { reply: string; parsed: ReturnType<typeof extractCoachProposals> }>());
 
+  // Same problem, one level down: `CoachProposalCard` is `memo()`-wrapped
+  // specifically so a card unrelated to whichever turn is streaming doesn't
+  // re-render on every token (see the component's own comment) — but that
+  // memo does a shallow prop comparison, and an inline
+  // `() => dismissProposal(turn.id, index)` built fresh in the JSX below
+  // would be a new function every render, silently defeating it for every
+  // visible card. Keyed by `turnId:index` and reused across renders exactly
+  // like `parseCacheRef` above; entries for turns no longer in `history`
+  // (see removeTurn) just don't get carried into the next cache.
+  const dismissHandlersRef = useRef(new Map<string, () => void>());
+
   // Every turn, parsed once per render — each carries its own reply text,
   // so a turn already on screen from an earlier command never re-parses
   // when a later one streams in.
   const turns = useMemo(() => {
     const cache = parseCacheRef.current;
     const nextCache = new Map<number, { reply: string; parsed: ReturnType<typeof extractCoachProposals> }>();
+    const dismissHandlers = dismissHandlersRef.current;
+    const nextDismissHandlers = new Map<string, () => void>();
     const result = history.map((turn) => {
       const cached = cache.get(turn.id);
       const parsed = cached && cached.reply === turn.reply ? cached.parsed : extractCoachProposals(turn.reply);
@@ -1140,14 +1153,21 @@ export default function VoiceScreen() {
       const dismissed = dismissedProposals.get(turn.id) ?? EMPTY_DISMISSED;
       const visibleProposals = parsed.proposals
         .map((block, index) => ({ block, index }))
-        .filter(({ index }) => !dismissed.has(index));
+        .filter(({ index }) => !dismissed.has(index))
+        .map(({ block, index }) => {
+          const key = `${turn.id}:${index}`;
+          const onDismiss = dismissHandlers.get(key) ?? (() => dismissProposal(turn.id, index));
+          nextDismissHandlers.set(key, onDismiss);
+          return { block, index, onDismiss };
+        });
       return { turn, parsed, visibleProposals };
     });
     // Turns removed from `history` (see removeTurn) simply don't get carried
     // into the next cache — nothing to evict explicitly.
     parseCacheRef.current = nextCache;
+    dismissHandlersRef.current = nextDismissHandlers;
     return result;
-  }, [dismissedProposals, history]);
+  }, [dismissedProposals, dismissProposal, history]);
   const latestReply = history.length > 0 ? history[history.length - 1].reply : "";
   const totalVisibleProposals = turns.reduce((sum, { visibleProposals }) => sum + visibleProposals.length, 0);
 
@@ -1255,12 +1275,12 @@ export default function VoiceScreen() {
                         {visibleProposals.length} changes waiting for your OK
                       </Text>
                     ) : null}
-                    {visibleProposals.map(({ block, index }) => (
+                    {visibleProposals.map(({ block, index, onDismiss }) => (
                       <CoachProposalCard
                         key={index}
                         block={block}
                         onApply={applyActions}
-                        onDismiss={() => dismissProposal(turn.id, index)}
+                        onDismiss={onDismiss}
                       />
                     ))}
                   </View>

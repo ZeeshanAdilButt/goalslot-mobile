@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppState, Pressable, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import { AppState, Pressable, StyleSheet, View, type ColorValue } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 
@@ -32,6 +32,39 @@ import { colors, radii, shadows, spacing } from "@/theme/tokens";
  * reporting a legitimate value (real gesture-nav/3-button insets are >= 24).
  */
 const MIN_BOTTOM_CLEARANCE = 24;
+
+// Hoisted to module scope, sibling to `tabsScreenOptions` below: none of
+// these close over component state (just the static `color`/`size` a tab
+// bar hands its icon), so a fresh object per `AppLayout` render bought
+// nothing but defeating <Tabs>'s ability to shallow-bail on renders that
+// have nothing to do with the bar itself (see `tabsScreenOptions`'s comment
+// for the render triggers). Module-level constants are stable for the life
+// of the app, not just memoized against a dependency array.
+function renderTodayIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="today" color={color} size={size} />;
+}
+function renderScheduleIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="schedule" color={color} size={size} />;
+}
+function renderTasksIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="tasks" color={color} size={size} />;
+}
+function renderTimerIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="timer" color={color} size={size} />;
+}
+function renderVoiceTabButton(props: ComponentProps<typeof VoiceTabButton>) {
+  return <VoiceTabButton {...props} />;
+}
+
+const todayTabOptions = { title: "Today", tabBarIcon: renderTodayIcon };
+const scheduleTabOptions = { title: "Schedule", tabBarIcon: renderScheduleIcon };
+// The mic. `tabBarButton` replaces the whole tab item, which is what lets
+// the control break the bar's top line — see VoiceTabButton. It stays a
+// real route so a screen reader announces it as a tab and the back gesture
+// behaves normally.
+const voiceTabOptions = { title: "Voice", tabBarButton: renderVoiceTabButton };
+const tasksTabOptions = { title: "Tasks", tabBarIcon: renderTasksIcon };
+const timerTabOptions = { title: "Timer", tabBarIcon: renderTimerIcon };
 
 export default function AppLayout() {
   const { status } = useAuth();
@@ -232,53 +265,11 @@ export default function AppLayout() {
           idle, so this is a no-op the vast majority of the time. */}
       <View style={{ flex: 1, paddingTop: bannerHeight }}>
         <Tabs screenOptions={tabsScreenOptions}>
-          <Tabs.Screen
-            name="index"
-            options={{
-              title: "Today",
-              tabBarIcon: ({ color, size }) => (
-                <Icon name="today" color={color} size={size} />
-              ),
-            }}
-          />
-          <Tabs.Screen
-            name="schedule"
-            options={{
-              title: "Schedule",
-              tabBarIcon: ({ color, size }) => (
-                <Icon name="schedule" color={color} size={size} />
-              ),
-            }}
-          />
-          {/* The mic. `tabBarButton` replaces the whole tab item, which is what
-            lets the control break the bar's top line — see VoiceTabButton.
-            It stays a real route so a screen reader announces it as a tab
-            and the back gesture behaves normally. */}
-          <Tabs.Screen
-            name="voice"
-            options={{
-              title: "Voice",
-              tabBarButton: (props) => <VoiceTabButton {...props} />,
-            }}
-          />
-          <Tabs.Screen
-            name="tasks"
-            options={{
-              title: "Tasks",
-              tabBarIcon: ({ color, size }) => (
-                <Icon name="tasks" color={color} size={size} />
-              ),
-            }}
-          />
-          <Tabs.Screen
-            name="timer"
-            options={{
-              title: "Timer",
-              tabBarIcon: ({ color, size }) => (
-                <Icon name="timer" color={color} size={size} />
-              ),
-            }}
-          />
+          <Tabs.Screen name="index" options={todayTabOptions} />
+          <Tabs.Screen name="schedule" options={scheduleTabOptions} />
+          <Tabs.Screen name="voice" options={voiceTabOptions} />
+          <Tabs.Screen name="tasks" options={tasksTabOptions} />
+          <Tabs.Screen name="timer" options={timerTabOptions} />
           {/* Off the bar to make room for the mic (see the note above), still a
             first-class row in the drawer's Plan group. */}
           <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
