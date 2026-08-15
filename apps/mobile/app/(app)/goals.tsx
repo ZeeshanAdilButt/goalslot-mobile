@@ -562,7 +562,13 @@ function FilterChip({
       style={[
         styles.filterChip,
         {
-          backgroundColor: selected ? withAlpha(accent, 0.14, colors.foreground) : colors.secondary,
+          // Background fallback is `secondary`, not `foreground`: an option
+          // with no color (like "All goals") has no accent to tint, and
+          // withAlpha returns its fallback verbatim rather than tinted when
+          // there's nothing to alpha-blend — falling back to `foreground`
+          // here made a selected colorless chip solid near-black with
+          // foreground-colored text on top of it, unreadable.
+          backgroundColor: selected ? withAlpha(accent, 0.14, colors.secondary) : colors.secondary,
           borderColor: selected ? withAlpha(accent, 0.5, colors.foreground) : colors.border,
         },
       ]}

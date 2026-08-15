@@ -27,6 +27,7 @@ import { calculateProgressPercent, formatDuration, hasResponse } from "@goalslot
 
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { StatusPill } from "@/components/lists";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import {
   buildCategoryBreakdown,
   buildDayGoalBreakdown,
@@ -93,6 +94,14 @@ export default function MenteeReportScreen() {
       analytics.track({ name: "screenViewed", payload: { screenName: "mentee-report" } });
     }, [analytics]),
   );
+
+  // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx's header
+  // note above), not a pushed stack entry, so the OS back gesture/button
+  // doesn't reliably return to the Mentees list — it was landing on the
+  // Today dashboard instead. Same fix note/[id].tsx and
+  // notification-settings.tsx already use for the identical problem. Mentees
+  // is the only way to reach this screen.
+  useHiddenTabBackHandler("/mentees");
 
   const ranges = useMemo(() => getPeriodRanges(period, periodAnchor), [period, periodAnchor]);
 
@@ -229,7 +238,10 @@ export default function MenteeReportScreen() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          // router.back() falls through to the tab navigator's default
+          // (Today) on this hidden Tabs.Screen — see useHiddenTabBackHandler
+          // above, which fixes the OS hardware/gesture back the same way.
+          onPress={() => router.replace("/mentees")}
           hitSlop={12}
           style={styles.backButton}
           accessibilityRole="button"

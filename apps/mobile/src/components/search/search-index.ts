@@ -36,6 +36,7 @@ export type SearchHref =
   | "/journal"
   | "/notes"
   | "/messages"
+  | "/mentees"
   | "/coach"
   | "/settings";
 
@@ -69,6 +70,7 @@ const ALL_ITEMS: SearchItem[] = [
         { id: "messages", label: "Messages", href: "/messages", icon: "messages", description: "Conversations", group: "Workspace" },
       ] as SearchItem[])
     : []),
+  { id: "mentees", label: "Mentees", href: "/mentees", icon: "mentees", description: "People sharing their progress with you", group: "Workspace", keywords: ["sharing", "mentor", "mentorship"] },
   { id: "reports", label: "Reports", href: "/reports", icon: "reports", description: "Weekly stats and trends", group: "Workspace" },
   { id: "categories", label: "Categories", href: "/categories", icon: "categories", description: "The colors your goals and tasks group by", group: "Workspace", keywords: ["labels", "colors", "tags"] },
   {

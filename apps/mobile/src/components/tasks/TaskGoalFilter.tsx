@@ -89,6 +89,13 @@ function GoalFilterChip({
   const background = selected ? withAlpha(accent, 0.14, colors.foreground) : colors.secondary;
   const border = selected ? withAlpha(accent, 0.5, colors.foreground) : colors.border;
   const dotColor = accent ?? colors.mutedForeground;
+  // withAlpha returns its fallback verbatim (not tinted) when there's no
+  // accent to blend, so a selected "All"/"No goal" chip — the comment above
+  // deliberately chose the dark-neutral fallback here rather than a light
+  // tint like goals.tsx's equivalent chip uses — renders a SOLID
+  // foreground-colored background. labelSelected's own color is also
+  // foreground, which made the label invisible on exactly that chip.
+  const labelColor = selected && !accent ? colors.white : undefined;
 
   return (
     <Pressable
@@ -101,7 +108,11 @@ function GoalFilterChip({
     >
       <View style={[styles.dot, { backgroundColor: dotColor }]} />
       <Text
-        style={[styles.label, selected ? styles.labelSelected : styles.labelMuted]}
+        style={[
+          styles.label,
+          selected ? styles.labelSelected : styles.labelMuted,
+          labelColor ? { color: labelColor } : null,
+        ]}
         numberOfLines={1}
       >
         {option.label}

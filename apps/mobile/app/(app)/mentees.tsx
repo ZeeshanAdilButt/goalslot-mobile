@@ -25,6 +25,7 @@ import { EmptyState, QueryErrorState, SkeletonListItem } from "@/components";
 import { ListCard, ScreenHeader } from "@/components/lists";
 import { Avatar } from "@/components/messaging";
 import { AssignInstructionSheet } from "@/components/mentees/AssignInstructionSheet";
+import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { Button } from "@/components/ui/Button";
 import { apiClient, notify } from "@/lib/api-client";
 import { messagingEnabled } from "@/lib/messaging-config";
@@ -53,6 +54,15 @@ export default function MenteesScreen() {
       analytics.track({ name: "screenViewed", payload: { screenName: "mentees" } });
     }, [analytics]),
   );
+
+  // This route is a hidden Tabs.Screen (see app/(app)/_layout.tsx), not a
+  // pushed stack entry, so the OS back gesture/button doesn't reliably
+  // return to where the user came from — it was landing on the Today
+  // dashboard instead. Same fix note/[id].tsx and notification-settings.tsx
+  // already use for the identical problem. The drawer is the only way to
+  // reach this screen, so Today (its own default landing tab) is the
+  // destination rather than picking one drawer item over another.
+  useHiddenTabBackHandler("/");
 
   const mentees = useMemo(() => menteesQuery.data ?? [], [menteesQuery.data]);
 
@@ -200,6 +210,7 @@ export default function MenteesScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
+      <HiddenTabBackButton label="Today" destination="/" />
       <ScreenHeader
         title="Mentees"
         eyebrow="Mentor view"
