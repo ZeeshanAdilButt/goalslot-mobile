@@ -409,7 +409,23 @@ export default function AppLayout() {
         edges={["top", "right"]}
         pointerEvents="box-none"
       >
-        <View style={styles.headerButtonColumn}>
+        {/* box-none: this column's own bounding rectangle is taller than its
+            two 40pt buttons combined (marginTop + gap between them), and
+            without this a plain View intercepts ANY tap landing in that
+            rectangle — including the gap between the buttons and the space
+            above/below them — even though it has no press handler and
+            nothing is visibly there. That silently swallows taps rather
+            than passing them through to whatever's underneath, which is
+            exactly what happened on Messages: this column's dead zone
+            extends a few points below the search button on every screen,
+            and messages.tsx's header action row (a single-line subtitle
+            pulls it up further than screens with a longer, wrapped
+            subtitle) sits partly inside it — so the top slice of the "New
+            message" button ate taps that never reached its own onPress.
+            See hamburgerSafeArea just above, which already does this
+            correctly one level up; this box-none was the missing second
+            half of it. */}
+        <View style={styles.headerButtonColumn} pointerEvents="box-none">
           <Pressable
             onPress={openDrawer}
             style={styles.hamburgerButton}
