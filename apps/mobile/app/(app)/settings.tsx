@@ -110,12 +110,18 @@ const buildNumber = platformBuildNumber !== undefined ? String(platformBuildNumb
 // doesn't exist on it.
 const rawGitCommitHash = Constants.expoConfig?.extra?.gitCommitHash;
 // Short enough to sit on one settings row, long enough to be unambiguous
-// against a `git log --oneline` on the machine that built it.
+// against a `git log --oneline` on the machine that built it. Every build
+// shipped so far is local (gradlew/xcodebuild directly, never a real EAS
+// cloud build), so this is unset on every real install — "dev" read as an
+// unfinished-looking label to the actual people now using this app, so an
+// absent hash reads as "Beta" instead. The precise, always-accurate answer
+// to "what's actually running" lives in the "Live update" row below this
+// one (expo-updates' own runtime state), not here.
 const shortCommit = typeof rawGitCommitHash === "string" && rawGitCommitHash.length > 0
   ? rawGitCommitHash.slice(0, 7)
-  : "dev";
+  : null;
 const aboutValue = `${appVersion} (${buildNumber})`;
-const aboutDescription = `Build ${shortCommit}`;
+const aboutDescription = shortCommit ? `Build ${shortCommit}` : "Beta";
 
 // The single most reliable answer to "am I actually on the latest fix" —
 // unlike the row above, which only reflects the NATIVE binary's build time,

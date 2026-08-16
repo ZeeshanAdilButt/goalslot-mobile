@@ -210,6 +210,8 @@ export default function NotesScreen() {
   // ---------------------------------------------------------------------
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const scrollOffset = useSharedValue(0);
+  const showScrollTopSv = useSharedValue(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const dragActive = useSharedValue(false);
   /** Set only after the JS re-render (subtree tucked away) has synced the
    *  depth mirror below — projections before that would use stale rows. */
@@ -349,6 +351,16 @@ export default function NotesScreen() {
     // Autoscroll moves the list under a stationary finger — recompute the
     // slot from the new offset even though the gesture emitted no update.
     updateProjection();
+    // Threshold-crossing only (not every frame): a deep, fully-expanded tree
+    // runs to hundreds of rows, and scrolling back up by hand is the exact
+    // "faster option to go up" gap reported — this drives a real JS-state
+    // conditional render (not just an animated opacity) so the button is
+    // genuinely absent, not just invisible-but-still-tappable, while hidden.
+    const past = event.contentOffset.y > ROW_H * 2;
+    if (past !== showScrollTopSv.value) {
+      showScrollTopSv.value = past;
+      runOnJS(setShowScrollTop)(past);
+    }
   });
 
   // Proximity-ramped autoscroll while the lifted row sits near an edge.
@@ -845,6 +857,10 @@ export default function NotesScreen() {
     left: indicatorLeft.value,
   }));
 
+  const scrollToTop = useCallback(() => {
+    scrollTo(scrollRef, 0, 0, true);
+  }, [scrollRef]);
+
   const dragInProgress = activeId !== null;
   const contentMinHeight = LIST_PAD * 2 + visibleItems.length * ROW_H;
 
@@ -963,7 +979,20 @@ export default function NotesScreen() {
           </Pressable>
         }
       />
-      <View style={styles.listArea}>{body}</View>
+      <View style={styles.listArea}>
+        {body}
+        {showScrollTop ? (
+          <Pressable
+            style={styles.scrollToTopButton}
+            onPress={scrollToTop}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll to top of notes"
+          >
+            <Icon name="chevron-up" size={20} color={colors.primaryForeground} />
+          </Pressable>
+        ) : null}
+      </View>
 
       <ConfirmDialog
         visible={pendingDelete !== null}
@@ -1379,6 +1408,18 @@ const styles = StyleSheet.create({
   },
   listArea: {
     flex: 1,
+  },
+  scrollToTopButton: {
+    position: "absolute",
+    right: spacing.md,
+    bottom: spacing.lg,
+    width: minTouchTarget,
+    height: minTouchTarget,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primary,
+    ...shadows.subtle,
   },
   listContent: {
     paddingVertical: LIST_PAD,
