@@ -18,7 +18,7 @@
 // That's why there is no socket subscription here: the list is already
 // correct by the time this component re-renders.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
@@ -59,6 +59,14 @@ export default function MessagesScreen() {
   const connection = useMessagingConnection();
   const sheetRef = useRef<BottomSheetModal>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // TEMPORARY diagnostic — remove alongside the other DEBUG toasts in this
+  // file. Fires unconditionally on mount, no tap required, so it proves
+  // whether THIS build (with the tap diagnostics) is actually the one
+  // running, independent of whether the tap itself works.
+  useEffect(() => {
+    showToast("DEBUG BUILD a538e76: Messages screen loaded", "success");
+  }, []);
 
   const conversationsQuery = useQuery({
     ...messagingQueries.conversations(),
