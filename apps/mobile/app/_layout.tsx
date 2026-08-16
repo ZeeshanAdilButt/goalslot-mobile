@@ -136,7 +136,24 @@ export default function RootLayout() {
     // screen can mount a BottomSheetModal (e.g. QuickAddSheet) without its
     // own local provider.
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <PersistQueryClientProvider client={queryClient} persistOptions={{ persister: asyncStoragePersister }}>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister: asyncStoragePersister,
+          // A restore-time cache version, not a build number: bump this string
+          // whenever a shipped bug is known to have written bad data into the
+          // persisted cache, so every existing install discards its on-disk
+          // snapshot once and rebuilds clean from the server, instead of
+          // carrying the corruption forward across in-place updates forever.
+          // This one covers the messages-query merge bug (see
+          // packages/shared/src/queries/messaging.ts) that let a socket
+          // reconnect loop resurrect and duplicate pending message bubbles —
+          // by the time that landed, some installs had accumulated thousands
+          // of zombie duplicates baked into their persisted cache, which no
+          // amount of fixing the merge logic going forward removes on its own.
+          buster: "2026-08-16-messaging-cache-corruption-fix",
+        }}
+      >
         <CapabilitiesProvider>
           <GrowthProvider>
             <BottomSheetModalProvider>
