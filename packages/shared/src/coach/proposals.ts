@@ -76,6 +76,20 @@ const ACTION_TYPE_SYNONYMS: Record<string, CoachProposalActionType> = {
   ADD_JOURNAL: 'APPEND_JOURNAL_ENTRY',
   WRITE_JOURNAL: 'APPEND_JOURNAL_ENTRY',
   JOURNAL_ENTRY: 'APPEND_JOURNAL_ENTRY',
+  // Same append-only reasoning as the journal synonyms above: every verb the
+  // model reaches for maps onto the one canonical, append-only action, since
+  // mapping a would-be "replace" onto an append can only ever add a
+  // paragraph the user didn't lose, never overwrite one they wrote.
+  CREATE_NOTE_CONTENT: 'APPEND_NOTE_CONTENT',
+  ADD_NOTE_CONTENT: 'APPEND_NOTE_CONTENT',
+  UPDATE_NOTE_CONTENT: 'APPEND_NOTE_CONTENT',
+  APPEND_NOTE: 'APPEND_NOTE_CONTENT',
+  ADD_NOTE: 'APPEND_NOTE_CONTENT',
+  ADD_TO_NOTE: 'APPEND_NOTE_CONTENT',
+  WRITE_NOTE: 'APPEND_NOTE_CONTENT',
+  APPEND_PAGE: 'APPEND_NOTE_CONTENT',
+  ADD_PAGE_CONTENT: 'APPEND_NOTE_CONTENT',
+  UPDATE_PAGE: 'APPEND_NOTE_CONTENT',
 }
 
 /**

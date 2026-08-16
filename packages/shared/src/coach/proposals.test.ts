@@ -61,6 +61,25 @@ describe('normalizeCoachActionType', () => {
   it('maps a lowercase timer near-miss, as dictated input tends to arrive', () => {
     expect(normalizeCoachActionType('start_tracking')).toBe('START_TIMER')
   })
+
+  it('accepts the note append type', () => {
+    expect(normalizeCoachActionType('APPEND_NOTE_CONTENT')).toBe('APPEND_NOTE_CONTENT')
+  })
+
+  it.each([
+    'CREATE_NOTE_CONTENT',
+    'ADD_NOTE_CONTENT',
+    'UPDATE_NOTE_CONTENT',
+    'APPEND_NOTE',
+    'ADD_NOTE',
+    'ADD_TO_NOTE',
+    'WRITE_NOTE',
+    'APPEND_PAGE',
+    'ADD_PAGE_CONTENT',
+    'UPDATE_PAGE',
+  ])('maps the note near-miss %s to APPEND_NOTE_CONTENT', (raw) => {
+    expect(normalizeCoachActionType(raw)).toBe('APPEND_NOTE_CONTENT')
+  })
 })
 
 describe('extractCoachProposals', () => {
@@ -124,6 +143,30 @@ describe('extractCoachProposals', () => {
 
     const { proposals } = extractCoachProposals(raw)
     expect(proposals[0]?.actions).toEqual([{ type: 'STOP_TIMER', payload: {} }])
+  })
+
+  it('keeps an APPEND_NOTE_CONTENT action with its titleHint and content intact', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"summary":"Add to your research papers note","actions":[{"type":"APPEND_NOTE_CONTENT","payload":{"titleHint":"research papers","content":"read about dynamo"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0]?.actions).toEqual([
+      { type: 'APPEND_NOTE_CONTENT', payload: { titleHint: 'research papers', content: 'read about dynamo' } },
+    ])
+  })
+
+  it('normalizes an APPEND_NOTE_CONTENT near-miss type inside the block', () => {
+    const raw = [
+      '```coach-proposal',
+      '{"actions":[{"type":"ADD_NOTE","payload":{"titleHint":"ideas","content":"ship v2"}}]}',
+      '```',
+    ].join('\n')
+
+    const { proposals } = extractCoachProposals(raw)
+    expect(proposals[0]?.actions[0]?.type).toBe('APPEND_NOTE_CONTENT')
   })
 
   it('drops an unmappable action but keeps the rest of the batch, and is not flagged unrenderable', () => {

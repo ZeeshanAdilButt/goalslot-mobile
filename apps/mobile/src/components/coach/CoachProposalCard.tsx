@@ -69,6 +69,10 @@ const ACTION_LABELS: Record<CoachProposalActionType, string> = {
   // CoachJournalService.appendContent). A label implying a replace would
   // promise something the backend deliberately refuses to do.
   APPEND_JOURNAL_ENTRY: "Add to journal",
+  // Same "Add to" reasoning as the journal label above — this action can
+  // only ever append to an EXISTING page (see the API's
+  // NotesService.appendContentByTitleHint), never create one.
+  APPEND_NOTE_CONTENT: "Add to page",
 };
 
 const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>([
@@ -269,6 +273,18 @@ function describeProposalAction(
     const date = readString(payload, "date");
     const day = date === null || date === todayKey() ? "today's entry" : `your ${date} entry`;
     return content === null ? `Adds a paragraph to ${day}` : `Adds to ${day}: "${clamp(content)}"`;
+  }
+
+  // Same reasoning as the journal branch just above, plus one extra wrinkle:
+  // unlike every other action type, this payload carries no id and no
+  // resolved name at all — `titleHint` is whatever the user called the page,
+  // and the backend (not this card) is what actually finds the match. The
+  // card can only show what was asked for, not which page it will land on.
+  if (action.type === "APPEND_NOTE_CONTENT") {
+    const titleHint = readString(payload, "titleHint");
+    const content = readString(payload, "content");
+    const target = titleHint === null ? "a page" : `"${titleHint}"`;
+    return content === null ? `Adds a paragraph to ${target}` : `Adds to ${target}: "${clamp(content)}"`;
   }
 
   const bits: string[] = [];

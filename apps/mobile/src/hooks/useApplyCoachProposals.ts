@@ -25,7 +25,7 @@ import type { CoachProposalAction, CoachProposalResult } from "@goalslot/shared"
 
 import { apiClient } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
-import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import { goalQueries, journalQueries, noteQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 
 export interface ApplyProposalsInput {
@@ -73,6 +73,12 @@ export function summariseProposalResults(results: readonly CoachProposalResult[]
  * root is invalidated rather than just the one day: the action's date is not
  * necessarily today (the user can ask for a past day), and the Journal tab
  * reads both a by-date entry and a date-range list.
+ *
+ * The notes root covers APPEND_NOTE_CONTENT — invalidated wholesale (list +
+ * every cached detail) for the same reason as the journal: the action names
+ * its target by title, not by the id this cache is keyed on, so there is no
+ * cheaper "just that one note" invalidation to do from here. Reopening the
+ * page it landed on shows the new paragraph either way.
  */
 function invalidateEverythingAProposalCanTouch(): void {
   void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
@@ -80,6 +86,7 @@ function invalidateEverythingAProposalCanTouch(): void {
   void queryClient.invalidateQueries({ queryKey: scheduleQueries.scheduleQueries.root() });
   void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
   void queryClient.invalidateQueries({ queryKey: journalQueries.journalQueries.all });
+  void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
 }
 
 export interface UseApplyCoachProposalsResult {

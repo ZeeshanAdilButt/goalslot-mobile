@@ -74,6 +74,18 @@ export type CoachProposalActionType =
   // extractCoachProposals from the DEVICE's local day — see
   // ../coach/proposals.ts — because the server's own fallback is UTC.
   | 'APPEND_JOURNAL_ENTRY'
+  // Adds a paragraph to an EXISTING note/page — payload
+  // `{ titleHint: string; content: string }`, no id at all: unlike every
+  // other action type, the Coach is never given the user's note titles/ids
+  // in its chat context, so `titleHint` is whatever the user called the
+  // page and the backend resolves it against the user's own notes (exact
+  // title match preferred, substring fallback — see goal-slot-api's
+  // NotesService.appendContentByTitleHint / note-content.ts). APPEND-ONLY,
+  // same contract as APPEND_JOURNAL_ENTRY: never replaces the page's
+  // existing content. An ambiguous or absent title match fails the action
+  // with an explanatory message rather than guessing or creating a new page
+  // — that message is what CoachProposalResult.error carries back.
+  | 'APPEND_NOTE_CONTENT'
 
 /**
  * Runtime source-of-truth for the action types the API accepts (mirrors
@@ -104,6 +116,7 @@ export const COACH_PROPOSAL_ACTION_TYPES: readonly CoachProposalActionType[] = [
   'START_TIMER',
   'STOP_TIMER',
   'APPEND_JOURNAL_ENTRY',
+  'APPEND_NOTE_CONTENT',
 ]
 
 export interface CoachProposalAction {
