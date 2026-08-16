@@ -22,6 +22,7 @@ import { createJournalApi } from './journal'
 import { createLabelsApi } from './labels'
 import { createMessagingApi } from './messaging'
 import { createNotesApi } from './notes'
+import { createNotificationsApi } from './notifications'
 import { createPushSubscriptionsApi } from './push-subscriptions'
 import { createSharingApi } from './sharing'
 import { createScheduleApi } from './schedule'
@@ -240,6 +241,10 @@ export function createApiClient(config: ApiClientConfig) {
     // Same accepted-share prerequisite as `sharing.getSharedUser*` above,
     // enforced server-side.
     instructions: createInstructionsApi(api),
+    // In-app notification history (bell icon / notification-center screen) —
+    // the same `Notification` rows every dispatch already writes server-side.
+    // See ./notifications.ts.
+    notifications: createNotificationsApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.

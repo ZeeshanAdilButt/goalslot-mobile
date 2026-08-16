@@ -1299,6 +1299,16 @@ function createNotesApi(api) {
   };
 }
 
+// src/api/notifications.ts
+function createNotificationsApi(api) {
+  return {
+    list: (params) => api.get("/notifications", { params }),
+    // 404 if the id doesn't exist, 403 if it isn't the caller's own — both
+    // surface as a normal thrown AxiosError, same as every other client here.
+    markRead: (id) => api.patch(`/notifications/${id}/read`)
+  };
+}
+
 // src/api/push-subscriptions.ts
 function createPushSubscriptionsApi(api) {
   return {
@@ -1608,6 +1618,10 @@ function createApiClient(config) {
     // Same accepted-share prerequisite as `sharing.getSharedUser*` above,
     // enforced server-side.
     instructions: createInstructionsApi(api),
+    // In-app notification history (bell icon / notification-center screen) —
+    // the same `Notification` rows every dispatch already writes server-side.
+    // See ./notifications.ts.
+    notifications: createNotificationsApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.
@@ -2248,6 +2262,40 @@ function createInstructionsQueries(api) {
     assignedToMe: () => queryOptions14({
       queryKey: instructionsQueries.assignedToMe(),
       queryFn: async () => (await api.listAssignedToMe()).data
+    })
+  };
+}
+
+// src/queries/notifications.ts
+import { infiniteQueryOptions, queryOptions as queryOptions15 } from "@tanstack/react-query";
+var DEFAULT_PAGE_SIZE2 = 20;
+function createNotificationQueries(api) {
+  const notificationQueries = {
+    all: ["notifications"],
+    list: () => [...notificationQueries.all, "list"],
+    // Deliberately a DIFFERENT key from `list()` above, not a read off it:
+    // `list()` backs a `useInfiniteQuery` and caches an `InfiniteData` page
+    // structure, not a flat `NotificationListResponse` — pointing a plain
+    // `useQuery` (the bell badge) at the same key would either collide with
+    // that shape or fight it for cache ownership. `limit: 1` keeps this a
+    // cheap poll (a bell badge only needs the count every response already
+    // carries, not the page of items).
+    unreadCount: () => [...notificationQueries.all, "unread-count"]
+  };
+  const fetchPage = async (cursor) => (await api.list({ cursor, limit: DEFAULT_PAGE_SIZE2 })).data;
+  return {
+    notificationQueries,
+    /** The notification-center screen's list — paged with `fetchNextPage`. */
+    infiniteList: () => infiniteQueryOptions({
+      queryKey: notificationQueries.list(),
+      queryFn: ({ pageParam }) => fetchPage(pageParam),
+      initialPageParam: void 0,
+      getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor ?? void 0 : void 0
+    }),
+    /** Bell-icon badge count — see `unreadCount()`'s key comment above for why this isn't read off `infiniteList()`. */
+    unreadCount: () => queryOptions15({
+      queryKey: notificationQueries.unreadCount(),
+      queryFn: async () => (await api.list({ limit: 1 })).data.unreadCount
     })
   };
 }
@@ -3689,6 +3737,8 @@ export {
   createNoopCapabilities,
   createNoteQueries,
   createNotesApi,
+  createNotificationQueries,
+  createNotificationsApi,
   createOfflineSync,
   createOperationRegistry,
   createOutbox,

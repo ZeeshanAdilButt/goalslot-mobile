@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
-import { AppState, Pressable, StyleSheet, View, type ColorValue } from "react-native";
+import { AppState, Pressable, StyleSheet, Text, View, type ColorValue } from "react-native";
 import { SafeAreaView, initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
+import { Redirect, Tabs, usePathname, useRouter, type Href } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/components/ui/Icon";
 import { ScheduleRemindersSync } from "@/components/schedule";
@@ -13,9 +14,10 @@ import { GlobalTrackingBanner } from "@/components/timer/GlobalTrackingBanner";
 import { SearchOverlay } from "@/components/search/SearchOverlay";
 import type { SearchHref } from "@/components/search/search-index";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
+import { notificationQueries } from "@/lib/queries";
 import { useTimerStore } from "@/lib/timer-store";
 import { syncWidgets } from "@/widgets/widget-sync";
-import { colors, radii, shadows, spacing } from "@/theme/tokens";
+import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 /**
  * Floor for the tab bar's bottom clearance above the system nav bar/gesture
@@ -91,6 +93,21 @@ function renderVoiceTabButton(props: ComponentProps<typeof VoiceTabButton>) {
   return <VoiceTabButton {...props} />;
 }
 
+/**
+ * Bell badge count — the (app) layout's own floating header column (see the
+ * hamburger/search/bell Pressable stack near the bottom of this file), not
+ * just the notifications screen, needs this, so it's a standalone hook
+ * rather than something read off the notification-center screen's own
+ * query. `enabled` is threaded through rather than always-on so this stays
+ * inert during the brief render where `status` is still 'unauthenticated'
+ * (see AppLayout's own hook-ordering comment for why that render still
+ * happens at all).
+ */
+function useUnreadNotificationsCount(enabled: boolean): number {
+  const unreadQuery = useQuery({ ...notificationQueries.unreadCount(), enabled });
+  return unreadQuery.data ?? 0;
+}
+
 const todayTabOptions = { title: "Today", tabBarIcon: renderTodayIcon };
 const scheduleTabOptions = { title: "Schedule", tabBarIcon: renderScheduleIcon };
 // The mic. `tabBarButton` replaces the whole tab item, which is what lets
@@ -138,6 +155,15 @@ export default function AppLayout() {
   // return would break the hook order on that render.
   useMessagingLiveUpdates(status === "authenticated");
 
+  // Bell badge — same "authenticated-only, but the hook itself still has to
+  // run every render" rule as the socket above. Polled via react-query's
+  // normal stale-time/refetch-on-mount/reconnect behavior rather than a
+  // dedicated socket event: unlike messaging there's no always-on
+  // notification-center connection to piggyback on, and a notification
+  // center is not a chat window — a few seconds' staleness on the badge
+  // count is an acceptable trade against another persistent connection.
+  const unreadNotifications = useUnreadNotificationsCount(status === "authenticated");
+
   // Hooks above this point must all run unconditionally on every render —
   // `status` can flip from 'authenticated' to 'unauthenticated' (logout)
   // while this component is already mounted, so the redirect below has to
@@ -160,6 +186,13 @@ export default function AppLayout() {
     },
     [router],
   );
+  // `as Href` cast, same as index.tsx's own literal-path pushes — typed
+  // routes' generated `.expo/types/router.d.ts` isn't guaranteed to exist
+  // wherever this typechecks (see deep-links.ts's header comment on the
+  // same constraint).
+  const openNotifications = useCallback(() => {
+    router.push("/notifications" as Href);
+  }, [router]);
 
   // Two independently-sourced readings of the same physical quantity, taken
   // as `Math.max(...)` against the documented floor — see
@@ -373,6 +406,13 @@ export default function AppLayout() {
             name="instructions"
             options={{ title: "Instructions", href: null }}
           />
+          {/* Notification center — pushed from the bell in the floating
+              header column below, not reachable from the drawer or tab bar.
+              Same "pushed, not tabbed" shape as instructions/mentee/[id]. */}
+          <Tabs.Screen
+            name="notifications"
+            options={{ title: "Notifications", href: null }}
+          />
         </Tabs>
       </View>
 
@@ -411,7 +451,11 @@ export default function AppLayout() {
           other files too, and GlobalTrackingBanner.tsx is the tap-through
           pill's own implementation, off-limits while it's being edited
           elsewhere. Stacking vertically reuses the same reserved column
-          those files already protect, so nothing else needs to change. */}
+          those files already protect, so nothing else needs to change. The
+          bell stacks a third time below search on the same reasoning — it's
+          another vertical addition to a column whose reserved clearance is
+          purely horizontal, not a new column that would need its own gutter
+          reserved elsewhere. */}
       <SafeAreaView
         style={styles.hamburgerSafeArea}
         edges={["top", "right"]}
@@ -451,6 +495,33 @@ export default function AppLayout() {
             hitSlop={8}
           >
             <Icon name="search" color={colors.foreground} size={20} />
+          </Pressable>
+          <Pressable
+            onPress={openNotifications}
+            style={styles.notificationsTriggerButton}
+            accessibilityRole="button"
+            // Count belongs in the accessible name too — the visual badge
+            // alone tells a screen-reader user nothing, same rule
+            // DrawerContent's Messages row follows for its own badge.
+            accessibilityLabel={
+              unreadNotifications > 0
+                ? `Notifications, ${unreadNotifications} unread`
+                : "Notifications"
+            }
+            hitSlop={8}
+          >
+            <Icon name="bell" color={colors.foreground} size={20} />
+            {unreadNotifications > 0 ? (
+              <View
+                style={styles.notificationBadge}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+              >
+                <Text style={styles.notificationBadgeText}>
+                  {unreadNotifications > 99 ? "99+" : unreadNotifications}
+                </Text>
+              </View>
+            ) : null}
           </Pressable>
         </View>
       </SafeAreaView>
@@ -498,5 +569,40 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.card,
     ...shadows.fab,
+  },
+  notificationsTriggerButton: {
+    width: 40,
+    height: 40,
+    marginRight: spacing.lg,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.card,
+    ...shadows.fab,
+  },
+  // Same brand-yellow-fill-with-dark-text treatment as DrawerContent's
+  // Messages badge (the app's one existing unread-count convention) —
+  // overlaid on the button's corner rather than inline, since this badge
+  // sits on a bare icon with no label text to dock beside.
+  notificationBadge: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: radii.full,
+    backgroundColor: colors.primary,
+    borderWidth: 1.5,
+    borderColor: colors.card,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  notificationBadgeText: {
+    ...typography.caption,
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "700",
+    color: colors.foreground,
   },
 });

@@ -17,6 +17,7 @@ import {
   createLabelQueries,
   createMessagingQueries,
   createNoteQueries,
+  createNotificationQueries,
   createScheduleQueries,
   createSharingQueries,
   createTaskQueries,
@@ -57,3 +58,7 @@ export const messagingQueries = createMessagingQueries(messagingClient, apiClien
 export const sharingQueries = createSharingQueries(apiClient.sharing);
 // Assign/list instructions a mentor gives a mentee.
 export const instructionsQueries = createInstructionsQueries(apiClient.instructions);
+// In-app notification history — bell icon badge + the notification-center
+// list screen (app/(app)/notifications.tsx). Same server-side `Notification`
+// rows every dispatch already writes; see packages/shared/src/api/notifications.ts.
+export const notificationQueries = createNotificationQueries(apiClient.notifications);
