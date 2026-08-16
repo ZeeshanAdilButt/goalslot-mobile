@@ -1411,7 +1411,16 @@ const styles = StyleSheet.create({
   },
   scrollToTopButton: {
     position: "absolute",
-    right: spacing.md,
+    // Neither screen edge is safe: every row's own "+" subpage button sits
+    // right-aligned (paddingRight: spacing.lg — addSubpageButton below), and
+    // every row's expand/collapse chevron sits left-aligned starting at the
+    // SAME ~16px inset for a top-level (depth 0) row (see `paddingLeft: 16 +
+    // item.depth * INDENT_W`). A corner-docked floating button at nearly
+    // matching insets painted over — and stole taps from — whichever
+    // control shared that corner, for whatever row scrolled into that band,
+    // not just the last one. Centered horizontally clears both edge
+    // controls at every depth actually used in this app's trees.
+    alignSelf: "center",
     bottom: spacing.lg,
     width: minTouchTarget,
     height: minTouchTarget,
@@ -1422,7 +1431,11 @@ const styles = StyleSheet.create({
     ...shadows.subtle,
   },
   listContent: {
-    paddingVertical: LIST_PAD,
+    paddingTop: LIST_PAD,
+    // Belt-and-suspenders alongside the left/right move above: still keep
+    // the last row(s) clear of the button's footprint at the true end of
+    // the list, in case a future row layout ever puts content on the left.
+    paddingBottom: LIST_PAD + minTouchTarget + spacing.lg + spacing.sm,
   },
   rowLifted: {
     zIndex: 100,
