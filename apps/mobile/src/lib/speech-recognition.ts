@@ -73,6 +73,21 @@ interface ErrorEvent {
   message: string;
 }
 
+/**
+ * How long the recognizer waits after speech stops before deciding the
+ * person is done talking. People pause mid-thought while journaling or
+ * talking to Coach far more than the OS's own default silence window (often
+ * ~1-2s) allows for — this is the app's answer to "give me a beat to think"
+ * rather than treating a thinking pause as the end of the utterance.
+ *
+ * Android exposes this as a tunable `RecognizerIntent` extra (set below).
+ * iOS's `SFSpeechRecognizer` has no equivalent per-call option in this
+ * library — its end-of-speech detection is opaque and not tunable from JS,
+ * so this constant only takes effect on Android; iOS keeps the OS's own
+ * (shorter, uncontrollable) silence detection.
+ */
+const SILENCE_TOLERANCE_MS = 5_000;
+
 let cached: SpeechRecognitionNativeModule | null | undefined;
 
 function loadModule(): SpeechRecognitionNativeModule | null {
@@ -253,6 +268,19 @@ export function createSpeechRecognitionCapability(): VoiceCapability {
           // to the network recognizer automatically when it cannot, which is
           // why this is not gated on `supportsOnDeviceRecognition()`.
           requiresOnDeviceRecognition: Platform.OS === "ios",
+          // Stretch the silence window that ends a session — see
+          // SILENCE_TOLERANCE_MS above. Android-only: iOS has no matching
+          // option on this module.
+          ...(Platform.OS === "android"
+            ? {
+                androidIntentOptions: {
+                  EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: SILENCE_TOLERANCE_MS,
+                  // Prevents the endpointer cutting off during a shorter
+                  // mid-speech pause than the full silence window above.
+                  EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: SILENCE_TOLERANCE_MS,
+                },
+              }
+            : {}),
         });
       } catch {
         handlers.onError?.({ kind: "unknown", message: ERROR_COPY.unknown });

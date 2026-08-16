@@ -115,7 +115,7 @@ const ROW_ACCESSIBILITY_ACTIONS: AccessibilityActionInfo[] = [{ name: "delete", 
 // is untouched: every time a session settles (a phrase committed, or a
 // recoverable silent gap), `captureActiveRef` below decides whether to call
 // `start()` again, which is what makes the mic feel continuously open
-// despite the hook's one-shot, 15s-capped design.
+// despite the hook's one-shot, 60s-capped design.
 //
 // How long a run of *silent* segments is tolerated, in total elapsed
 // wall-clock time, before giving up and surfacing a message.

@@ -25,8 +25,14 @@ import { hapticCompletion, hapticListenEnd, hapticListenStart, hapticWarning } f
  * itself after a pause in speech, but a wedged native session otherwise
  * leaves the mic indicator lit with no way back — the state this exists to
  * make impossible.
+ *
+ * Kept well above the recognizer's own silence tolerance (5s — see
+ * SILENCE_TOLERANCE_MS in src/lib/speech-recognition.ts) so a person who
+ * pauses to think doesn't get cut off by this failsafe before the silence
+ * detection even has a chance to fire. This is a wedged-session backstop,
+ * not the thing that decides when a normal pause ends the session.
  */
-const MAX_LISTEN_MS = 15_000;
+const MAX_LISTEN_MS = 60_000;
 
 /** How long a success state stays up before the surface returns to rest. */
 const SUCCESS_LINGER_MS = 2_200;
