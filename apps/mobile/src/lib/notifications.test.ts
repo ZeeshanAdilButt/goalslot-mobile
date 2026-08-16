@@ -40,6 +40,8 @@ jest.mock("expo-notifications", () => ({
   AndroidNotificationPriority: { MAX: "max", HIGH: "high", DEFAULT: "default", LOW: "low", MIN: "min" },
   AndroidImportance: { MAX: 5, HIGH: 4, DEFAULT: 3, LOW: 2, MIN: 1 },
   AndroidNotificationVisibility: { PUBLIC: 1, PRIVATE: 0, SECRET: -1 },
+  AndroidAudioUsage: { UNKNOWN: 0, MEDIA: 1, ALARM: 4, NOTIFICATION: 5 },
+  AndroidAudioContentType: { UNKNOWN: 0, SPEECH: 1, MUSIC: 2, MOVIE: 3, SONIFICATION: 4 },
 }));
 
 describe("createExpoNotificationCapability", () => {
@@ -231,6 +233,35 @@ describe("createExpoNotificationCapability", () => {
       expect(request.trigger.channelId).toBe(channelId);
       // Not the timer's deliberately-quiet channel.
       expect(channelId).not.toBe("goalslot-timer");
+    });
+
+    // THE regression this app actually shipped: a MAX-importance channel with
+    // no audioAttributes still plays over Android's standard
+    // notification/ringer stream, so turning ringer volume down (while Alarm
+    // volume stays up) silenced a "schedule alarm" — the opposite of what an
+    // alarm is supposed to do. `usage: ALARM` moves it to STREAM_ALARM, which
+    // only the device's separate Alarm volume slider controls.
+    it("puts the alarm channel's sound on the ALARM audio stream, not the notification stream", async () => {
+      setPlatform("android");
+
+      await scheduleAlarm();
+
+      const [, config] = mockSetNotificationChannelAsync.mock.calls[0];
+      expect(config.audioAttributes?.usage).toBe(4); // AndroidAudioUsage.ALARM
+    });
+
+    // Importance/sound/audioAttributes are frozen on an Android channel id
+    // once created — a real device that already has the old (pre-fix) v1
+    // channel installed would keep using the notification stream forever
+    // unless the app switches to a new id.
+    it("uses a new channel id so already-installed devices don't keep the old, non-ALARM-stream channel", async () => {
+      setPlatform("android");
+
+      const request = await scheduleAlarm();
+
+      const [channelId] = mockSetNotificationChannelAsync.mock.calls[0];
+      expect(channelId).not.toBe("goalslot-schedule-alarms-v1");
+      expect(request.trigger.channelId).toBe(channelId);
     });
 
     it("creates the channel once, not once per block", async () => {

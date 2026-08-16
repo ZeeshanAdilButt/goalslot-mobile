@@ -27,13 +27,23 @@ import type { NotificationCapability, NotificationInput } from "@goalslot/shared
  *
  * A channel's importance and sound are FROZEN at creation on Android 8+ —
  * `setNotificationChannelAsync` on an existing id can update the name but the
- * OS ignores importance/sound changes, by design, so an app can't quietly
- * re-escalate something a user turned down. The id therefore carries a
- * version suffix: shipping a channel with the wrong importance once would
- * otherwise be permanent for every existing install. Bump the suffix if these
- * settings ever need to change again.
+ * OS ignores importance/sound/audioAttributes changes, by design, so an app
+ * can't quietly re-escalate something a user turned down. The id therefore
+ * carries a version suffix: shipping a channel with the wrong importance
+ * once would otherwise be permanent for every existing install. Bump the
+ * suffix if these settings ever need to change again.
+ *
+ * v2 bump reason: v1 had no `audioAttributes`, so Android played it over the
+ * standard notification/ringer stream — a phone with ringer volume turned
+ * down (but Alarm volume up) got a silent "alarm". `ensureAlarmChannel` now
+ * sets `audioAttributes.usage: ALARM`, which puts this channel's sound on
+ * `STREAM_ALARM`, governed by the device's separate Alarm volume slider,
+ * same as the OS clock app. Because that attribute is frozen at creation
+ * too, existing installs would keep using the old v1 channel's notification
+ * stream forever without this id bump — v1 is intentionally abandoned, not
+ * deleted (same pattern as the schedule/notify channel history above).
  */
-const ALARM_CHANNEL_ID = "goalslot-schedule-alarms-v1";
+const ALARM_CHANNEL_ID = "goalslot-schedule-alarms-v2";
 
 /**
  * Android channel for the gentler "notify" tier (`NotificationInput.notify`).
@@ -66,6 +76,18 @@ async function ensureAlarmChannel(): Promise<void> {
     description: "Alerts when one of your scheduled time slots begins.",
     importance: Notifications.AndroidImportance.MAX,
     sound: "default",
+    // THE fix for "alarms don't sound when media/ringer volume is low":
+    // without this, the channel's sound plays over Android's default
+    // notification audio stream, which shares the ringer/notification volume
+    // slider — not the separate Alarm volume slider the user expects an
+    // "alarm" to respect. `usage: ALARM` puts it on STREAM_ALARM instead,
+    // same as the OS clock app, so it stays audible regardless of ringer
+    // volume. `contentType: SONIFICATION` is the attribute Android's own
+    // alarm/notification sounds use (as opposed to SPEECH/MUSIC/MOVIE).
+    audioAttributes: {
+      usage: Notifications.AndroidAudioUsage.ALARM,
+      contentType: Notifications.AndroidAudioContentType.SONIFICATION,
+    },
     vibrationPattern: ALARM_VIBRATION_PATTERN,
     enableVibrate: true,
     // Show the block's title on the lock screen — this is the surface the
