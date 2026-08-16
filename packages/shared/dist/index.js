@@ -960,12 +960,7 @@ async function postCoachStream(config, path, body, signal) {
   return parseCoachSseStream(res, signal);
 }
 function currentCoachWeekScopeKey(now = /* @__PURE__ */ new Date()) {
-  const date = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-  const dayNum = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const weekNo = Math.ceil(((date.getTime() - yearStart.getTime()) / 864e5 + 1) / 7);
-  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+  return getISOWeekKey(now);
 }
 
 // src/api/coach-settings.ts

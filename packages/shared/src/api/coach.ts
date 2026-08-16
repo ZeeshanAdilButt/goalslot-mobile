@@ -22,6 +22,8 @@
 
 import type { AxiosInstance } from 'axios'
 
+import { getISOWeekKey } from '../scheduling/time'
+
 export type CoachMessageRole = 'USER' | 'ASSISTANT' | 'SYSTEM_NARRATIVE'
 
 export interface CoachMessageDto {
@@ -437,12 +439,13 @@ export async function postCoachStream(
  * which the mobile chat doesn't expose in this first pass (chat always
  * targets the current week, matching how a phone-sized chat screen has no
  * room for a scope switcher yet).
+ *
+ * Thin wrapper over `../scheduling/time`'s `getISOWeekKey` — same ISO-week
+ * math, kept as its own named export here (rather than every Coach call site
+ * importing `getISOWeekKey` directly) because "current scope key" is a
+ * Coach-domain concept and the two previously drifted into two copies of the
+ * same six-line algorithm before this was consolidated.
  */
 export function currentCoachWeekScopeKey(now: Date = new Date()): string {
-  const date = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
-  const dayNum = date.getUTCDay() || 7
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum)
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
-  const weekNo = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7)
-  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
+  return getISOWeekKey(now)
 }

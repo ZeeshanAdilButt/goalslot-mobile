@@ -1555,6 +1555,12 @@ declare function postCoachStream(config: CoachStreamRequestConfig, path: string,
  * which the mobile chat doesn't expose in this first pass (chat always
  * targets the current week, matching how a phone-sized chat screen has no
  * room for a scope switcher yet).
+ *
+ * Thin wrapper over `../scheduling/time`'s `getISOWeekKey` — same ISO-week
+ * math, kept as its own named export here (rather than every Coach call site
+ * importing `getISOWeekKey` directly) because "current scope key" is a
+ * Coach-domain concept and the two previously drifted into two copies of the
+ * same six-line algorithm before this was consolidated.
  */
 declare function currentCoachWeekScopeKey(now?: Date): string;
 
