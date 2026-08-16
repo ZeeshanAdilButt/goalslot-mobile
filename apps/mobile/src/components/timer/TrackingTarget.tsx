@@ -19,7 +19,18 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { cleanLabel } from "@/lib/timer-attribution";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
-/** The schedule block that's live right now, offered as a one-tap attribution. */
+/**
+ * The schedule block that's live right now.
+ *
+ * Offered as a one-tap attribution (the dashed "Scheduled now" chip) while
+ * the goal slot is empty — that's the case `showSuggestionChip` below
+ * gates on. Once a goal IS attached, the same data still has a job: telling
+ * the user which block is live gets downgraded from an actionable suggestion
+ * to a passive "Scheduled: {blockTitle}" line (`showScheduledLabel`), since
+ * offering to overwrite an attribution that's already set would be the wrong
+ * affordance — the block may just be informational context (or may not even
+ * match what's attached), not something to apply.
+ */
 export interface TrackingTargetSuggestion {
   blockTitle: string;
   goalTitle: string;
@@ -73,7 +84,16 @@ export function TrackingTarget({
   const name = cleanLabel(sessionName);
   const accent = accentColor ?? colors.mutedForeground;
 
-  const showSuggestion = suggestion !== null && suggestion !== undefined && goalTitle === null && !goalUnresolved;
+  const hasSuggestion = suggestion !== null && suggestion !== undefined;
+  // The actionable chip only makes sense while there's genuinely nothing
+  // attached yet — once a goal is set (or its id is set but still resolving,
+  // `goalUnresolved`), applying the suggestion would silently overwrite it.
+  const showSuggestionChip = hasSuggestion && goalTitle === null && !goalUnresolved;
+  // The passive fallback: same live block, no "Use" affordance, shown
+  // whenever the chip isn't — i.e. whenever a goal is already attached (or
+  // resolving). This is what keeps "what's scheduled right now" visible on
+  // screen even after a goal's been picked, see this file's header.
+  const showScheduledLabel = hasSuggestion && !showSuggestionChip;
   // A session name that just repeats a slot's title is noise, not information.
   const showName = name !== null && name !== goalTitle && name !== taskTitle;
 
@@ -85,7 +105,7 @@ export function TrackingTarget({
         </Text>
       ) : null}
 
-      {showSuggestion ? (
+      {showSuggestionChip ? (
         <Pressable
           style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}
           onPress={onApplySuggestion}
@@ -108,6 +128,19 @@ export function TrackingTarget({
             <Text style={styles.useChipText}>Use</Text>
           </View>
         </Pressable>
+      ) : null}
+
+      {showScheduledLabel ? (
+        <View
+          style={styles.scheduledLabel}
+          accessible
+          accessibilityLabel={`Scheduled: ${suggestion.blockTitle}`}
+        >
+          <Icon name="schedule" size={14} color={colors.mutedForeground} />
+          <Text style={styles.scheduledLabelText} numberOfLines={1}>
+            Scheduled: {suggestion.blockTitle}
+          </Text>
+        </View>
       ) : null}
 
       <Slot
@@ -253,6 +286,17 @@ const styles = StyleSheet.create({
     borderStyle: "dashed",
     borderColor: colors.border,
     backgroundColor: colors.secondary,
+  },
+  scheduledLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xxs,
+    paddingHorizontal: spacing.xs,
+  },
+  scheduledLabelText: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
+    flexShrink: 1,
   },
   emptySlot: {
     ...slotBase,
