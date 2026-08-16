@@ -216,7 +216,19 @@ export default function JournalScreen() {
   useJournalReminderSync();
 
   const today = useMemo(() => todayKey(), []);
-  const [selectedDate, setSelectedDate] = useState(today);
+  // Notification-tap deep link: `/journal?date=YYYY-MM-DD` (see
+  // src/lib/deep-links.ts's `journalDeepLink`/`resolveNotificationRoute`).
+  // Read once at mount to seed the initial entry, same "consume once"
+  // pattern as the `voice` param below — after mount, the day-switcher
+  // (goToPreviousDay/goToNextDay/RecentDayBadge taps) owns `selectedDate`.
+  // Every journal reminder sent today omits `date` (it's always "today"),
+  // so this is forward-looking for a future date-specific journal push, and
+  // a malformed/out-of-range value just falls back to today rather than
+  // opening an entry that doesn't make sense.
+  const { date: dateParam } = useLocalSearchParams<{ date?: string }>();
+  const [selectedDate, setSelectedDate] = useState(() =>
+    dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) && dateParam <= today ? dateParam : today,
+  );
   const [draft, setDraft] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

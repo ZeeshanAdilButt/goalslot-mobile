@@ -50,12 +50,27 @@ const ROUTES = {
   // already use (packages/shared/src/voice/resolve.ts).
   timerAutoStartSpoken: (spokenName: string): string =>
     `/timer?autostart=spoken&spokenName=${encodeURIComponent(spokenName)}`,
-  journal: (): string => "/journal",
+  journal: (date?: string): string => (date ? `/journal?date=${encodeURIComponent(date)}` : "/journal"),
   journalVoiceCapture: (): string => "/journal?voice=1",
   // The one route here that is fed by a REMOTE push rather than a local
   // notification this app scheduled — see `conversation` in
   // DeepLinkNotificationData below.
   conversation: (conversationId: string): string => `/message/${encodeURIComponent(conversationId)}`,
+  // Server-side `INSTRUCTION_ASSIGNED` push target — the mentee-facing
+  // "Instructions" screen (app/(app)/instructions.tsx), reached today from
+  // Today's "Assigned to you" card. `instructionId` is threaded through as a
+  // query param on the same "accepted now, read later" basis as
+  // `goals`/`tasks` above — the screen doesn't scroll-to/highlight it yet.
+  instructions: (instructionId?: string): string =>
+    instructionId ? `/instructions?instructionId=${encodeURIComponent(instructionId)}` : "/instructions",
+  // Server-side `SHARED_REPORT_UNVIEWED` push target. The payload only ever
+  // carries `sharedAccessId` (a SharedAccess row id), not the mentee's
+  // `ownerId` that mentee/[id].tsx actually routes on — resolving one to the
+  // other needs an authenticated list call (`sharingQueries.sharedWithMe()`),
+  // which this synchronous resolver can't make. Landing on the Sharing list
+  // (where that lookup already happens for the human) is the honest "best
+  // resolvable" target, not a guess at a detail route that might 404.
+  mentees: (): string => "/mentees",
 } as const;
 
 /** Must match `expo.scheme` in app.json. */
@@ -99,6 +114,22 @@ export function taskDeepLink(taskId: string): string {
 /** Shareable deep link to the Schedule tab, scoped to a given day of week. */
 export function scheduleDayDeepLink(dayOfWeek: ScheduleDayOfWeek): string {
   return toDeepLinkUrl(ROUTES.scheduleDay(dayOfWeek));
+}
+
+/**
+ * Parses the `day` query param `scheduleDayDeepLink`/`ROUTES.scheduleDay`
+ * write (`/schedule?day=N`) back into a `ScheduleDayOfWeek`, or `null` if
+ * missing or out of range. app/(app)/schedule.tsx uses this to seed its
+ * initial day from a notification tap or shared link — until this existed,
+ * the screen always ignored `day` and opened on today's weekday regardless
+ * of which day the tap was actually about.
+ */
+export function parseScheduleDayParam(value: string | undefined): ScheduleDayOfWeek | null {
+  if (value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  return isScheduleDayOfWeek(parsed) ? parsed : null;
 }
 
 /** Shareable deep link to the Timer tab as-is — e.g. for jumping to an already-running session. */
@@ -147,9 +178,9 @@ export function timerAutoStartSpokenDeepLink(spokenName: string): string {
   return toDeepLinkUrl(ROUTES.timerAutoStartSpoken(spokenName));
 }
 
-/** Shareable deep link to the Journal tab, today's entry, as-is (no voice capture). */
-export function journalDeepLink(): string {
-  return toDeepLinkUrl(ROUTES.journal());
+/** Shareable deep link to the Journal tab. Defaults to today's entry; pass `date` (`YYYY-MM-DD`) for a specific past entry. */
+export function journalDeepLink(date?: string): string {
+  return toDeepLinkUrl(ROUTES.journal(date));
 }
 
 /**
@@ -178,27 +209,49 @@ export function journalVoiceCaptureDeepLink(): string {
  *   { type: "today" }
  *   { type: "goal", id: "<goalId>" }
  *   { type: "task", id: "<taskId>" }
- *   { type: "schedule", dayOfWeek: 0-6 }   // 0 = Sunday .. 6 = Saturday
+ *   { type: "schedule", dayOfWeek: 0-6 }        // 0 = Sunday .. 6 = Saturday — local schedule-block alarm
+ *   { type: "schedule", sharedAccessId: "<id>" } // SHARED_REPORT_UNVIEWED push — see note below
+ *   { type: "journal" }                          // or { type: "journal", date: "YYYY-MM-DD" }
+ *   { type: "conversation", conversationId: "<id>" }
+ *   { type: "instruction", instructionId: "<id>" }
+ *   { type: "release" }                          // or { type: "release", url: "https://..." }
  *
- * This is the contract the (separately built) `NotificationCapability`
- * implementation needs to target when it schedules a notification — set
- * this shape as its `content.data`. Note `packages/shared/src/capabilities`'s
- * `NotificationInput` doesn't carry a `data` field yet as of this writing;
- * extending it is a prerequisite for real notifications to round-trip
- * through this routing layer. This file doesn't depend on that work landing
- * — it only depends on `expo-notifications`' response shape, which is the
- * same regardless of which `NotificationCapability` implementation
- * schedules the notification (noop or real).
+ * This is the contract the `NotificationCapability` implementation targets
+ * when it schedules a local notification, and the shape every server push's
+ * `data` field is expected to already carry (`packages/shared/src/capabilities`'s
+ * `NotificationInputBase.data?: Record<string, unknown>` has carried this
+ * since before this file existed — nothing here is waiting on that to land).
+ *
+ * `resolveNotificationRoute`/`resolveNotificationAction` below are the SINGLE
+ * place that maps this data to app behavior — app/_layout.tsx's OS-level
+ * tap handler and any future in-app notification-center list are both
+ * expected to call through here rather than re-switching on `data.type`
+ * themselves, so a new notification type only ever needs teaching once.
  */
 export type DeepLinkNotificationData =
   | { type: "today" }
   | { type: "goal"; id: string }
   | { type: "task"; id: string }
+  // Local schedule-block alarm (src/lib/schedule-reminders.ts).
   | { type: "schedule"; dayOfWeek: ScheduleDayOfWeek }
+  // goal-slot-api's SHARED_REPORT_UNVIEWED push (reminder-dispatch.service.ts's
+  // `sweepStaleReports`) reuses the literal tag "schedule" — a real naming
+  // collision with the local-alarm member above, not a client-side choice —
+  // but carries `sharedAccessId` (a SharedAccess row id) instead of
+  // `dayOfWeek`, so the two are disambiguated structurally at the type-guard/
+  // resolver, not by the tag alone. Resolving `sharedAccessId` to the
+  // specific mentee's report screen (mentee/[id].tsx) would need an
+  // authenticated `sharingQueries.sharedWithMe()` lookup this synchronous
+  // resolver can't perform, so this routes to the Sharing list instead,
+  // where that lookup already happens for the human — see ROUTES.mentees.
+  | { type: "schedule"; sharedAccessId: string }
   // The journal reminder's tap target (src/lib/journal-reminders.ts) — opens
-  // today's entry directly rather than cold-opening to Today, since the
-  // whole point of the notification is "go write in your journal now".
-  | { type: "journal" }
+  // an entry directly rather than cold-opening to Today, since the whole
+  // point of the notification is "go write in your journal now". `date`
+  // (`YYYY-MM-DD`) is optional — every local reminder sent today omits it
+  // (always means "today's entry"), but a future server-originated journal
+  // notification about a specific past entry can carry one.
+  | { type: "journal"; date?: string }
   // "<name> sent you a message". Unlike every other member of this union,
   // this payload is minted SERVER-side, not by this app: it is exactly what
   // goal-slot-api's messaging.service.ts puts on the dispatch —
@@ -212,35 +265,91 @@ export type DeepLinkNotificationData =
   // keeps `message/[id]` registered unconditionally and the screen degrades
   // to a "not available" state, so opening it is safe, whereas swallowing
   // the tap would leave a notification that visibly does nothing.
-  | { type: "conversation"; conversationId: string };
+  | { type: "conversation"; conversationId: string }
+  // goal-slot-api's INSTRUCTION_ASSIGNED push (both the immediate notify on
+  // `InstructionsService.assign` and the daily stale-instruction sweep) —
+  // `{ type: 'instruction', instructionId }` verbatim, same server-minted
+  // contract as `conversation` above.
+  | { type: "instruction"; instructionId: string }
+  // Forward-looking: no NotificationType on goal-slot-api dispatches this
+  // yet (adding one is a backend change out of this repo's scope), but the
+  // shape is settled so the moment a server-side APP_RELEASE/similar type
+  // ships, tap-routing already understands it. `url` present → open the
+  // release page externally; absent → treat the tap as "check for the
+  // OTA update now" (see `checkForUpdateAndReload` in src/lib/updates.ts).
+  | { type: "release"; url?: string };
 
 /**
- * Resolves a notification's `content.data` payload to the in-app route it
- * should open, or `null` if the payload doesn't match the shape above (e.g.
- * missing, malformed, or an unrelated notification). Returns an
- * expo-router `Href`-compatible string suitable for `router.push(...)`
- * directly — deliberately an in-app path, not a `goalslot://` URL, since
- * `router.push` navigates in-app routes rather than resolving external
- * scheme URLs.
+ * What a notification tap should DO — a superset of "navigate to an in-app
+ * route", covering the two cases (`release`'s external link / OTA check)
+ * that aren't a `router.push`-able path at all. `resolveNotificationRoute`
+ * below is a thin navigation-only view over this for callers (e.g. a future
+ * notification-center list) that only ever want an `Href` and have no
+ * business opening a URL or triggering an app reload.
  */
-export function resolveNotificationRoute(data: unknown): string | null {
+export type NotificationTapAction =
+  | { kind: "navigate"; href: string }
+  | { kind: "open-url"; url: string }
+  | { kind: "check-for-update" };
+
+/**
+ * Resolves a notification's `content.data` payload to what tapping it
+ * should do, or `null` if the payload doesn't match a known shape (e.g.
+ * missing, malformed, or an unrelated notification). This is the one
+ * function that actually switches on `data.type` — see the header comment
+ * above.
+ */
+export function resolveNotificationAction(data: unknown): NotificationTapAction | null {
   if (!isDeepLinkNotificationData(data)) {
     return null;
   }
   switch (data.type) {
     case "today":
-      return ROUTES.today();
+      return { kind: "navigate", href: ROUTES.today() };
     case "goal":
-      return ROUTES.goals(data.id);
+      return { kind: "navigate", href: ROUTES.goals(data.id) };
     case "task":
-      return ROUTES.tasks(data.id);
+      return { kind: "navigate", href: ROUTES.tasks(data.id) };
     case "schedule":
-      return ROUTES.scheduleDay(data.dayOfWeek);
+      return {
+        kind: "navigate",
+        href: "dayOfWeek" in data ? ROUTES.scheduleDay(data.dayOfWeek) : ROUTES.mentees(),
+      };
     case "journal":
-      return ROUTES.journal();
+      return { kind: "navigate", href: ROUTES.journal(data.date) };
     case "conversation":
-      return ROUTES.conversation(data.conversationId);
+      return { kind: "navigate", href: ROUTES.conversation(data.conversationId) };
+    case "instruction":
+      return { kind: "navigate", href: ROUTES.instructions(data.instructionId) };
+    case "release":
+      // Only http(s) is ever handed to Linking.openURL — a malformed or
+      // unexpected scheme degrades to the safe, always-useful fallback
+      // (checking for an OTA update) rather than being opened blind.
+      return data.url && isHttpsUrl(data.url)
+        ? { kind: "open-url", url: data.url }
+        : { kind: "check-for-update" };
   }
+}
+
+/**
+ * Navigation-only view over `resolveNotificationAction` — returns an
+ * expo-router `Href`-compatible string suitable for `router.push(...)`
+ * directly when the tap resolves to an in-app route, `null` otherwise
+ * (including for `release` taps, which are never a `router.push`-able
+ * path — see `NotificationTapAction`/`resolveNotificationAction` for the
+ * full behavior a tap handler needs to implement all types).
+ */
+export function resolveNotificationRoute(data: unknown): string | null {
+  const action = resolveNotificationAction(data);
+  return action?.kind === "navigate" ? action.href : null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isHttpsUrl(value: string): boolean {
+  return /^https:\/\//i.test(value);
 }
 
 function isDeepLinkNotificationData(data: unknown): data is DeepLinkNotificationData {
@@ -253,21 +362,26 @@ function isDeepLinkNotificationData(data: unknown): data is DeepLinkNotification
       return true;
     case "goal":
     case "task":
-      return (
-        "id" in data &&
-        typeof (data as { id: unknown }).id === "string" &&
-        (data as { id: string }).id.length > 0
-      );
+      return "id" in data && isNonEmptyString((data as { id: unknown }).id);
     case "schedule":
-      return "dayOfWeek" in data && isScheduleDayOfWeek((data as { dayOfWeek: unknown }).dayOfWeek);
-    case "journal":
-      return true;
-    case "conversation":
       return (
-        "conversationId" in data &&
-        typeof (data as { conversationId: unknown }).conversationId === "string" &&
-        (data as { conversationId: string }).conversationId.length > 0
+        ("dayOfWeek" in data && isScheduleDayOfWeek((data as { dayOfWeek: unknown }).dayOfWeek)) ||
+        ("sharedAccessId" in data && isNonEmptyString((data as { sharedAccessId: unknown }).sharedAccessId))
       );
+    case "journal": {
+      if (!("date" in data)) return true;
+      const date = (data as { date: unknown }).date;
+      return date === undefined || isNonEmptyString(date);
+    }
+    case "conversation":
+      return "conversationId" in data && isNonEmptyString((data as { conversationId: unknown }).conversationId);
+    case "instruction":
+      return "instructionId" in data && isNonEmptyString((data as { instructionId: unknown }).instructionId);
+    case "release": {
+      if (!("url" in data)) return true;
+      const url = (data as { url: unknown }).url;
+      return url === undefined || isNonEmptyString(url);
+    }
     default:
       return false;
   }

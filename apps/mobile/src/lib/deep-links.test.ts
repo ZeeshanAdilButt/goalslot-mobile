@@ -5,6 +5,8 @@
 // rather than typed against jest's ambient globals.
 import {
   goalDeepLink,
+  parseScheduleDayParam,
+  resolveNotificationAction,
   resolveNotificationRoute,
   scheduleDayDeepLink,
   taskDeepLink,
@@ -37,6 +39,26 @@ describe("scheduleDayDeepLink", () => {
   it("resolves to the Schedule tab, scoped to the day of week", () => {
     expect(scheduleDayDeepLink(0)).toBe("goalslot://schedule?day=0");
     expect(scheduleDayDeepLink(6)).toBe("goalslot://schedule?day=6");
+  });
+});
+
+describe("parseScheduleDayParam", () => {
+  // app/(app)/schedule.tsx uses this to seed its initial day from
+  // `/schedule?day=N`. Previously the screen didn't read `day` at all, so a
+  // schedule-block alarm tapped on a different weekday than the block
+  // opened on today's day instead of the block's — this is that fix's
+  // parsing logic, isolated and tested directly.
+  it("parses each valid day string", () => {
+    expect(parseScheduleDayParam("0")).toBe(0);
+    expect(parseScheduleDayParam("6")).toBe(6);
+    expect(parseScheduleDayParam("3")).toBe(3);
+  });
+
+  it("returns null for an absent, out-of-range, or non-numeric value", () => {
+    expect(parseScheduleDayParam(undefined)).toBeNull();
+    expect(parseScheduleDayParam("7")).toBeNull();
+    expect(parseScheduleDayParam("-1")).toBeNull();
+    expect(parseScheduleDayParam("not-a-day")).toBeNull();
   });
 });
 
@@ -104,5 +126,87 @@ describe("resolveNotificationRoute", () => {
     expect(resolveNotificationRoute(undefined)).toBeNull();
     expect(resolveNotificationRoute(null)).toBeNull();
     expect(resolveNotificationRoute("goal-1")).toBeNull();
+  });
+
+  // goal-slot-api's INSTRUCTION_ASSIGNED push (both the immediate notify on
+  // assign and the daily stale-instruction sweep) — `{ type: 'instruction',
+  // instructionId }` verbatim. Previously "instruction" wasn't a member of
+  // the union at all, so this fell through to `null` (no navigation) on
+  // every tap regardless of platform.
+  it("routes an 'instruction' payload to the Instructions screen with the instruction id", () => {
+    expect(resolveNotificationRoute({ type: "instruction", instructionId: "instr-1" })).toBe(
+      "/instructions?instructionId=instr-1",
+    );
+  });
+
+  it("returns null for an 'instruction' payload with no usable id", () => {
+    expect(resolveNotificationRoute({ type: "instruction" })).toBeNull();
+    expect(resolveNotificationRoute({ type: "instruction", instructionId: "" })).toBeNull();
+  });
+
+  // goal-slot-api's SHARED_REPORT_UNVIEWED push (reminder-dispatch.service.ts's
+  // sweepStaleReports) reuses the literal tag "schedule" — the same tag the
+  // LOCAL schedule-block alarm uses — but carries `sharedAccessId` instead
+  // of `dayOfWeek`. Previously this didn't structurally match the
+  // `dayOfWeek`-only "schedule" member, so it fell through to `null` on
+  // every tap. It's disambiguated by which field is actually present, not
+  // by the tag (both are "schedule").
+  it("routes a 'schedule' payload carrying sharedAccessId (not dayOfWeek) to the Sharing list", () => {
+    expect(resolveNotificationRoute({ type: "schedule", sharedAccessId: "share-1" })).toBe("/mentees");
+  });
+
+  it("still routes a local schedule-alarm 'schedule' payload (dayOfWeek) to its day, not Sharing", () => {
+    expect(resolveNotificationRoute({ type: "schedule", dayOfWeek: 5 })).toBe("/schedule?day=5");
+  });
+
+  it("returns null for a 'schedule' payload with neither dayOfWeek nor sharedAccessId", () => {
+    expect(resolveNotificationRoute({ type: "schedule" })).toBeNull();
+    expect(resolveNotificationRoute({ type: "schedule", sharedAccessId: "" })).toBeNull();
+  });
+
+  it("routes a 'journal' payload carrying a date to that entry", () => {
+    expect(resolveNotificationRoute({ type: "journal", date: "2026-08-01" })).toBe("/journal?date=2026-08-01");
+  });
+
+  it("routes a 'journal' payload with no date to today's entry, same as before", () => {
+    expect(resolveNotificationRoute({ type: "journal" })).toBe("/journal");
+  });
+});
+
+describe("resolveNotificationAction", () => {
+  it("wraps every in-app-route case in a 'navigate' action, matching resolveNotificationRoute", () => {
+    expect(resolveNotificationAction({ type: "today" })).toEqual({ kind: "navigate", href: "/" });
+    expect(resolveNotificationAction({ type: "conversation", conversationId: "conv-1" })).toEqual({
+      kind: "navigate",
+      href: "/message/conv-1",
+    });
+  });
+
+  // Forward-looking: no backend NotificationType dispatches "release" yet
+  // (that's a goal-slot-api change out of this repo's scope), but the
+  // client-side contract is settled now so a future server push already
+  // routes correctly the day it ships.
+  it("opens an https release URL externally rather than as an in-app route", () => {
+    expect(resolveNotificationAction({ type: "release", url: "https://github.com/goalslot/releases/v2" })).toEqual({
+      kind: "open-url",
+      url: "https://github.com/goalslot/releases/v2",
+    });
+  });
+
+  it("falls back to checking for an OTA update when a 'release' payload carries no URL", () => {
+    expect(resolveNotificationAction({ type: "release" })).toEqual({ kind: "check-for-update" });
+  });
+
+  it("falls back to checking for an OTA update rather than opening a non-https URL", () => {
+    expect(resolveNotificationAction({ type: "release", url: "javascript:alert(1)" })).toEqual({
+      kind: "check-for-update",
+    });
+    expect(resolveNotificationAction({ type: "release", url: "goalslot://goals" })).toEqual({
+      kind: "check-for-update",
+    });
+  });
+
+  it("returns null for a 'release' payload with a non-string url", () => {
+    expect(resolveNotificationAction({ type: "release", url: 7 })).toBeNull();
   });
 });

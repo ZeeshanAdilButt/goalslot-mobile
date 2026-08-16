@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Linking } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { router, Slot, type Href } from "expo-router";
 import * as Notifications from "expo-notifications";
@@ -12,9 +13,12 @@ import { ToastHost } from "@/components/ToastHost";
 import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
-import { resolveNotificationRoute } from "@/lib/deep-links";
+import { resolveNotificationAction } from "@/lib/deep-links";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { addPushTokenChangeListener } from "@/lib/notifications";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
+import { showToast } from "@/lib/toast-store";
+import { checkForUpdateAndReload } from "@/lib/updates";
 import { CapabilitiesProvider } from "@/providers/capabilities-provider";
 import { GrowthProvider } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
@@ -83,7 +87,9 @@ function AppGate() {
   // NotificationCapability implementation is scheduling notifications
   // (noop or real); it only depends on expo-notifications' response
   // shape. See src/lib/deep-links.ts for the expected `data` payload
-  // shape and the route-resolution logic.
+  // shape and the single `resolveNotificationAction` every notification
+  // type routes through (in-app navigation is only one of its outcomes —
+  // see the "open-url"/"check-for-update" cases below).
   const lastNotificationResponse = Notifications.useLastNotificationResponse();
   useEffect(() => {
     // Gated on `status`: while it's 'loading' this component renders
@@ -95,13 +101,32 @@ function AppGate() {
     if (status === "loading" || !lastNotificationResponse) {
       return;
     }
-    const route = resolveNotificationRoute(lastNotificationResponse.notification.request.content.data);
-    if (route) {
-      // Built at runtime from a notification payload (see ROUTES.* in
-      // deep-links.ts), so it can never be one of expo-router's statically
-      // known literal paths — same `as Href` escape hatch index.tsx already
-      // uses for its own dynamically-referenced routes.
-      router.push(route as Href);
+    const action = resolveNotificationAction(lastNotificationResponse.notification.request.content.data);
+    if (!action) {
+      return;
+    }
+    switch (action.kind) {
+      case "navigate":
+        // Built at runtime from a notification payload (see ROUTES.* in
+        // deep-links.ts), so it can never be one of expo-router's statically
+        // known literal paths — same `as Href` escape hatch index.tsx already
+        // uses for its own dynamically-referenced routes.
+        router.push(action.href as Href);
+        break;
+      case "open-url":
+        void Linking.openURL(action.url);
+        break;
+      case "check-for-update":
+        // A release notification with no URL signals a JS-only OTA update —
+        // check-fetch-reload right now rather than sending the user to
+        // Settings to do it manually. Silent on "up to date"/"unavailable"
+        // (nothing actionable for the user in either case from a background
+        // tap); a real failure still surfaces, same as the manual Settings
+        // row (app/(app)/settings.tsx) reusing this same helper.
+        void checkForUpdateAndReload(() => showToast("Downloading the latest update…", "success")).catch(
+          (err: unknown) => showToast(getErrorMessage(err, "Couldn't check for an update."), "error"),
+        );
+        break;
     }
   }, [status, lastNotificationResponse]);
 

@@ -21,7 +21,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "r
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BottomSheetModal } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import {
   DAYS_OF_WEEK_FULL,
@@ -47,6 +47,7 @@ import {
 import { Icon } from "@/components/ui/Icon";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
+import { parseScheduleDayParam } from "@/lib/deep-links";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticLight } from "@/lib/haptics";
 import { queueOfflineEdit } from "@/lib/offline";
@@ -111,7 +112,18 @@ export default function ScheduleScreen() {
   const analytics = useAnalytics();
   const router = useRouter();
   const { notifications } = useCapabilities();
-  const [selectedDay, setSelectedDay] = useState(TODAY_INDEX);
+  // Notification-tap deep link: `/schedule?day=N` (see
+  // src/lib/deep-links.ts's `scheduleDayDeepLink`/`resolveNotificationRoute`
+  // — this is both the local schedule-block alarm's own tap target and
+  // `scheduleDayDeepLink`'s shareable-link contract). Read once at mount to
+  // seed the initial day; after that the day pills/swipe own `selectedDay`,
+  // same "consume once" pattern journal.tsx's `voice` param and timer.tsx's
+  // `autostart` param already use. Previously this param was silently
+  // ignored — a schedule alarm tap opened the Schedule tab on TODAY_INDEX
+  // regardless of which day the block it was nudging about actually fell
+  // on, e.g. a Tuesday alarm tapped on a Thursday landed on Thursday.
+  const { day: dayParam } = useLocalSearchParams<{ day?: string }>();
+  const [selectedDay, setSelectedDay] = useState(() => parseScheduleDayParam(dayParam) ?? TODAY_INDEX);
   // Whether the bell's promise is actually being kept: `reminders.masterTier`
   // is only this app's own intent, not proof the OS will do anything with it.
   // A user who denied (or never granted) the system notification permission

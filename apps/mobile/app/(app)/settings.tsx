@@ -59,6 +59,7 @@ import { useScreenView } from "@/hooks/useScreenView";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { showToast } from "@/lib/toast-store";
+import { checkForUpdateAndReload } from "@/lib/updates";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -160,20 +161,17 @@ export default function SettingsScreen() {
   // inert. `checkForUpdateAsync` alone only asks the server; an available
   // update still has to be fetched and the app reloaded to actually run it.
   const handleCheckForUpdate = useCallback(async () => {
-    if (!Updates.isEnabled) {
-      showToast("Updates aren't available in this build.", "error");
-      return;
-    }
     setCheckingUpdate(true);
     try {
-      const result = await Updates.checkForUpdateAsync();
-      if (!result.isAvailable) {
+      const status = await checkForUpdateAndReload(() =>
+        showToast("Downloading the latest update…", "success"),
+      );
+      if (status === "unavailable") {
+        showToast("Updates aren't available in this build.", "error");
+      } else if (status === "up-to-date") {
         showToast("You're already on the latest update.", "success");
-        return;
       }
-      showToast("Downloading the latest update…", "success");
-      await Updates.fetchUpdateAsync();
-      await Updates.reloadAsync();
+      // "updated" reloads the app before execution gets back here.
     } catch (err) {
       showToast(getErrorMessage(err, "Couldn't check for an update."), "error");
     } finally {
