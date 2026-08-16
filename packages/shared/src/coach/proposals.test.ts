@@ -249,8 +249,8 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     const { proposals, unrenderable, cleaned } = extractCoachProposals(raw)
     expect(unrenderable).toBe(false)
     expect(proposals).toHaveLength(1)
-    expect(proposals[0].actions[0].type).toBe('APPEND_JOURNAL_ENTRY')
-    expect(proposals[0].actions[0].payload?.content).toBe('Felt scattered all afternoon.')
+    expect(proposals[0]?.actions[0]?.type).toBe('APPEND_JOURNAL_ENTRY')
+    expect(proposals[0]?.actions[0]?.payload?.content).toBe('Felt scattered all afternoon.')
     expect(cleaned).toBe("I've put that in today's journal for you to approve.")
   })
 
@@ -264,7 +264,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals } = extractCoachProposals(raw)
-    expect(proposals[0].actions[0].payload?.date).toBe(todayKey())
+    expect(proposals[0]?.actions[0]?.payload?.date).toBe(todayKey())
   })
 
   it('leaves a date the model explicitly named alone', () => {
@@ -275,7 +275,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals } = extractCoachProposals(raw)
-    expect(proposals[0].actions[0].payload?.date).toBe('2026-08-10')
+    expect(proposals[0]?.actions[0]?.payload?.date).toBe('2026-08-10')
   })
 
   it('leaves a malformed date alone so the server rejects it loudly', () => {
@@ -288,7 +288,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals } = extractCoachProposals(raw)
-    expect(proposals[0].actions[0].payload?.date).toBe('yesterday')
+    expect(proposals[0]?.actions[0]?.payload?.date).toBe('yesterday')
   })
 
   it('normalizes the model near-miss type and still fills the date', () => {
@@ -300,7 +300,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
 
     const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(unrenderable).toBe(false)
-    expect(proposals[0].actions[0]).toEqual({
+    expect(proposals[0]?.actions[0]).toEqual({
       type: 'APPEND_JOURNAL_ENTRY',
       payload: { content: 'Great workout', date: todayKey() },
     })
@@ -314,6 +314,6 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals } = extractCoachProposals(raw)
-    expect(proposals[0].actions[0].payload).toEqual({ title: 'Ship it' })
+    expect(proposals[0]?.actions[0]?.payload).toEqual({ title: 'Ship it' })
   })
 })
