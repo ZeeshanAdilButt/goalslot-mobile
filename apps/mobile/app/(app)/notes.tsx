@@ -1325,6 +1325,22 @@ function NoteRow({
                   <Text style={styles.countBadgeText}>{item.childCount}</Text>
                 </View>
               ) : null}
+
+              {/* Visible "New subpage" affordance — the swipe-to-reveal
+                  `renderRightActions` action below does the same
+                  `onNewSubpage(item)` call, but a right-swipe has no on-row
+                  hint, so users kept not finding it. This is an ADDITIONAL
+                  entry point (same createNote(note.id) call, same
+                  parentId), not a replacement — the swipe action stays. */}
+              <Pressable
+                style={styles.addSubpageButton}
+                onPress={() => onNewSubpage(item)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Add a subpage under "${item.title || "Untitled page"}"`}
+              >
+                <Icon name="add" size={16} color={colors.mutedForeground} />
+              </Pressable>
             </Pressable>
           </Animated.View>
         </GestureDetector>
@@ -1430,6 +1446,17 @@ const styles = StyleSheet.create({
   countBadgeText: {
     ...typography.label,
     color: colors.mutedForeground,
+  },
+  // 28pt visual + 8pt hitSlop on every side = 44pt effective target, the
+  // same minTouchTarget every other tappable control in this app clears —
+  // see chevronButton (24pt + 8pt hitSlop) just above for the same idiom
+  // at a slightly smaller visual size.
+  addSubpageButton: {
+    width: 28,
+    height: 28,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
   },
   dropIndicator: {
     position: "absolute",
