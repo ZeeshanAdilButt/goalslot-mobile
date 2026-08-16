@@ -19,6 +19,12 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { cleanLabel } from "@/lib/timer-attribution";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
+/** Combines a slot's category and its schedule note into one subtitle line, dropping whichever half is absent. */
+function joinWithDot(a: string | null, b: string | null): string | null {
+  const parts = [a, b].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /**
  * The schedule block that's live right now.
  *
@@ -26,10 +32,11 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
  * the goal slot is empty — that's the case `showSuggestionChip` below
  * gates on. Once a goal IS attached, the same data still has a job: telling
  * the user which block is live gets downgraded from an actionable suggestion
- * to a passive "Scheduled: {blockTitle}" line (`showScheduledLabel`), since
- * offering to overwrite an attribution that's already set would be the wrong
- * affordance — the block may just be informational context (or may not even
- * match what's attached), not something to apply.
+ * to passive context folded into the Goal slot's own subtitle line (see
+ * `scheduleNote` below) rather than a separate row — the block may just be
+ * informational (or may not even match what's attached), not something to
+ * apply, and it belongs to the same "what's this session tagged with" input
+ * the goal/category text already lives in, not a second one.
  */
 export interface TrackingTargetSuggestion {
   blockTitle: string;
@@ -89,11 +96,11 @@ export function TrackingTarget({
   // attached yet — once a goal is set (or its id is set but still resolving,
   // `goalUnresolved`), applying the suggestion would silently overwrite it.
   const showSuggestionChip = hasSuggestion && goalTitle === null && !goalUnresolved;
-  // The passive fallback: same live block, no "Use" affordance, shown
-  // whenever the chip isn't — i.e. whenever a goal is already attached (or
-  // resolving). This is what keeps "what's scheduled right now" visible on
-  // screen even after a goal's been picked, see this file's header.
-  const showScheduledLabel = hasSuggestion && !showSuggestionChip;
+  // The passive fallback: once a goal is attached, "what's scheduled right
+  // now" folds into the Goal slot's own subtitle instead of a separate row —
+  // see this file's header for why.
+  const scheduleNote = hasSuggestion && !showSuggestionChip ? suggestion.blockTitle : null;
+  const goalSubtitle = goalTitle !== null ? joinWithDot(goalCategory, scheduleNote ? `Scheduled: ${scheduleNote}` : null) : null;
   // A session name that just repeats a slot's title is noise, not information.
   const showName = name !== null && name !== goalTitle && name !== taskTitle;
 
@@ -130,23 +137,10 @@ export function TrackingTarget({
         </Pressable>
       ) : null}
 
-      {showScheduledLabel ? (
-        <View
-          style={styles.scheduledLabel}
-          accessible
-          accessibilityLabel={`Scheduled: ${suggestion.blockTitle}`}
-        >
-          <Icon name="schedule" size={14} color={colors.mutedForeground} />
-          <Text style={styles.scheduledLabelText} numberOfLines={1}>
-            Scheduled: {suggestion.blockTitle}
-          </Text>
-        </View>
-      ) : null}
-
       <Slot
         eyebrow="Goal"
         title={goalTitle}
-        subtitle={goalTitle !== null ? goalCategory : null}
+        subtitle={goalSubtitle}
         unresolved={goalUnresolved}
         accent={goalTitle !== null ? accent : null}
         emptyIcon="goals"
@@ -155,7 +149,7 @@ export function TrackingTarget({
         unresolvedTitle="Goal attached"
         accessibilityLabel={
           goalTitle !== null
-            ? `Goal: ${goalTitle}. Change it`
+            ? `Goal: ${goalTitle}${scheduleNote ? `. Scheduled: ${scheduleNote}` : ""}. Change it`
             : goalUnresolved
               ? "A goal is attached, still loading its name. Change it"
               : "No goal selected. Choose a goal"
@@ -286,17 +280,6 @@ const styles = StyleSheet.create({
     borderStyle: "dashed",
     borderColor: colors.border,
     backgroundColor: colors.secondary,
-  },
-  scheduledLabel: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xxs,
-    paddingHorizontal: spacing.xs,
-  },
-  scheduledLabelText: {
-    ...typography.bodySmall,
-    color: colors.mutedForeground,
-    flexShrink: 1,
   },
   emptySlot: {
     ...slotBase,
