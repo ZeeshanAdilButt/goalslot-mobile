@@ -23,11 +23,19 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { formatDuration, formatTime12h, timeToMinutes, type ScheduleBlock } from "@goalslot/shared";
+import {
+  formatDuration,
+  formatTime12h,
+  timeToMinutes,
+  toActiveTimerSession,
+  type ActiveTimerSession,
+  type ScheduleBlock,
+} from "@goalslot/shared";
 
 import { blockStatus } from "@/components/schedule";
 import { apiClient } from "@/lib/api-client";
 import { secureTokenStorage } from "@/lib/secure-token-storage";
+import { resolveEffectiveTimer } from "@/lib/timer-attribution";
 import { getElapsedMs } from "@/lib/timer-store";
 
 /** Bumped (`-v2`, ...) if the cached shape ever changes, so a stale blob from an old app version can't be parsed as the new shape. */
@@ -272,47 +280,98 @@ async function resolveLabel(kind: "task" | "goal", id: string): Promise<string> 
   }
 }
 
-/** Reads the currently-running (or paused) timer session, if any, straight out of timer-store.ts's persisted state — `null` while idle/no session/no auth. */
+/**
+ * The cross-device session (`/timer/session`), if any — the same call
+ * `timerSessionQueries.fetchActive` wraps for every other screen, reimplemented
+ * narrowly here rather than imported: that factory pulls in `queryOptions`,
+ * which this headless task has no `QueryClient` to hand it (see this file's
+ * header). Best-effort like `resolveLabel` above, but with no cache to fall
+ * back to — a failed fetch just means "trust the local record alone," which
+ * is exactly this function's behaviour returning `null` ever did before this
+ * existed, never worse.
+ */
+async function fetchServerSession(): Promise<ActiveTimerSession | null> {
+  try {
+    const response = await withTimeout(apiClient.timerSession.getActive(), TRACKING_FETCH_TIMEOUT_MS);
+    return toActiveTimerSession(response.data);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the currently-running (or paused) timer session, if any — `null`
+ * while idle/no session/no auth.
+ *
+ * Merges the local persisted store with the cross-device server session via
+ * `resolveEffectiveTimer`, the SAME merge the Timer screen and
+ * GlobalTrackingBanner use (see timer-attribution.ts's header for why: "a
+ * server session is authoritative whenever one exists"). Reading the local
+ * record alone — what this used to do — has two failure modes once a session
+ * is server-mirrored (which happens within moments of every Start, since
+ * `publishSessionStart` in timer.tsx posts every local session to the server
+ * for cross-device sync): first, a session started on ANOTHER device never
+ * touches this phone's local store at all, so it stayed invisible here the
+ * same way it used to on GlobalTrackingBanner before that fix. Second, and
+ * the one actually reported ("the widget doesn't show the bar moving" during
+ * live tracking): timer.tsx's handlePause/handleResume only call the SERVER
+ * pause/resume endpoints once a mirror exists, never the local store's own
+ * `pause()`/`resume()` — so the local record kept claiming "running" with
+ * its original `startedAt` straight through a pause, and this function's old
+ * `getElapsedMs` read against that never-paused timestamp. The bar wasn't
+ * frozen; it was silently counting through the pause using the wrong clock,
+ * which reads as "stuck" the moment the real elapsed time it should show
+ * diverges from what a frozen local record implies.
+ */
 export async function loadWidgetTrackingState(): Promise<WidgetTrackingState | null> {
   const accessToken = await secureTokenStorage.getAccessToken();
   if (!accessToken) return null;
 
   try {
     const raw = await AsyncStorage.getItem(TIMER_STORE_KEY);
-    if (!raw) return null;
     // zustand's `persist` middleware wraps the partialized state as `{ state, version }`.
-    const parsed = JSON.parse(raw) as { state?: PersistedTimerRecord };
-    const record = parsed.state;
-    if (!record || record.status === "idle") return null;
+    const parsed = raw ? (JSON.parse(raw) as { state?: PersistedTimerRecord }) : undefined;
+    const record = parsed?.state ?? null;
+
+    const serverSession = await fetchServerSession();
+    const localSnapshot = {
+      status: record?.status ?? ("idle" as const),
+      startedAt: record?.startedAt ?? null,
+      pausedElapsedMs: record?.pausedElapsedMs ?? 0,
+      taskId: record?.taskId ?? null,
+      goalId: record?.goalId ?? null,
+    };
+    const effective = resolveEffectiveTimer(serverSession, localSnapshot);
+    if (effective.status === "idle") return null;
 
     // Task wins over its parent goal as the primary label (per the product
     // ask: "show the task itself, not the goal"); the goal still shows
     // underneath when there is one. Tracking a bare goal (no task) has
     // nothing to put underneath it.
     const [primaryLabel, secondaryLabel] = await Promise.all([
-      record.taskId
-        ? resolveLabel("task", record.taskId)
-        : record.goalId
-          ? resolveLabel("goal", record.goalId)
+      effective.taskId
+        ? resolveLabel("task", effective.taskId)
+        : effective.goalId
+          ? resolveLabel("goal", effective.goalId)
           : Promise.resolve("Untitled"),
-      record.taskId && record.goalId ? resolveLabel("goal", record.goalId) : Promise.resolve(undefined),
+      effective.taskId && effective.goalId ? resolveLabel("goal", effective.goalId) : Promise.resolve(undefined),
     ]);
 
     const elapsedMs = getElapsedMs({
-      status: record.status,
-      startedAt: record.startedAt,
-      pausedElapsedMs: record.pausedElapsedMs,
+      status: effective.status,
+      startedAt: effective.startedAt,
+      pausedElapsedMs: effective.pausedElapsedMs,
     });
     const progress = (elapsedMs % PROGRESS_CYCLE_MS) / PROGRESS_CYCLE_MS;
 
     return {
-      status: record.status,
+      status: effective.status,
       primaryLabel,
       secondaryLabel,
       elapsedLabel: formatDuration(Math.floor(elapsedMs / 60000)),
       progress,
-      goalId: record.goalId ?? undefined,
-      taskId: record.taskId ?? undefined,
+      goalId: effective.goalId ?? undefined,
+      taskId: effective.taskId ?? undefined,
     };
   } catch {
     return null;

@@ -89,6 +89,7 @@ import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { syncWidgets } from "@/widgets/widget-sync";
 
 const RECENT_SKELETON_ROWS = 4;
 
@@ -748,6 +749,32 @@ export default function TimerScreen() {
   // reads "You are working on: Untitled session" rather than leaking an empty
   // string or "undefined".
   useTimerReminders({ status: effectiveStatus, startedAt: effectiveStartedAt, label: activeLabel });
+
+  // Pokes the home-screen widget to redraw on every start/pause/resume/stop,
+  // the same way the shade notification and reminders above react to
+  // `effectiveStatus` rather than the raw local store.
+  //
+  // `app/(app)/_layout.tsx` already does this for `useTimerStore`'s own
+  // transitions (mount, foreground, and any change to the LOCAL store's
+  // status/taskId/goalId) — but handlePause/handleResume above only call the
+  // SERVER pause/resume endpoints once a session is mirrored there (which
+  // happens within moments of every Start), and never touch the local store
+  // for that branch. So a paused-via-server session left the local store
+  // still claiming "running" with its original `startedAt`, which is what
+  // `_layout.tsx`'s subscription reads AND what widget-data.ts's
+  // `loadWidgetTrackingState` used to read verbatim — the widget kept
+  // counting straight through a pause instead of freezing, which is what got
+  // reported as "the widget doesn't show the bar moving". Keying this effect
+  // on `effectiveStatus`/`effectiveStartedAt` instead (the merged view that
+  // already prefers the server session, same as resolveEffectiveTimer's
+  // other callers) catches that transition too. `syncWidgets()` itself
+  // re-reads state rather than trusting a closure over what's already in
+  // scope, is a no-op on iOS-without-a-session-change, and swallows its own
+  // failures, so firing it here alongside `_layout.tsx`'s own trigger is
+  // redundant on a purely local session but harmless.
+  useEffect(() => {
+    void syncWidgets();
+  }, [effectiveStatus, effectiveStartedAt]);
 
   /**
    * Files an already-logged entry under a goal/task after the fact. This is
