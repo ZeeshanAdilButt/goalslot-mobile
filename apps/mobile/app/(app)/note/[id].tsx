@@ -37,14 +37,15 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import type { WebViewMessageEvent } from "react-native-webview";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   CoreBridge,
+  CoreEditorActionType,
   RichText,
   TenTapStartKit,
   Toolbar,
-  useBridgeState,
   useEditorBridge,
   useEditorContent,
 } from "@10play/tentap-editor";
@@ -156,6 +157,19 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   // instead, so what's typed IS durable, just not confirmed yet.
   const [saveState, setSaveState] = useState<"idle" | "failed" | "queued">("idle");
   const [initTimedOut, setInitTimedOut] = useState(false);
+  // Set directly off the webview's "editor-ready" message (posted once, from
+  // Tiptap's onCreate) rather than off `useBridgeState(editor).isReady`.
+  // That flag only rides along on a StateUpdate message, which the web
+  // bundle sends from onUpdate/onSelectionUpdate/onTransaction — none of
+  // which fire just from mounting. With `autofocus: false` below (deliberate,
+  // so opening a note doesn't pop the keyboard), nothing ever dispatches an
+  // initial ProseMirror transaction on its own, so that StateUpdate — and the
+  // isReady flag riding along with it — never arrives until the user first
+  // taps into the document. Gating the watchdog on it meant the 8s timeout
+  // fired on every note the user didn't immediately touch, editor working or
+  // not, and showed the "failed to initialize" fallback on a perfectly good
+  // editor.
+  const [editorReady, setEditorReady] = useState(false);
   // Android-only: `avoidIosKeyboard` (10tap-editor) is iOS-first by design —
   // it does resize the WebView's own document padding on Android too (see
   // RichText.tsx), but only assumes the *toolbar* needs clearing, on the
@@ -228,7 +242,6 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
       `),
     ],
   });
-  const editorState = useBridgeState(editor);
 
   const insets = useSafeAreaInsets();
 
@@ -399,10 +412,27 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   // content as plain text instead of a blank page. The onLoad re-injection
   // below usually prevents this from ever firing.
   useEffect(() => {
-    if (editorState.isReady) return;
+    if (editorReady) return;
     const timer = setTimeout(() => setInitTimedOut(true), EDITOR_INIT_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [editorState.isReady]);
+  }, [editorReady]);
+
+  /** The web bundle posts this once, straight from Tiptap's onCreate, the
+   *  moment the editor is actually usable — independent of the StateUpdate
+   *  channel (see the `editorReady` comment above). `exclusivelyUseCustomOnMessage`
+   *  is set to false on <RichText> below so this listener runs *alongside*
+   *  the library's own message handling (autosave's getHTML, toolbar state,
+   *  etc.) instead of replacing it. */
+  const handleEditorMessage = useCallback((event: WebViewMessageEvent) => {
+    const { data } = event.nativeEvent;
+    if (typeof data !== "string") return;
+    try {
+      const message = JSON.parse(data) as { type?: string };
+      if (message.type === CoreEditorActionType.EditorReady) setEditorReady(true);
+    } catch {
+      // Not a JSON message this screen cares about.
+    }
+  }, []);
 
   const handleWebViewLoad = useCallback(() => {
     // Guard for the known New-Architecture init race in 10tap-editor:
@@ -434,7 +464,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     editor.webviewRef.current.injectJavaScript(`if (!window.contentInjected) { ${bootstrap} } true;`);
   }, [editor]);
 
-  const showFallback = initTimedOut && !editorState.isReady;
+  const showFallback = initTimedOut && !editorReady;
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -496,7 +526,12 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         </ScrollView>
       ) : (
         <>
-          <RichText editor={editor} onLoad={handleWebViewLoad} />
+          <RichText
+            editor={editor}
+            onLoad={handleWebViewLoad}
+            onMessage={handleEditorMessage}
+            exclusivelyUseCustomOnMessage={false}
+          />
           {!readOnly ? (
             Platform.OS === "ios" ? (
               <KeyboardAvoidingView
