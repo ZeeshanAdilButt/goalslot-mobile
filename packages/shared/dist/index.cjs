@@ -1827,7 +1827,11 @@ function genId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (placeholder) => {
+    const random = Math.random() * 16 | 0;
+    const value = placeholder === "x" ? random : random & 3 | 8;
+    return value.toString(16);
+  });
 }
 
 // src/offline/http-error.ts
