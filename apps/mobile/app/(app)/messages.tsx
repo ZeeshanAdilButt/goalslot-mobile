@@ -18,7 +18,7 @@
 // That's why there is no socket subscription here: the list is already
 // correct by the time this component re-renders.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
@@ -46,7 +46,6 @@ import { useMessagingConnection } from "@/hooks/useMessagingConnection";
 import { useScreenView } from "@/hooks/useScreenView";
 import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { messagingQueries } from "@/lib/queries";
-import { showToast } from "@/lib/toast-store";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, spacing } from "@/theme/tokens";
 
@@ -59,14 +58,6 @@ export default function MessagesScreen() {
   const connection = useMessagingConnection();
   const sheetRef = useRef<BottomSheetModal>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
-  // TEMPORARY diagnostic — remove alongside the other DEBUG toasts in this
-  // file. Fires unconditionally on mount, no tap required, so it proves
-  // whether THIS build (with the tap diagnostics) is actually the one
-  // running, independent of whether the tap itself works.
-  useEffect(() => {
-    showToast("DEBUG BUILD a538e76: Messages screen loaded", "success");
-  }, []);
 
   const conversationsQuery = useQuery({
     ...messagingQueries.conversations(),
@@ -118,10 +109,6 @@ export default function MessagesScreen() {
   }, []);
 
   const openNewConversation = useCallback(() => {
-    // TEMPORARY diagnostic — remove once the New Message tap issue is
-    // resolved. Proves whether this handler runs at all on a real tap, and
-    // whether the sheet ref is attached, without needing to see the screen.
-    showToast(`DEBUG: New message tapped, sheet ref ${sheetRef.current ? "OK" : "NULL"}`, "success");
     sheetRef.current?.present();
   }, []);
 
