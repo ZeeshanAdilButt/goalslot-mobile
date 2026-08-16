@@ -73,10 +73,17 @@ import { TimelineRow } from "@/components/today/TimelineRow";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useScreenView } from "@/hooks/useScreenView";
-import { goalQueries, journalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import {
+  goalQueries,
+  instructionsQueries,
+  journalQueries,
+  scheduleQueries,
+  taskQueries,
+  timeEntryQueries,
+} from "@/lib/queries";
 import { useAuth } from "@/providers/auth-provider";
 import { motion } from "@/theme";
-import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 // There's no user-configured-timezone concept wired up yet (per the project
 // brief) — the device's own zone is the best available approximation of
@@ -118,7 +125,13 @@ const ROUTES = {
   notes: "/notes" as Href,
   reports: "/reports" as Href,
   settings: "/settings" as Href,
+  instructions: "/instructions" as Href,
 };
+
+// Most preview rows a mentee sees before "+N more" takes over. Small on
+// purpose — this card exists to say "you have something waiting", not to be
+// a second instructions list.
+const INSTRUCTION_PREVIEW_COUNT = 3;
 
 function greetingFor(hour: number): string {
   if (hour < 12) return "Good morning";
@@ -181,6 +194,12 @@ export default function TodayScreen() {
   // with no entry resolves to `null` rather than throwing — the 404 is
   // swallowed in packages/shared/src/queries/journal.ts.
   const journalTodayQuery = useQuery(journalQueries.byDate(todayStr));
+  // Mentor-assigned instructions for the signed-in user (a mentee). Returns
+  // an empty array for accounts nobody mentors — no separate "am I a
+  // mentee" check needed, and the card below stays unmounted in that case
+  // rather than showing a permanent empty state every non-mentee would see
+  // every day.
+  const instructionsQuery = useQuery(instructionsQueries.assignedToMe());
 
   // Keeps "right now" honest while the screen sits open — a schedule block
   // that was active a minute ago can silently become stale otherwise.
@@ -225,8 +244,9 @@ export default function TodayScreen() {
       activeGoalsQuery.refetch(),
       timeEntriesQuery.refetch(),
       journalTodayQuery.refetch(),
+      instructionsQuery.refetch(),
     ]);
-  }, [scheduleQuery, tasksQuery, activeGoalsQuery, timeEntriesQuery, journalTodayQuery]);
+  }, [scheduleQuery, tasksQuery, activeGoalsQuery, timeEntriesQuery, journalTodayQuery, instructionsQuery]);
 
   // Derived from the queries rather than tracked in local state (the pattern
   // notes.tsx:731 and schedule.tsx:274 already use). A hand-managed
@@ -332,6 +352,15 @@ export default function TodayScreen() {
     [timeEntriesQuery.data],
   );
 
+  const pendingInstructions = useMemo(
+    () => (instructionsQuery.data ?? []).filter((instruction) => instruction.status === "PENDING"),
+    [instructionsQuery.data],
+  );
+  const previewInstructions = useMemo(
+    () => pendingInstructions.slice(0, INSTRUCTION_PREVIEW_COUNT),
+    [pendingInstructions],
+  );
+
   const previewGoals = useMemo(
     () => (activeGoalsQuery.data ?? []).slice(0, GOAL_PREVIEW_COUNT),
     [activeGoalsQuery.data],
@@ -375,6 +404,7 @@ export default function TodayScreen() {
   const goTasks = useCallback(() => go(ROUTES.tasks), [go]);
   const goGoals = useCallback(() => go(ROUTES.goals), [go]);
   const goJournal = useCallback(() => go(ROUTES.journal), [go]);
+  const goInstructions = useCallback(() => go(ROUTES.instructions), [go]);
 
   // The FAB's menu mixes three sheet-openers with one navigation, so the pick
   // handler has to fork. Deliberately NOT folded into `openQuickAdd`, which
@@ -490,11 +520,86 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
+        {/* Mentor-assigned instructions, above the fold and above the stat
+            grid — the goal is that a mentee sees what's been asked of them
+            the moment the app opens, not buried behind "View all" on a
+            separate screen. Unlike the sections below, this one only mounts
+            when there's something pending: most accounts are never mentees,
+            and a permanent "Nothing assigned" card would be daily clutter
+            for all of them. A query error here also stays silent rather
+            than surfacing its own ErrorState — losing a nudge card to a
+            failed fetch is a much smaller problem than the schedule/tasks
+            sections going wrong, and doesn't merit another error banner
+            above the fold. */}
+        {pendingInstructions.length > 0 ? (
+          <Stagger index={3} reduceMotion={reduceMotion}>
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <View
+                  style={styles.sectionHeaderLeft}
+                  accessible
+                  accessibilityRole="header"
+                  accessibilityLabel={`Assigned to you, ${pendingInstructions.length}`}
+                >
+                  <Text style={styles.sectionTitle}>Assigned to you</Text>
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countBadgeText}>{pendingInstructions.length}</Text>
+                  </View>
+                </View>
+                <PressableScale
+                  style={styles.viewAllButton}
+                  onPress={goInstructions}
+                  accessibilityRole="button"
+                  accessibilityLabel="View all instructions"
+                  hitSlop={{ top: spacing.sm, bottom: spacing.sm, left: spacing.sm, right: spacing.sm }}
+                >
+                  <Text style={styles.viewAllText}>View all</Text>
+                  <Icon name="chevron" size={14} color={colors.mutedForeground} />
+                </PressableScale>
+              </View>
+              <View style={styles.card}>
+                {previewInstructions.map((instruction, index) => (
+                  <PressableScale
+                    key={instruction.id}
+                    style={[
+                      styles.instructionRow,
+                      index === previewInstructions.length - 1 &&
+                        pendingInstructions.length <= INSTRUCTION_PREVIEW_COUNT &&
+                        styles.instructionRowLast,
+                    ]}
+                    onPress={goInstructions}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${instruction.title}, assigned by ${
+                      instruction.assigner.name?.trim() || instruction.assigner.email
+                    }`}
+                  >
+                    <Icon name="instructions" size={iconSize.md} color={colors.mutedForeground} />
+                    <View style={styles.instructionRowBody}>
+                      <Text style={styles.instructionRowTitle} numberOfLines={1}>
+                        {instruction.title}
+                      </Text>
+                      <Text style={styles.instructionRowMeta} numberOfLines={1}>
+                        From {instruction.assigner.name?.trim() || instruction.assigner.email}
+                      </Text>
+                    </View>
+                    <Icon name="chevron" size={14} color={colors.mutedForeground} />
+                  </PressableScale>
+                ))}
+                <MoreRow
+                  hidden={pendingInstructions.length - previewInstructions.length}
+                  noun="instruction"
+                  onPress={goInstructions}
+                />
+              </View>
+            </View>
+          </Stagger>
+        ) : null}
+
         {/* 4-up stat grid, 2x2 on a phone — dw-time-web's
             dashboard-stats.tsx is the same four measures (today's focus
             time, a longer-window total, active goals, task throughput) in a
             single row of four. */}
-        <Stagger index={3} reduceMotion={reduceMotion}>
+        <Stagger index={4} reduceMotion={reduceMotion}>
           <View style={styles.statGrid}>
             <View style={styles.statRow}>
               {/* Each value collapses to UNKNOWN_STAT when its query failed
@@ -544,7 +649,7 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
-        <Stagger index={4} reduceMotion={reduceMotion}>
+        <Stagger index={5} reduceMotion={reduceMotion}>
           <Section
             title="Today's schedule"
             count={todaysBlocks.length}
@@ -587,7 +692,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={5} reduceMotion={reduceMotion}>
+        <Stagger index={6} reduceMotion={reduceMotion}>
           <Section title="Due today" count={dueTodayTasks.length} onViewAll={goTasks} viewAllLabel="tasks">
             {tasksQuery.isPending ? (
               <>
@@ -636,7 +741,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={6} reduceMotion={reduceMotion}>
+        <Stagger index={7} reduceMotion={reduceMotion}>
           <Section
             title="Goal progress"
             count={activeGoalsQuery.data?.length ?? 0}
@@ -692,7 +797,7 @@ export default function TodayScreen() {
             destinations; everything else lives behind a hamburger most
             users never open, which was a confirmed discoverability problem
             (see the note in app/(app)/_layout.tsx). */}
-        <Stagger index={7} reduceMotion={reduceMotion}>
+        <Stagger index={8} reduceMotion={reduceMotion}>
           <View style={styles.section}>
             <Text style={styles.sectionTitle} accessibilityRole="header">
               Jump back in
@@ -1095,6 +1200,32 @@ const styles = StyleSheet.create({
   timeline: {
     paddingVertical: spacing.sm,
     paddingRight: spacing.sm,
+  },
+  instructionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    minHeight: minTouchTarget,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  instructionRowLast: {
+    borderBottomWidth: 0,
+  },
+  instructionRowBody: {
+    flex: 1,
+    gap: 1,
+  },
+  instructionRowTitle: {
+    ...typography.body,
+    fontWeight: "600",
+    color: colors.foreground,
+  },
+  instructionRowMeta: {
+    ...typography.caption,
+    color: colors.mutedForeground,
   },
   moreRow: {
     flexDirection: "row",

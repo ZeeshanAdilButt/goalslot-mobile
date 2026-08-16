@@ -365,6 +365,14 @@ export default function AppLayout() {
             name="notification-settings"
             options={{ title: "Notifications", href: null }}
           />
+          {/* Mentee-facing instructions list — pushed from the Today
+              screen's "Assigned to you" card, not reachable from the
+              drawer or tab bar. Same "pushed, not tabbed" shape as
+              mentee/[id] and note/[id]. */}
+          <Tabs.Screen
+            name="instructions"
+            options={{ title: "Instructions", href: null }}
+          />
         </Tabs>
       </View>
 
