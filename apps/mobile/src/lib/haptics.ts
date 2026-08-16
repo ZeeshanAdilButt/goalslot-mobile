@@ -59,3 +59,15 @@ export function hapticListenStart(): void {
 export function hapticListenEnd(): void {
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
+
+/**
+ * Fire once, mid-session, the moment a hold-to-record gesture is dragged far
+ * enough to lock into hands-free recording (see HoldToRecordMic). Distinct
+ * from `hapticListenStart` (the mic opening) and `hapticCompletion` (a
+ * command finished) — this is a third, mid-flight event with nothing to
+ * confirm on screen the instant it happens beyond a badge appearing, so the
+ * haptic is what tells a user who slid up fast that the lock actually took.
+ */
+export function hapticRecordingLocked(): void {
+  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+}

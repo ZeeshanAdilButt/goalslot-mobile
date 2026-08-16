@@ -54,7 +54,7 @@ import {
 
 import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
-import { MicOrb } from "@/components/voice/MicOrb";
+import { HoldToRecordMic } from "@/components/voice/HoldToRecordMic";
 import {
   buildNoteCandidates,
   planNoteCommand,
@@ -1029,6 +1029,33 @@ export default function VoiceScreen() {
     void start();
   }, [noteBusy, openSettings, start, state.status, stop, trackingBusy]);
 
+  /**
+   * HoldToRecordMic's "a real touch went down while at rest" path — see that
+   * component's header for the full three-way gesture it drives. Same busy
+   * guard and pending-question clearing `handleMicPress`'s own start branch
+   * already had; kept as a SEPARATE function (not a call to handleMicPress)
+   * because HoldToRecordMic only ever calls this once `status` is already
+   * confirmed start-eligible, so it does not need — and must not repeat —
+   * that function's own `listening`/`permission-denied` branches.
+   */
+  const handleHoldStart = useCallback(() => {
+    if (noteBusy || trackingBusy) return;
+    setNotePending(null);
+    setTrackingPending(null);
+    void start();
+  }, [noteBusy, start, trackingBusy]);
+
+  /**
+   * HoldToRecordMic's commit path: a held press released before locking, a
+   * second touch landing while already listening, or its own locked "Stop"
+   * control. Always `stop()`, never the toggle function — see that
+   * component's `onCommit` doc comment for why the two must not be
+   * conflated.
+   */
+  const handleHoldCommit = useCallback(() => {
+    void stop();
+  }, [stop]);
+
   const applyActions = useCallback(
     (actions: CoachProposalAction[]) => apply({ actions }),
     [apply],
@@ -1452,16 +1479,18 @@ export default function VoiceScreen() {
           style={{ alignSelf: "stretch" }}
         />
 
-        <MicOrb
+        <HoldToRecordMic
           status={state.status}
-          onPress={handleMicPress}
+          onHoldStart={handleHoldStart}
+          onCommit={handleHoldCommit}
+          onTogglePress={handleMicPress}
           size={84}
           accessibilityLabel={
             state.status === "listening"
-              ? "Stop listening"
+              ? "Recording. Tap to stop, or hold and slide up to lock"
               : state.status === "permission-denied"
                 ? "Open Settings to allow microphone access"
-                : "Start listening"
+                : "Hold to record, or tap to start listening"
           }
           accessibilityHint={
             state.status === "listening" ? undefined : "Say a command such as start tracking my deen goal"

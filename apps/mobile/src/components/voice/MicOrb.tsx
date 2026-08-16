@@ -39,6 +39,16 @@ export interface MicOrbProps {
   /** Overrides the generated label — the tab-bar mic announces itself as a tab. */
   accessibilityLabel?: string;
   accessibilityHint?: string;
+  /**
+   * False renders the orb's face and halo only, as a plain `View` with no
+   * `Pressable`/accessibility wrapper of its own — for a caller (see
+   * `HoldToRecordMic`) that owns touch handling itself via a gesture
+   * recognizer and would otherwise end up with two competing responders
+   * fighting over the same touch. `onPress` is ignored in this mode.
+   * Defaults to true, so every existing caller (TrackerVoiceButton, and any
+   * plain tap-to-toggle mic) is unaffected.
+   */
+  interactive?: boolean;
 }
 
 interface StateVisual {
@@ -90,6 +100,7 @@ export function MicOrb({
   style,
   accessibilityLabel,
   accessibilityHint,
+  interactive = true,
 }: MicOrbProps) {
   const reduceMotion = useReduceMotion();
   const pulse = useSharedValue(0);
@@ -126,24 +137,8 @@ export function MicOrb({
   const diameter = Math.max(minTouchTarget, size);
   const glyphSize = Math.round(diameter * 0.42);
 
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? STATE_LABELS[status]}
-      accessibilityHint={accessibilityHint}
-      accessibilityState={{ disabled, busy: status === "listening" || status === "processing" }}
-      // The halo overflows the button's own bounds, so the press area is
-      // pinned to the circle rather than inferred from the layout box.
-      hitSlop={8}
-      style={({ pressed }) => [
-        styles.root,
-        { width: diameter, height: diameter, borderRadius: diameter / 2 },
-        style,
-        pressed && !disabled && styles.pressed,
-      ]}
-    >
+  const face = (
+    <>
       {visual.ring !== null ? (
         <Animated.View
           pointerEvents="none"
@@ -163,6 +158,36 @@ export function MicOrb({
       >
         <Icon name={visual.glyph} size={glyphSize} color={visual.glyphColor} />
       </View>
+    </>
+  );
+
+  // The bare-View branch: no Pressable, no accessibility wiring of its own —
+  // a wrapping gesture-driven caller (HoldToRecordMic) owns both, and giving
+  // this a second responder underneath it is exactly the double-handling
+  // that prop exists to avoid. See `interactive`'s doc comment.
+  if (!interactive) {
+    return <View style={[styles.root, { width: diameter, height: diameter, borderRadius: diameter / 2 }, style]}>{face}</View>;
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? STATE_LABELS[status]}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled, busy: status === "listening" || status === "processing" }}
+      // The halo overflows the button's own bounds, so the press area is
+      // pinned to the circle rather than inferred from the layout box.
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.root,
+        { width: diameter, height: diameter, borderRadius: diameter / 2 },
+        style,
+        pressed && !disabled && styles.pressed,
+      ]}
+    >
+      {face}
     </Pressable>
   );
 }

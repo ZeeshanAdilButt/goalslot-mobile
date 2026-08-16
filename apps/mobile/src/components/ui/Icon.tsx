@@ -45,6 +45,7 @@ import {
   KeyRound,
   Keyboard,
   LayoutDashboard,
+  Lock,
   LogOut,
   MessagesSquare,
   MessageSquareText,
@@ -139,6 +140,10 @@ const ICONS = {
   // visibly different from an idle mic rather than merely dimmer.
   mic: Mic,
   "mic-off": MicOff,
+  // HoldToRecordMic's "locked into hands-free recording" badge — a slide-up
+  // gesture crossed the lock threshold, distinct from the plain `mic` glyph
+  // so the badge reads at a glance rather than needing its text read first.
+  lock: Lock,
   // The Voice tab's "Type instead" dock action — the keyboard-entry
   // alternative to speaking a command, so it gets a glyph distinct from
   // `coach` (the AI-chat bubble icon used for Coach itself elsewhere).

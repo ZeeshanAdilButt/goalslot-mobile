@@ -65,6 +65,7 @@ import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
+import { HoldToRecordMic } from "@/components/voice/HoldToRecordMic";
 import { MicOrb } from "@/components/voice/MicOrb";
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
@@ -1036,25 +1037,49 @@ export default function JournalScreen() {
         </View>
       ) : null}
 
-      {/* The manual entry point into dictation — everything above this only
-          ever appears once capture is already under way (or blocked/paused);
-          without this row the mic is reachable exclusively through the
-          `?voice=1` deep link (Siri / the App Shortcut), and there is no way
-          to start talking from inside the app itself. Tapping calls the
-          exact same `beginDictation` the deep link calls, so both paths land
-          in identical state. */}
-      {voiceMode === "inactive" ? (
-        <View style={styles.voiceIdleRow}>
-          <MicOrb
-            status="idle"
-            onPress={beginDictation}
-            size={40}
-            accessibilityLabel="Talk about your day"
-            accessibilityHint="Starts voice dictation for today's journal entry"
-          />
-          <Text style={styles.voiceIdleLabel}>Talk about your day — dictate today's entry</Text>
-        </View>
-      ) : null}
+      {/* The manual entry point into dictation — the only path visible while
+          voiceMode is "inactive" (everything above this only ever appears
+          once capture is already under way (or blocked/paused)); without
+          this row the mic is reachable exclusively through the `?voice=1`
+          deep link (Siri / the App Shortcut), and there is no way to start
+          talking from inside the app itself.
+          A plain tap calls the exact same `beginDictation` the deep link
+          calls, so both paths land in identical state — see
+          HoldToRecordMic's header for what a HOLD does differently: since
+          this screen's dictation is already continuous and hands-free from
+          the very first tap (the auto-restart chain above, tolerant of
+          pauses up to MAX_SILENCE_MS), a held press only adds one thing a
+          plain tap doesn't have — release it early, before sliding up, and
+          it stops right there, exactly like tapping "Stop listening" would.
+          Slide up first and it locks (a no-op in effect, since this was
+          already hands-free, but the badge still confirms it).
+          ALWAYS mounted, not conditioned on `voiceMode === "inactive"` —
+          collapsed to invisible instead once dictation starts, so the touch
+          that began the hold (still down at that instant) keeps being
+          tracked by the same gesture recognizer through the state flip
+          rather than being orphaned by the row unmounting under its finger.
+          The rich "listening"/"blocked"/"soft-stopped" panels above are the
+          visible UI for every state past this first press. */}
+      <View
+        style={voiceMode === "inactive" ? styles.voiceIdleRow : styles.voiceIdleRowHidden}
+        // Collapsed-but-mounted (see the comment above) must not also leave
+        // an invisible, still-focusable "Talk about your day" button sitting
+        // in the screen reader's traversal order once the real listening
+        // panel is what's on screen.
+        accessibilityElementsHidden={voiceMode !== "inactive"}
+        importantForAccessibility={voiceMode !== "inactive" ? "no-hide-descendants" : "auto"}
+      >
+        <HoldToRecordMic
+          status={isDictating ? "listening" : "idle"}
+          onHoldStart={beginDictation}
+          onCommit={stopDictation}
+          onTogglePress={beginDictation}
+          size={40}
+          accessibilityLabel="Talk about your day"
+          accessibilityHint="Starts voice dictation for today's journal entry"
+        />
+        <Text style={styles.voiceIdleLabel}>Talk about your day — dictate today's entry</Text>
+      </View>
 
       <Animated.View style={[styles.editorArea, editorTransitionStyle]}>
         {editorContent}
@@ -1391,6 +1416,17 @@ const styles = StyleSheet.create({
     fontSize: typography.size.sm,
     fontWeight: typography.weight.medium,
     color: colors.primaryText,
+  },
+  // Same row, collapsed to nothing rather than unmounted — see the render
+  // site's comment on why this element has to stay mounted through the
+  // inactive->priming->listening transition. Zero height + clipped overflow
+  // is enough to make it visually and spatially disappear without touching
+  // whether the gesture recognizer inside it is still alive.
+  voiceIdleRowHidden: {
+    height: 0,
+    minHeight: 0,
+    overflow: "hidden",
+    opacity: 0,
   },
   voicePanel: {
     ...VOICE_SURFACE,
