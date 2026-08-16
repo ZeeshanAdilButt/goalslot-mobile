@@ -22,7 +22,7 @@
 // patch -> live call -> invalidate on success / restore snapshot + toast on
 // failure.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -345,6 +345,42 @@ export default function NotesScreen() {
     scrollOffset,
     targetIndexSv,
   ]);
+
+  // Every field here (SharedValues, updateProjection) is already stable
+  // across renders, but the object literal wrapping them at each NoteRow call
+  // site below was not — a fresh `drag={{ ... }}` every render defeats
+  // NoteRow's memo() just like a fresh inline callback would. Memoized once
+  // so the whole tree of rows keeps one stable `drag` reference.
+  const dragController = useMemo(
+    () => ({
+      dragActive,
+      dragReady,
+      dragX,
+      dragY,
+      dragStartScroll,
+      scrollOffset,
+      activeIndexSv,
+      activeDepthSv,
+      targetIndexSv,
+      liftScale,
+      reduceMotionSv,
+      updateProjection,
+    }),
+    [
+      activeDepthSv,
+      activeIndexSv,
+      dragActive,
+      dragReady,
+      dragStartScroll,
+      dragX,
+      dragY,
+      liftScale,
+      reduceMotionSv,
+      scrollOffset,
+      targetIndexSv,
+      updateProjection,
+    ],
+  );
 
   const scrollHandler = useAnimatedScrollHandler((event) => {
     scrollOffset.value = event.contentOffset.y;
@@ -738,6 +774,14 @@ export default function NotesScreen() {
     router.push(`/note/${noteId}`);
   }, []);
 
+  // Hoisted rather than inlined at the NoteRow call site below: NoteRow is
+  // memo()'d (see its own note), and a fresh `(note) => void x(note)` closure
+  // built on every NotesScreen render would hand every row a new prop
+  // reference each time, defeating that memoization the same way an inline
+  // object literal would.
+  const handleNewSubpage = useCallback((note: FlatNote) => void createNote(note.id), [createNote]);
+  const handleToggleFavorite = useCallback((note: FlatNote) => void toggleFavorite(note), [toggleFavorite]);
+
   const toggleCollapse = useCallback(
     (note: FlatNote) => {
       hapticLight();
@@ -922,28 +966,15 @@ export default function NotesScreen() {
             dragInProgress={dragInProgress}
             collapsed={collapsedSet.has(item.id)}
             siblingInfo={siblingInfo.get(item.id)}
-            drag={{
-              dragActive,
-              dragReady,
-              dragX,
-              dragY,
-              dragStartScroll,
-              scrollOffset,
-              activeIndexSv,
-              activeDepthSv,
-              targetIndexSv,
-              liftScale,
-              reduceMotionSv,
-              updateProjection,
-            }}
+            drag={dragController}
             onStartDrag={startDrag}
             onDrop={stableHandleDrop}
             onCancelDrag={endDrag}
             onPress={openNote}
             onToggleCollapse={toggleCollapse}
             onDelete={setPendingDelete}
-            onNewSubpage={(note) => void createNote(note.id)}
-            onToggleFavorite={(note) => void toggleFavorite(note)}
+            onNewSubpage={handleNewSubpage}
+            onToggleFavorite={handleToggleFavorite}
             onAccessibilityAction={handleAccessibilityAction}
           />
         ))}
@@ -1062,7 +1093,14 @@ interface NoteRowProps {
 
 const LIFT_SCALE = 1.03;
 
-function NoteRow({
+// memo()'d because the tree above renders every row with a plain `.map` —
+// unlike the FlashList/FlatList screens elsewhere in this app, there is no
+// virtualization here (deliberate, see the file header: fixed-height rows
+// support drag reordering that recycling would fight), so EVERY row mounts
+// at once. Without memo, any unrelated NotesScreen re-render (a toast, a
+// sync tick, an unconnected state update) walks and re-renders the entire
+// tree instead of just the row that actually changed.
+const NoteRow = memo(function NoteRow({
   item,
   index,
   isActive,
@@ -1381,7 +1419,7 @@ function NoteRow({
       </Swipeable>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

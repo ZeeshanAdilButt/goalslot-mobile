@@ -18,7 +18,7 @@
 // That's why there is no socket subscription here: the list is already
 // correct by the time this component re-renders.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
@@ -258,8 +258,21 @@ interface ConversationListItemProps {
  *
  * When the service does populate `lastMessage`, it wins — it's authoritative
  * and covers threads this device has never opened.
+ *
+ * Memoised for the same reason ConversationRow itself is (see its own
+ * docblock): without it, every row re-renders — re-running this component's
+ * `useQuery` and preview/unread computation — on any parent re-render (e.g.
+ * `isRefreshing` toggling on pull-to-refresh), not just when its own
+ * conversation actually changed. A bare inline `onPress` closure would defeat
+ * that even with the memo in place, so the callback handed to ConversationRow
+ * is stabilised with `useCallback` too.
  */
-function ConversationListItem({ conversation, currentUserId, name, onPress }: ConversationListItemProps) {
+const ConversationListItem = memo(function ConversationListItem({
+  conversation,
+  currentUserId,
+  name,
+  onPress,
+}: ConversationListItemProps) {
   const cachedThread = useQuery({ ...messagingQueries.messages(conversation.id), enabled: false });
 
   const lastMessage = conversation.lastMessage ?? newestServerMessage(cachedThread.data) ?? null;
@@ -267,6 +280,8 @@ function ConversationListItem({ conversation, currentUserId, name, onPress }: Co
     lastMessage?.body,
     lastMessage?.senderId === currentUserId ? "You: " : undefined,
   );
+  const conversationId = conversation.id;
+  const handlePress = useCallback(() => onPress(conversationId), [onPress, conversationId]);
 
   return (
     <ConversationRow
@@ -274,10 +289,10 @@ function ConversationListItem({ conversation, currentUserId, name, onPress }: Co
       preview={preview}
       timestamp={lastMessage?.createdAt ?? conversation.updatedAt}
       unread={isConversationUnread(conversation, currentUserId, lastMessage)}
-      onPress={() => onPress(conversation.id)}
+      onPress={handlePress}
     />
   );
-}
+});
 
 function Separator() {
   return <View style={styles.separator} />;

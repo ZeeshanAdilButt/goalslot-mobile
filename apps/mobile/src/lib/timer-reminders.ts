@@ -38,8 +38,6 @@ import { DEFAULT_SESSION_LABEL } from "./session-label";
  */
 export const REMINDER_INTERVAL_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
 
-export type ReminderIntervalMinutes = (typeof REMINDER_INTERVAL_OPTIONS)[number];
-
 /** Web's default (`state.reminderInterval || 15`) and the store's initial value. */
 export const DEFAULT_REMINDER_INTERVAL_MINUTES = 15;
 

@@ -292,6 +292,14 @@ export default function MessageThreadScreen() {
 
   // --- Render -------------------------------------------------------------
 
+  // Hoisted out of renderRow rather than inlined: MessageBubble is memo()'d
+  // (see its own docblock — it exists to stop every bubble re-rendering when
+  // one message's status changes), and an inline `(clientId) => void
+  // retry(clientId)` closure inside renderRow would hand it a new onRetry
+  // reference on every row render, defeating that memoization exactly like a
+  // fresh object/function literal prop always does.
+  const handleRetry = useCallback((clientId: string) => void retry(clientId), [retry]);
+
   const renderRow = useCallback(
     ({ item }: { item: ThreadRow }) => {
       if (item.kind === "separator") {
@@ -308,12 +316,12 @@ export default function MessageThreadScreen() {
           message={item.message}
           isOwn={item.message.senderId === currentUserId}
           counterpartName={counterpartName}
-          onRetry={(clientId) => void retry(clientId)}
+          onRetry={handleRetry}
           onDiscard={discard}
         />
       );
     },
-    [counterpartName, currentUserId, discard, retry],
+    [counterpartName, currentUserId, discard, handleRetry],
   );
 
   // `isError && !data`, not `isError` alone: this screen refetches on every
