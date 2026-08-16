@@ -36,7 +36,7 @@
 // auth provider was built and nothing called it until this screen shipped.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import Constants from "expo-constants";
@@ -56,7 +56,9 @@ import {
 } from "@/components/settings";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useScreenView } from "@/hooks/useScreenView";
+import { getErrorMessage } from "@/lib/get-error-message";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
+import { showToast } from "@/lib/toast-store";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -146,8 +148,38 @@ export default function SettingsScreen() {
   const [openSheet, setOpenSheet] = useState<SheetName | null>(null);
   const [permission, setPermission] = useState<NotificationPermissionStatus | null>(null);
   const [pendingLogout, setPendingLogout] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   const closeSheet = useCallback(() => setOpenSheet(null), []);
+
+  // The "Live update" row used to be read-only — informational, no
+  // `onPress`, no chevron. That's exactly why tapping it visibly did
+  // nothing: not a bug in the row, but a real gap given how much today's
+  // testing has hinged on "am I actually on the latest code" — a manual
+  // check is a genuinely useful action to put there instead of leaving it
+  // inert. `checkForUpdateAsync` alone only asks the server; an available
+  // update still has to be fetched and the app reloaded to actually run it.
+  const handleCheckForUpdate = useCallback(async () => {
+    if (!Updates.isEnabled) {
+      showToast("Updates aren't available in this build.", "error");
+      return;
+    }
+    setCheckingUpdate(true);
+    try {
+      const result = await Updates.checkForUpdateAsync();
+      if (!result.isAvailable) {
+        showToast("You're already on the latest update.", "success");
+        return;
+      }
+      showToast("Downloading the latest update…", "success");
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync();
+    } catch (err) {
+      showToast(getErrorMessage(err, "Couldn't check for an update."), "error");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, []);
 
   useScreenView("settings");
 
@@ -377,9 +409,10 @@ export default function SettingsScreen() {
           />
         </SettingsSection>
 
-        {/* Read-only: no onPress, so it draws no chevron and needs no sheet.
-            Exists so "which build is this" is answerable by looking at the
-            phone instead of cross-referencing an EAS dashboard. */}
+        {/* "GoalSlot" below is read-only — no onPress, no chevron, no sheet.
+            "Live update" is not: it used to be read-only too, which is
+            exactly why tapping it visibly did nothing (a real, reported
+            confusion) — it now runs a manual update check. */}
         <SettingsSection title="About">
           <SettingsRow
             label="GoalSlot"
@@ -390,8 +423,12 @@ export default function SettingsScreen() {
           <SettingsRow
             label="Live update"
             icon="refresh"
-            value={updateValue}
+            value={checkingUpdate ? "Checking…" : updateValue}
             description={updateDescription}
+            onPress={() => void handleCheckForUpdate()}
+            disabled={checkingUpdate}
+            accessory={checkingUpdate ? <ActivityIndicator size="small" color={colors.mutedForeground} /> : undefined}
+            accessibilityHint="Checks for a newer version and applies it if one is available"
             divider={false}
           />
         </SettingsSection>
