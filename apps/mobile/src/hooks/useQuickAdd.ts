@@ -143,14 +143,14 @@ interface RunQuickAddArgs<TInput, TCreated> {
    * Reused verbatim for the outbox entry queued below on a "no response"
    * failure, so a create that actually committed server-side before the live
    * attempt timed out gets replayed under the SAME key rather than a fresh
-   * one minted at queue time. Goal/task creates have no server-side
-   * conflict check to race, so a duplicate row there is merely untidy;
-   * schedule-block creates do (`ScheduleService.create`'s time-conflict
-   * check, which races the check against the insert with no transaction) —
-   * see schedule.ts's `create` for the failure mode this closes. Callers
-   * that don't pass one keep the previous behaviour (a key minted only at
-   * queue time, which is a no-op for the live attempt either way since
-   * nothing forwarded it there before this existed).
+   * one minted at queue time. Every call site here (goal/task/schedule-block)
+   * now mints and forwards one — a duplicate row on replay is a real,
+   * user-visible bug for all three, not just schedule blocks (which have the
+   * additional, separate problem of `ScheduleService.create`'s time-conflict
+   * check racing the check against the insert with no transaction — see
+   * schedule.ts's `create`). Optional only so a hypothetical future caller
+   * that genuinely has nothing to dedupe (no create involved) isn't forced
+   * to invent one.
    */
   idempotencyKey?: string;
   applyOptimistic: () => void;
@@ -260,11 +260,18 @@ async function submitGoal(input: QuickAddGoalInput, analytics: AnalyticsCapabili
     color: PLACEHOLDER_COLOR,
   };
 
+  // Minted once and forwarded to both the live call and (on failure) the
+  // outbox entry below — see `RunQuickAddArgs.idempotencyKey`'s own comment
+  // for why a create needs this held constant across the live attempt and
+  // any replay.
+  const idempotencyKey = genId();
+
   await runQuickAdd<CreateGoalInput, Goal>({
     payload,
     outboxKind: "goal-create",
     invalidateKey: goalQueries.goalQueries.all,
-    create: (p) => apiClient.goals.create(p).then((res) => res.data),
+    idempotencyKey,
+    create: (p) => apiClient.goals.create(p, { idempotencyKey }).then((res) => res.data),
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Goal>(listKey, optimisticId),
     markPendingSync: () => markPendingInListCache<Goal>(listKey, optimisticId),
@@ -287,11 +294,16 @@ async function submitTask(input: QuickAddTaskInput, analytics: AnalyticsCapabili
     status: "TODO",
   };
 
+  // Minted once and forwarded to both the live call and (on failure) the
+  // outbox entry below — see `RunQuickAddArgs.idempotencyKey`'s own comment.
+  const idempotencyKey = genId();
+
   await runQuickAdd<CreateTaskInput, Task>({
     payload,
     outboxKind: "task-create",
     invalidateKey: taskQueries.taskQueries.all,
-    create: (p) => apiClient.tasks.create(p).then((res) => res.data),
+    idempotencyKey,
+    create: (p) => apiClient.tasks.create(p, { idempotencyKey }).then((res) => res.data),
     applyOptimistic: () => addToListCache(listKey, optimistic),
     rollbackOptimistic: () => removeFromListCache<Task>(listKey, optimisticId),
     markPendingSync: () => markPendingInListCache<Task>(listKey, optimisticId),

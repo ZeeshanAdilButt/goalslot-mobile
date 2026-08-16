@@ -1295,12 +1295,33 @@ function createCoachSettingsApi(api) {
   };
 }
 
+// src/api/idempotency.ts
+var IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+function idempotentConfig(options) {
+  const key = options?.idempotencyKey;
+  if (!key) return void 0;
+  return { headers: { [IDEMPOTENCY_KEY_HEADER]: key } };
+}
+
 // src/api/goals.ts
 function createGoalsApi(api) {
   return {
     getAll: (params) => api.get("/goals", { params }),
     getOne: (id) => api.get(`/goals/${id}`),
-    create: (data) => api.post("/goals", data),
+    /**
+     * `options.idempotencyKey` guards the same failure mode documented in
+     * ./time-entries.ts's `create` and ./schedule.ts's `create`: a create
+     * that times out client-side after the row already committed
+     * server-side, then gets queued to the offline outbox and replayed with
+     * no way for the server to recognise the replay as the same request —
+     * producing a real duplicate Goal row. Goal creation has no
+     * time-conflict-style check to race (unlike schedule blocks), but the
+     * duplicate-on-replay mechanism is identical and just as real; the key
+     * must be minted once per create attempt and reused for any outbox
+     * replay of that same attempt (see useQuickAdd.ts's `submitGoal` and
+     * lib/offline.ts's "goal-create" operation).
+     */
+    create: (data, options) => api.post("/goals", data, idempotentConfig(options)),
     update: (id, data) => api.put(`/goals/${id}`, data),
     delete: (id) => api.delete(`/goals/${id}`),
     reorder: (ids) => api.put("/goals/reorder", { ids }),
@@ -1488,7 +1509,20 @@ function createNotesApi(api) {
   return {
     getAll: () => api.get("/notes"),
     getOne: (id) => api.get(`/notes/${id}`),
-    create: (data) => api.post("/notes", data),
+    /**
+     * `options.idempotencyKey`, same reasoning as ./time-entries.ts's
+     * `create`. `CreateNoteDto.id` already carries a client-generated id that
+     * makes a true duplicate ROW impossible (the second insert hits a unique
+     * constraint on id) — but without a key, that second attempt surfaces as
+     * an unmapped Prisma error, which the server's generic exception filter
+     * turns into a 500. The sync engine treats any 5xx as "still failing,
+     * retry" (see packages/shared/src/offline/sync.ts), so a create that
+     * actually succeeded ends up retried for `maxRetries` drains and then
+     * dropped with a false "could not be synced" toast. Forwarding the key
+     * lets the server's idempotency interceptor recognise the replay BEFORE
+     * it ever reaches the insert and hand back the original 201 instead.
+     */
+    create: (data, options) => api.post("/notes", data, idempotentConfig(options)),
     update: (id, data) => api.put(`/notes/${id}`, data),
     delete: (id) => api.delete(`/notes/${id}`),
     // Body is a bare array — NOT the { ids } wrapper goals/tasks use.
@@ -1554,14 +1588,6 @@ function createSharingApi(api) {
   };
 }
 
-// src/api/idempotency.ts
-var IDEMPOTENCY_KEY_HEADER = "idempotency-key";
-function idempotentConfig(options) {
-  const key = options?.idempotencyKey;
-  if (!key) return void 0;
-  return { headers: { [IDEMPOTENCY_KEY_HEADER]: key } };
-}
-
 // src/api/schedule.ts
 function createScheduleApi(api) {
   return {
@@ -1596,12 +1622,33 @@ function createScheduleApi(api) {
 // src/api/tasks.ts
 function createTasksApi(api) {
   return {
-    create: (data) => api.post("/tasks", data),
+    /**
+     * `options.idempotencyKey` guards the same failure mode documented in
+     * ./time-entries.ts's `create`: a create that times out client-side
+     * after the row already committed server-side, then gets queued to the
+     * offline outbox and replayed with no way for the server to recognise
+     * the replay as the same request — producing a real duplicate Task row.
+     * Key minted once per create attempt, reused for any outbox replay of
+     * that same attempt (see useQuickAdd.ts's `submitTask` and
+     * lib/offline.ts's "task-create" operation).
+     */
+    create: (data, options) => api.post("/tasks", data, idempotentConfig(options)),
     list: (params) => api.get("/tasks", { params }),
     getOne: (id) => api.get(`/tasks/${id}`),
     update: (id, data) => api.put(`/tasks/${id}`, data),
     delete: (id) => api.delete(`/tasks/${id}`),
-    complete: (id, data) => api.post(`/tasks/${id}/complete`, data),
+    /**
+     * `options.idempotencyKey`: unlike a plain field-replacement update,
+     * completing a task is NOT idempotent server-side — `TasksService.complete`
+     * unconditionally creates a new TimeEntry row (and recomputes the goal's
+     * loggedHours) on every call that has remaining minutes to log. A replay
+     * of a create-that-actually-committed-but-timed-out-client-side would log
+     * the same completion's minutes a second time, inflating both the task's
+     * logged time and its goal's loggedHours. Same key-per-attempt contract as
+     * `create` above (see tasks.tsx's `handleComplete` and lib/offline.ts's
+     * "task-complete" operation).
+     */
+    complete: (id, data, options) => api.post(`/tasks/${id}/complete`, data, idempotentConfig(options)),
     restore: (id) => api.post(`/tasks/${id}/restore`),
     reorder: (ids) => api.put("/tasks/reorder", { ids })
   };

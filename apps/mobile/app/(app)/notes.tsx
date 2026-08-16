@@ -552,7 +552,12 @@ export default function NotesScreen() {
       if (parentId) expand(parentId);
 
       try {
-        const response = await apiClient.notes.create(payload);
+        // Reuses `optimisticId` (already unique per create attempt, and
+        // already the row's own id) as the idempotency key rather than
+        // minting a second value — same reasoning as "goal-create"/
+        // "task-create" (see lib/offline.ts's "note-create" operation): held
+        // constant across this live attempt and any outbox replay of it.
+        const response = await apiClient.notes.create(payload, { idempotencyKey: optimisticId });
         const created = response.data;
         queryClient.setQueryData<Note[]>(listKey, (existing) =>
           (existing ?? []).map((n) => (n.id === optimisticId ? created : n)),
@@ -578,7 +583,7 @@ export default function NotesScreen() {
         analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
         router.push(`/note/${created.id}`);
       } catch (err) {
-        const queued = await queueOfflineEdit("note-create", payload, err);
+        const queued = await queueOfflineEdit("note-create", payload, err, optimisticId);
         if (queued) {
           const pendingNote: Note = { ...optimisticNote, pendingSync: true };
           queryClient.setQueryData<Note[]>(listKey, (existing) =>

@@ -112,14 +112,32 @@ export const operationRegistry = createOperationRegistry();
  * rejected the request — nothing was queued, and the caller should roll
  * back to the pre-edit snapshot and show its own inline error, same as
  * before this offline pass.
+ *
+ * `idempotencyKey`: for operations whose replay can create a NEW row
+ * server-side (task-complete's TimeEntry, note-create's Note — see their
+ * registrations below), the caller must mint the key BEFORE the live
+ * attempt, forward it to that live call, and pass the SAME key here so the
+ * queued replay carries it too. Omitted, a fresh key is minted here instead
+ * — fine for callers whose live attempt never sent a key to begin with
+ * (every plain update/delete, which are idempotent by nature: replaying a
+ * PUT or a delete-by-id twice lands on the same end state either way), but
+ * for a create-shaped operation that would leave the live attempt
+ * unkeyed and only the replay keyed, which does nothing to stop the
+ * live-attempt-committed-but-client-timed-out duplicate this exists to
+ * prevent.
  */
-export async function queueOfflineEdit(kind: string, payload: unknown, err: unknown): Promise<boolean> {
+export async function queueOfflineEdit(
+  kind: string,
+  payload: unknown,
+  err: unknown,
+  idempotencyKey?: string,
+): Promise<boolean> {
   if (hasResponse(err)) return false;
   await outbox.addToOutbox({
     id: genId(),
     kind,
     payload,
-    idempotencyKey: genId(),
+    idempotencyKey: idempotencyKey ?? genId(),
     createdAt: Date.now(),
     retries: 0,
   });
@@ -137,13 +155,20 @@ export async function queueOfflineEdit(kind: string, payload: unknown, err: unkn
 // (not a single filtered list variant) so a replayed create refreshes every
 // view of that domain, not just the one quick-add happened to patch
 // optimistically.
+// `idempotencyKey` forwarded, same reasoning as "time-entry-create" below:
+// useQuickAdd.ts's submitGoal mints one key per create attempt and reuses it
+// here on replay, so a create that actually committed server-side before the
+// client's live attempt timed out gets recognised as the same request
+// instead of leaving a real duplicate Goal row behind (see
+// packages/shared/src/api/goals.ts's `create` for the full mechanism).
 operationRegistry.registerOperation<CreateGoalInput, Goal>("goal-create", {
-  execute: async (payload) => (await apiClient.goals.create(payload)).data,
+  execute: async (payload, idempotencyKey) => (await apiClient.goals.create(payload, { idempotencyKey })).data,
   invalidateKeys: [goalQueries.goalQueries.all],
 });
 
+// `idempotencyKey` forwarded, same reasoning as "goal-create" above.
 operationRegistry.registerOperation<CreateTaskInput, Task>("task-create", {
-  execute: async (payload) => (await apiClient.tasks.create(payload)).data,
+  execute: async (payload, idempotencyKey) => (await apiClient.tasks.create(payload, { idempotencyKey })).data,
   invalidateKeys: [taskQueries.taskQueries.all],
 });
 
@@ -227,8 +252,17 @@ operationRegistry.registerOperation<TaskUpdatePayload, Task>("task-update", {
   invalidateKeys: [taskQueries.taskQueries.all],
 });
 
+// `idempotencyKey` forwarded and MUST be minted before the live attempt and
+// reused on replay (via `queueOfflineEdit`'s idempotencyKey argument) —
+// unlike goal-update/task-update above, completing a task is not idempotent:
+// TasksService.complete unconditionally creates a new TimeEntry (and
+// recomputes the goal's loggedHours) on every call, so a replay of a
+// completion that actually committed server-side before the live attempt
+// timed out would double-log the same minutes (see tasks.tsx's
+// handleComplete and packages/shared/src/api/tasks.ts's `complete`).
 operationRegistry.registerOperation<TaskCompletePayload, Task>("task-complete", {
-  execute: async (payload) => (await apiClient.tasks.complete(payload.id, payload.data)).data,
+  execute: async (payload, idempotencyKey) =>
+    (await apiClient.tasks.complete(payload.id, payload.data, { idempotencyKey })).data,
   invalidateKeys: [taskQueries.taskQueries.all],
 });
 
@@ -332,8 +366,17 @@ operationRegistry.registerOperation<NoteUpdatePayload, Note>("note-update", {
 // page and kept typing while still offline) — the outbox drains strictly
 // FIFO, so note-create always replays before any note-update queued after
 // it, and by the time the update runs the id is real.
+// `idempotencyKey` forwarded, same reasoning as "goal-create" above — the
+// client-generated `payload.id` already stops a replay from producing a
+// second Note row (unique constraint on id), but without the key that
+// replay still surfaces as an unmapped 500 from the server's generic
+// exception filter rather than a clean idempotent replay, which the sync
+// engine (packages/shared/src/offline/sync.ts) reads as "still failing" and
+// retries `maxRetries` times before dropping with a false failure toast for
+// a create that already succeeded (see packages/shared/src/api/notes.ts's
+// `create` for the full mechanism).
 operationRegistry.registerOperation<CreateNoteDto, Note>("note-create", {
-  execute: async (payload) => (await apiClient.notes.create(payload)).data,
+  execute: async (payload, idempotencyKey) => (await apiClient.notes.create(payload, { idempotencyKey })).data,
   invalidateKeys: [noteQueries.noteQueries.all],
 });
 

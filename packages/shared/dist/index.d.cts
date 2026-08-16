@@ -1801,26 +1801,6 @@ declare function createInstructionsApi(api: AxiosInstance): {
 };
 type InstructionsApi = ReturnType<typeof createInstructionsApi>;
 
-/** The exact header name goal-slot-api's `IdempotencyInterceptor` reads. */
-declare const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
-interface IdempotentRequestOptions {
-    /**
-     * Stable per logical operation, NOT per attempt. The same value must be
-     * sent by the first live attempt and by every subsequent replay of the same
-     * payload (an outbox drain, a Retry button) — that identity is the whole
-     * mechanism. Omitted entirely, the request behaves exactly as it did before
-     * this option existed: no header, no server-side dedupe.
-     */
-    idempotencyKey?: string;
-}
-/**
- * Builds the per-request axios config that carries an idempotency key, or
- * `undefined` when there is no key to send — so passing the result straight
- * through to `api.post(url, body, ...)` is identical to omitting the argument
- * for callers that don't supply one.
- */
-declare function idempotentConfig(options?: IdempotentRequestOptions): AxiosRequestConfig | undefined;
-
 /** Mirrors the API's `PushSubscriptionKind` enum. */
 type PushSubscriptionKind = 'WEB' | 'EXPO';
 /**
@@ -1864,6 +1844,26 @@ declare function createPushSubscriptionsApi(api: AxiosInstance): {
      */
     unregister: (id: string) => Promise<axios.AxiosResponse<PushSubscriptionResponse, any, {}, any>>;
 };
+
+/** The exact header name goal-slot-api's `IdempotencyInterceptor` reads. */
+declare const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+interface IdempotentRequestOptions {
+    /**
+     * Stable per logical operation, NOT per attempt. The same value must be
+     * sent by the first live attempt and by every subsequent replay of the same
+     * payload (an outbox drain, a Retry button) — that identity is the whole
+     * mechanism. Omitted entirely, the request behaves exactly as it did before
+     * this option existed: no header, no server-side dedupe.
+     */
+    idempotencyKey?: string;
+}
+/**
+ * Builds the per-request axios config that carries an idempotency key, or
+ * `undefined` when there is no key to send — so passing the result straight
+ * through to `api.post(url, body, ...)` is identical to omitting the argument
+ * for callers that don't supply one.
+ */
+declare function idempotentConfig(options?: IdempotentRequestOptions): AxiosRequestConfig | undefined;
 
 interface UpdateProfileForm {
     name?: string;
@@ -2047,7 +2047,7 @@ declare function createApiClient(config: ApiClientConfig): {
             labelIds?: string;
         }) => Promise<axios.AxiosResponse<Goal[], any, {}, any>>;
         getOne: (id: string) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
-        create: (data: CreateGoalInput) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
+        create: (data: CreateGoalInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
         update: (id: string, data: UpdateGoalInput) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
         delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
         reorder: (ids: string[]) => Promise<axios.AxiosResponse<any, {
@@ -2058,7 +2058,7 @@ declare function createApiClient(config: ApiClientConfig): {
     notes: {
         getAll: () => Promise<axios.AxiosResponse<Note[], any, {}, any>>;
         getOne: (id: string) => Promise<axios.AxiosResponse<NoteDetailResponse, any, {}, any>>;
-        create: (data: CreateNoteDto) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
+        create: (data: CreateNoteDto, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
         update: (id: string, data: UpdateNoteDto) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
         delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
         reorder: (items: NoteReorderItem[]) => Promise<axios.AxiosResponse<any, NoteReorderItem[], {}, any>>;
@@ -2068,12 +2068,12 @@ declare function createApiClient(config: ApiClientConfig): {
         unregister: (id: string) => Promise<axios.AxiosResponse<PushSubscriptionResponse, any, {}, any>>;
     };
     tasks: {
-        create: (data: CreateTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
+        create: (data: CreateTaskInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
         list: (params?: TaskListFilters) => Promise<axios.AxiosResponse<Task[], any, {}, any>>;
         getOne: (id: string) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
         update: (id: string, data: UpdateTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
         delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
-        complete: (id: string, data: CompleteTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
+        complete: (id: string, data: CompleteTaskInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
         restore: (id: string) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
         reorder: (ids: string[]) => Promise<axios.AxiosResponse<any, {
             ids: string[];
@@ -2229,7 +2229,20 @@ declare function createGoalsApi(api: AxiosInstance): {
         labelIds?: string;
     }) => Promise<axios.AxiosResponse<Goal[], any, {}, any>>;
     getOne: (id: string) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
-    create: (data: CreateGoalInput) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
+    /**
+     * `options.idempotencyKey` guards the same failure mode documented in
+     * ./time-entries.ts's `create` and ./schedule.ts's `create`: a create
+     * that times out client-side after the row already committed
+     * server-side, then gets queued to the offline outbox and replayed with
+     * no way for the server to recognise the replay as the same request —
+     * producing a real duplicate Goal row. Goal creation has no
+     * time-conflict-style check to race (unlike schedule blocks), but the
+     * duplicate-on-replay mechanism is identical and just as real; the key
+     * must be minted once per create attempt and reused for any outbox
+     * replay of that same attempt (see useQuickAdd.ts's `submitGoal` and
+     * lib/offline.ts's "goal-create" operation).
+     */
+    create: (data: CreateGoalInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
     update: (id: string, data: UpdateGoalInput) => Promise<axios.AxiosResponse<Goal, any, {}, any>>;
     delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
     reorder: (ids: string[]) => Promise<axios.AxiosResponse<any, {
@@ -2242,7 +2255,20 @@ type GoalsApi = ReturnType<typeof createGoalsApi>;
 declare function createNotesApi(api: AxiosInstance): {
     getAll: () => Promise<axios.AxiosResponse<Note[], any, {}, any>>;
     getOne: (id: string) => Promise<axios.AxiosResponse<NoteDetailResponse, any, {}, any>>;
-    create: (data: CreateNoteDto) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
+    /**
+     * `options.idempotencyKey`, same reasoning as ./time-entries.ts's
+     * `create`. `CreateNoteDto.id` already carries a client-generated id that
+     * makes a true duplicate ROW impossible (the second insert hits a unique
+     * constraint on id) — but without a key, that second attempt surfaces as
+     * an unmapped Prisma error, which the server's generic exception filter
+     * turns into a 500. The sync engine treats any 5xx as "still failing,
+     * retry" (see packages/shared/src/offline/sync.ts), so a create that
+     * actually succeeded ends up retried for `maxRetries` drains and then
+     * dropped with a false "could not be synced" toast. Forwarding the key
+     * lets the server's idempotency interceptor recognise the replay BEFORE
+     * it ever reaches the insert and hand back the original 201 instead.
+     */
+    create: (data: CreateNoteDto, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
     update: (id: string, data: UpdateNoteDto) => Promise<axios.AxiosResponse<Note, any, {}, any>>;
     delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
     reorder: (items: NoteReorderItem[]) => Promise<axios.AxiosResponse<any, NoteReorderItem[], {}, any>>;
@@ -2250,12 +2276,33 @@ declare function createNotesApi(api: AxiosInstance): {
 type NotesApi = ReturnType<typeof createNotesApi>;
 
 declare function createTasksApi(api: AxiosInstance): {
-    create: (data: CreateTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
+    /**
+     * `options.idempotencyKey` guards the same failure mode documented in
+     * ./time-entries.ts's `create`: a create that times out client-side
+     * after the row already committed server-side, then gets queued to the
+     * offline outbox and replayed with no way for the server to recognise
+     * the replay as the same request — producing a real duplicate Task row.
+     * Key minted once per create attempt, reused for any outbox replay of
+     * that same attempt (see useQuickAdd.ts's `submitTask` and
+     * lib/offline.ts's "task-create" operation).
+     */
+    create: (data: CreateTaskInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
     list: (params?: TaskListFilters) => Promise<axios.AxiosResponse<Task[], any, {}, any>>;
     getOne: (id: string) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
     update: (id: string, data: UpdateTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
     delete: (id: string) => Promise<axios.AxiosResponse<any, any, {}, any>>;
-    complete: (id: string, data: CompleteTaskInput) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
+    /**
+     * `options.idempotencyKey`: unlike a plain field-replacement update,
+     * completing a task is NOT idempotent server-side — `TasksService.complete`
+     * unconditionally creates a new TimeEntry row (and recomputes the goal's
+     * loggedHours) on every call that has remaining minutes to log. A replay
+     * of a create-that-actually-committed-but-timed-out-client-side would log
+     * the same completion's minutes a second time, inflating both the task's
+     * logged time and its goal's loggedHours. Same key-per-attempt contract as
+     * `create` above (see tasks.tsx's `handleComplete` and lib/offline.ts's
+     * "task-complete" operation).
+     */
+    complete: (id: string, data: CompleteTaskInput, options?: IdempotentRequestOptions) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
     restore: (id: string) => Promise<axios.AxiosResponse<Task, any, {}, any>>;
     reorder: (ids: string[]) => Promise<axios.AxiosResponse<any, {
         ids: string[];

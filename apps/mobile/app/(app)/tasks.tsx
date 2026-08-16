@@ -319,13 +319,21 @@ export default function TasksScreen() {
 
       const previous = patchTask(task.id, { status: "DONE", completedAt: new Date().toISOString() });
 
+      // Minted once and forwarded to both the live call and (on failure) the
+      // outbox entry below. Completing a task isn't idempotent server-side —
+      // it always logs a new TimeEntry — so without a key held constant
+      // across the live attempt and any replay, a completion that actually
+      // committed before the live call timed out would get double-logged on
+      // replay (see lib/offline.ts's "task-complete" operation).
+      const idempotencyKey = genId();
+
       try {
-        await apiClient.tasks.complete(task.id, payload);
+        await apiClient.tasks.complete(task.id, payload, { idempotencyKey });
         void queryClient.invalidateQueries({ queryKey: taskQueries.taskQueries.all });
         hapticCompletion();
         analytics.track({ name: "taskCompleted", payload: { taskId: task.id } });
       } catch (err) {
-        const queued = await queueOfflineEdit("task-complete", { id: task.id, data: payload }, err);
+        const queued = await queueOfflineEdit("task-complete", { id: task.id, data: payload }, err, idempotencyKey);
         if (queued) {
           // The patch above already applied (status: DONE); just tag it so
           // the row reads as "queued" rather than looking identically saved.
