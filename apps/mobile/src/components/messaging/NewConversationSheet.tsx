@@ -15,7 +15,7 @@
 // DECISIONS.md §5: sharing management is not a mobile v1 surface), so the
 // copy says so instead of offering a button that goes nowhere.
 
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   BottomSheetBackdrop,
@@ -37,6 +37,7 @@ import { hapticLight } from "@/lib/haptics";
 import { describeCreateConversationError } from "@/lib/messaging-error";
 import { messagingQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { showToast } from "@/lib/toast-store";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 import { Avatar } from "./Avatar";
@@ -66,6 +67,17 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
     const [error, setError] = useState<string | null>(null);
 
     const contactsQuery = useQuery(messagingQueries.contacts());
+
+    // TEMPORARY diagnostic — remove once the New Message tap issue is
+    // resolved. If this sheet's own component is genuinely mounting and
+    // re-rendering, this fires; if the button tap never even gets this far,
+    // it won't. Fires once per query status change, not once per render.
+    useEffect(() => {
+      showToast(
+        `DEBUG: sheet contacts status=${contactsQuery.status}, count=${contactsQuery.data?.length ?? "n/a"}`,
+        "success",
+      );
+    }, [contactsQuery.status, contactsQuery.data?.length]);
 
     const available = useMemo(
       () => contactsWithoutConversation(contactsQuery.data ?? [], existingCounterpartIds),

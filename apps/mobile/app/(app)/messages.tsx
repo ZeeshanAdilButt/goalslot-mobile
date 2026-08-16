@@ -46,6 +46,7 @@ import { useMessagingConnection } from "@/hooks/useMessagingConnection";
 import { useScreenView } from "@/hooks/useScreenView";
 import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { messagingQueries } from "@/lib/queries";
+import { showToast } from "@/lib/toast-store";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, spacing } from "@/theme/tokens";
 
@@ -109,6 +110,10 @@ export default function MessagesScreen() {
   }, []);
 
   const openNewConversation = useCallback(() => {
+    // TEMPORARY diagnostic — remove once the New Message tap issue is
+    // resolved. Proves whether this handler runs at all on a real tap, and
+    // whether the sheet ref is attached, without needing to see the screen.
+    showToast(`DEBUG: New message tapped, sheet ref ${sheetRef.current ? "OK" : "NULL"}`, "success");
     sheetRef.current?.present();
   }, []);
 
