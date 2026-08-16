@@ -40,6 +40,7 @@ import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-nat
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import Constants from "expo-constants";
+import * as Updates from "expo-updates";
 
 import type { NotificationPermissionStatus } from "@goalslot/shared";
 
@@ -115,6 +116,21 @@ const shortCommit = typeof rawGitCommitHash === "string" && rawGitCommitHash.len
   : "dev";
 const aboutValue = `${appVersion} (${buildNumber})`;
 const aboutDescription = `Build ${shortCommit}`;
+
+// The single most reliable answer to "am I actually on the latest fix" —
+// unlike the row above, which only reflects the NATIVE binary's build time,
+// this reflects whichever JS bundle is genuinely running RIGHT NOW,
+// embedded or fetched over the air. `Updates.updateId`/`createdAt` are set
+// by expo-updates itself at launch, not by anything this app computes, so
+// they can't drift from reality the way a manually-read build stamp can.
+const updateValue = Updates.isEmbeddedLaunch
+  ? "Embedded build"
+  : (Updates.updateId?.slice(0, 8) ?? "Unknown");
+const updateDescription = Updates.isEmbeddedLaunch
+  ? "No update fetched yet — running the code baked into this install"
+  : Updates.createdAt
+    ? `Published ${Updates.createdAt.toLocaleString()}`
+    : "Update time unknown";
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
@@ -364,6 +380,12 @@ export default function SettingsScreen() {
             icon="info"
             value={aboutValue}
             description={aboutDescription}
+          />
+          <SettingsRow
+            label="Live update"
+            icon="refresh"
+            value={updateValue}
+            description={updateDescription}
             divider={false}
           />
         </SettingsSection>
