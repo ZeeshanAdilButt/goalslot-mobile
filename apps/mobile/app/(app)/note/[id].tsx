@@ -65,6 +65,7 @@ import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
 import {
   appendNoteParagraph,
+  assertNoteHtmlReadable,
   decodeNoteEntities,
   hasUnsupportedMobileMarkup,
   normalizeContent,
@@ -425,20 +426,44 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     (transcript: string): Promise<void> => {
       const write = (async () => {
         let timer: ReturnType<typeof setTimeout> | null = null;
-        const html = await Promise.race([
-          editor.getHTML(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error("The editor stopped responding, so that sentence wasn't added.")),
-              EDITOR_READ_TIMEOUT_MS,
-            );
-          }),
-        ]).finally(() => {
+        let html: unknown;
+        try {
+          html = await Promise.race([
+            editor.getHTML(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("The editor stopped responding, so that sentence wasn't added.")),
+                EDITOR_READ_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
           if (timer !== null) clearTimeout(timer);
-        });
+        }
 
-        const next = appendNoteParagraph(typeof html === "string" ? html : "", transcript);
-        editor.setContent(next);
+        // READ-VERIFY BEFORE WRITE: `assertNoteHtmlReadable` throws rather
+        // than falling back to "" for a non-string read. Falling back used to
+        // mean a malformed/missing bridge response was treated as "the page
+        // is empty" and then SAVED that way — the freshly dictated sentence
+        // replacing the whole document instead of being appended to it. This
+        // must stop here, before `setContent`/`saveContent` ever run, on an
+        // unverified read.
+        const verifiedHtml = assertNoteHtmlReadable(html);
+        const next = appendNoteParagraph(verifiedHtml, transcript);
+
+        try {
+          editor.setContent(next);
+        } catch (err) {
+          // Defense in depth: @10play/tentap-editor's bridge `sendMessage`
+          // (which backs `setContent`) warns and no-ops on a torn-down
+          // webview rather than throwing, so this is not a known failure
+          // mode today — but if it, or a future version of the library,
+          // ever does throw, the write must stop here rather than calling
+          // `saveContent` with a document the live webview never actually
+          // accepted.
+          throw err instanceof Error ? err : new Error("Couldn't add that sentence to this page.");
+        }
+
         // Awaited, not fired and forgotten — see consequence 3 above. This
         // never throws: `saveContent` routes a network failure to the offline
         // outbox and surfaces the rest as the passive banner.

@@ -231,21 +231,44 @@ export function createSpeechRecognitionCapability(): VoiceCapability {
         handlers.onEnd?.();
       };
 
+      // Every listener body below runs directly inside the native module's
+      // event dispatch — a raw callback context with no promise wrapper and
+      // no React error boundary above it. An uncaught throw here (a
+      // malformed native payload, or a `handlers.on*` callback owned by a
+      // caller several layers up throwing) has nowhere to go but out through
+      // that dispatch, which is the closest thing this app has to an
+      // instant, un-toastable crash. Each is wrapped individually rather
+      // than once around the whole `addListener` block so one listener
+      // misbehaving can't take the others' registration down with it.
       session = [
         module.addListener("result", (event: never) => {
-          const { isFinal, results } = event as ResultEvent;
-          const transcript = results[0]?.transcript ?? "";
-          handlers.onTranscript(transcript, isFinal);
+          try {
+            const { isFinal, results } = event as ResultEvent;
+            const transcript = results[0]?.transcript ?? "";
+            handlers.onTranscript(transcript, isFinal);
+          } catch {
+            /* see the comment above this block */
+          }
         }),
         module.addListener("error", (event: never) => {
-          const { error } = event as ErrorEvent;
-          // An explicit abort() is how `cancelListening` works; surfacing it
-          // as a failure would flash an error banner every time someone
-          // backs out of the sheet.
-          if (error === "aborted") return;
-          handlers.onError?.(voiceErrorFromCode(error));
+          try {
+            const { error } = event as ErrorEvent;
+            // An explicit abort() is how `cancelListening` works; surfacing
+            // it as a failure would flash an error banner every time someone
+            // backs out of the sheet.
+            if (error === "aborted") return;
+            handlers.onError?.(voiceErrorFromCode(error));
+          } catch {
+            /* see the comment above this block */
+          }
         }),
-        module.addListener("end", () => finish()),
+        module.addListener("end", () => {
+          try {
+            finish();
+          } catch {
+            /* see the comment above this block */
+          }
+        }),
       ];
 
       active = true;

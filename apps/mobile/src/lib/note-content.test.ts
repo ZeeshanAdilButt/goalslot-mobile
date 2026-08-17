@@ -3,6 +3,7 @@
 
 import {
   appendNoteParagraph,
+  assertNoteHtmlReadable,
   decodeNoteEntities,
   escapeNoteHtml,
   hasUnsupportedMobileMarkup,
@@ -163,6 +164,26 @@ describe("appendNoteParagraph", () => {
     const result = appendNoteParagraph("<p>Existing</p>", "<b>urgent</b> call back");
     expect(result).toBe("<p>Existing</p><p>&lt;b&gt;urgent&lt;/b&gt; call back</p>");
     expect(result).not.toContain("<b>urgent</b>");
+  });
+});
+
+describe("assertNoteHtmlReadable", () => {
+  it("passes a real string straight through", () => {
+    expect(assertNoteHtmlReadable("<p>Existing</p>")).toBe("<p>Existing</p>");
+    expect(assertNoteHtmlReadable("")).toBe("");
+  });
+
+  it("throws rather than silently treating a non-string read as an empty document", () => {
+    // The exact bug this guards: dictation's read-modify-write used to do
+    // `typeof html === "string" ? html : ""`, which meant a malformed or
+    // missing getHTML() result was treated as "the page is empty" and then
+    // SAVED that way — blind-overwriting whatever the page actually held
+    // with just the newly dictated sentence. Throwing instead means the
+    // caller can never reach setContent/saveContent on an unverified read.
+    expect(() => assertNoteHtmlReadable(undefined)).toThrow();
+    expect(() => assertNoteHtmlReadable(null)).toThrow();
+    expect(() => assertNoteHtmlReadable(42)).toThrow();
+    expect(() => assertNoteHtmlReadable({})).toThrow();
   });
 });
 

@@ -206,85 +206,121 @@ export function useVoiceCapture({ voice, onCommand, label }: UseVoiceCaptureOpti
 
   const handleError = useCallback(
     (error: VoiceError) => {
-      if (settledRef.current) return;
-      settledRef.current = true;
-      clearTimers();
-      hapticWarning();
-      apply({
-        status: error.kind === "permission-denied" ? "permission-denied" : "error",
-        transcript: "",
-        message: error.message,
-      });
+      // This runs directly inside the native module's "error" event listener
+      // (see speech-recognition.ts's `module.addListener("error", ...)`) —
+      // a raw native-callback context with no promise wrapper and no React
+      // error boundary above it. An uncaught throw here has nowhere to go but
+      // out through the native event-dispatch call stack, which is the
+      // closest thing this codebase has to an instant, un-toastable app
+      // close. Guarded rather than left bare, even though nothing in this
+      // body is currently known to throw.
+      try {
+        if (settledRef.current) return;
+        settledRef.current = true;
+        clearTimers();
+        hapticWarning();
+        apply({
+          status: error.kind === "permission-denied" ? "permission-denied" : "error",
+          transcript: "",
+          message: error.message,
+        });
+      } catch {
+        // Swallow rather than risk a second throw escaping the same bare
+        // callback context this guard exists to protect.
+      }
     },
     [apply, clearTimers],
   );
 
   const start = useCallback(async () => {
-    clearTimers();
-    transcriptRef.current = "";
-    settledRef.current = false;
+    // Every native call below is already defensively try/caught inside the
+    // real VoiceCapability implementation (see speech-recognition.ts) — none
+    // of `isAvailable`/`getPermission`/`requestPermission`/`startListening`
+    // are known to throw today. This top-level guard exists anyway because
+    // `start` is invoked as `void startVoice()` from several call sites
+    // (an effect in useDictationLoop.ts, several screens' onPress handlers)
+    // with nothing awaiting the result — an uncaught rejection here would be
+    // an unhandled promise rejection with no React error boundary and no
+    // promise chain above it to catch it, for a `VoiceCapability` this hook
+    // only knows through an interface, not this one file's implementation.
+    try {
+      clearTimers();
+      transcriptRef.current = "";
+      settledRef.current = false;
 
-    if (!(await voice.isAvailable())) {
-      apply({
-        status: "unavailable",
-        transcript: "",
-        message: "Speech recognition isn't available on this device. You can still type your request.",
-      });
-      return;
-    }
+      if (!(await voice.isAvailable())) {
+        apply({
+          status: "unavailable",
+          transcript: "",
+          message: "Speech recognition isn't available on this device. You can still type your request.",
+        });
+        return;
+      }
 
-    let permission = await voice.getPermission();
-    if (permission === "undetermined") {
-      // Asked here, at the moment the user pressed a microphone, rather than
-      // at launch — the request only makes sense next to the thing that
-      // needs it, and a cold prompt gets refused.
-      permission = await voice.requestPermission();
-    }
-    if (permission !== "granted") {
-      // Deliberately no retry loop. Once the OS has a "no" on file it never
-      // shows the dialog again, so asking a second time does nothing except
-      // teach the user the app is broken. Settings is the only real fix.
-      apply({
-        status: "permission-denied",
-        transcript: "",
-        message: "GoalSlot needs microphone access to hear you. Turn it on in Settings, or type your request instead.",
-      });
-      return;
-    }
+      let permission = await voice.getPermission();
+      if (permission === "undetermined") {
+        // Asked here, at the moment the user pressed a microphone, rather
+        // than at launch — the request only makes sense next to the thing
+        // that needs it, and a cold prompt gets refused.
+        permission = await voice.requestPermission();
+      }
+      if (permission !== "granted") {
+        // Deliberately no retry loop. Once the OS has a "no" on file it
+        // never shows the dialog again, so asking a second time does
+        // nothing except teach the user the app is broken. Settings is the
+        // only real fix.
+        apply({
+          status: "permission-denied",
+          transcript: "",
+          message:
+            "GoalSlot needs microphone access to hear you. Turn it on in Settings, or type your request instead.",
+        });
+        return;
+      }
 
-    hapticListenStart();
-    apply({ status: "listening", transcript: "", message: "" }, `${label ? `${label}. ` : ""}Listening`);
+      hapticListenStart();
+      apply({ status: "listening", transcript: "", message: "" }, `${label ? `${label}. ` : ""}Listening`);
 
-    timeoutRef.current = setTimeout(() => {
-      void voice.stopListening();
-      // stopListening asks the recognizer for a final result, but a wedged
-      // session may never deliver one — settle on what we have so the UI
-      // cannot be stranded in 'listening'.
-      void settle(transcriptRef.current);
-    }, MAX_LISTEN_MS);
-
-    await voice.startListening({
-      onTranscript: (text, isFinal) => {
-        transcriptRef.current = text;
-        if (isFinal) {
-          void settle(text);
-          return;
-        }
-        // Interim text is display-only. Guarding on `settledRef` keeps a
-        // late partial from reopening a session that already committed.
-        if (!settledRef.current && mountedRef.current) {
-          setState((current) =>
-            current.status === "listening" ? { ...current, transcript: text } : current,
-          );
-        }
-      },
-      onError: handleError,
-      onEnd: () => {
-        // The recognizer closed on its own (silence, or the user stopped
-        // talking) without ever sending a final result.
+      timeoutRef.current = setTimeout(() => {
+        void voice.stopListening();
+        // stopListening asks the recognizer for a final result, but a
+        // wedged session may never deliver one — settle on what we have so
+        // the UI cannot be stranded in 'listening'.
         void settle(transcriptRef.current);
-      },
-    });
+      }, MAX_LISTEN_MS);
+
+      await voice.startListening({
+        onTranscript: (text, isFinal) => {
+          transcriptRef.current = text;
+          if (isFinal) {
+            void settle(text);
+            return;
+          }
+          // Interim text is display-only. Guarding on `settledRef` keeps a
+          // late partial from reopening a session that already committed.
+          if (!settledRef.current && mountedRef.current) {
+            setState((current) =>
+              current.status === "listening" ? { ...current, transcript: text } : current,
+            );
+          }
+        },
+        onError: handleError,
+        onEnd: () => {
+          // The recognizer closed on its own (silence, or the user stopped
+          // talking) without ever sending a final result.
+          void settle(transcriptRef.current);
+        },
+      });
+    } catch (err) {
+      clearTimers();
+      settledRef.current = true;
+      hapticWarning();
+      apply({
+        status: "error",
+        transcript: "",
+        message: err instanceof Error ? err.message : "Couldn't start listening. Please try again.",
+      });
+    }
   }, [apply, clearTimers, handleError, label, settle, voice]);
 
   const stop = useCallback(async () => {

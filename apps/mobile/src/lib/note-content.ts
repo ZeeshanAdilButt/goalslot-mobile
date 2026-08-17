@@ -167,6 +167,30 @@ export function trimTrailingEmptyParagraph(html: string): string {
   return html.replace(TRAILING_EMPTY_PARAGRAPHS, "");
 }
 
+/**
+ * Guards the READ half of dictation's read-modify-write. `editor.getHTML()`
+ * (`@10play/tentap-editor`) is typed as resolving to a string always, but
+ * that is a TypeScript contract, not a runtime one — the value actually
+ * arrives as whatever `JSON.parse` produced from a webview bridge message,
+ * and nothing stops a torn-down webview, a malformed payload, or a future
+ * library change from resolving with `undefined` or something else entirely.
+ *
+ * Before this existed, the caller treated `typeof html !== "string"` the
+ * same as "the page is empty" (`html : ""`) and pressed on to `setContent`
+ * with just the newly dictated sentence — which then got SAVED, via the
+ * awaited `saveContent` that follows, straight over whatever the page
+ * actually held. An unreadable document is not an empty one, and must never
+ * be guessed at: this throws instead, so the caller stops cold at the read
+ * step and never reaches `setContent`/`saveContent` with a document it never
+ * actually verified.
+ */
+export function assertNoteHtmlReadable(html: unknown): string {
+  if (typeof html !== "string") {
+    throw new Error("Couldn't read this page, so that sentence wasn't added.");
+  }
+  return html;
+}
+
 /** Appends one spoken sentence onto an existing note's HTML body as its own
  *  paragraph. Used by both write paths that add to a page's content from
  *  speech: app/(app)/voice.tsx's confirmed APPEND_NOTE command (the editor

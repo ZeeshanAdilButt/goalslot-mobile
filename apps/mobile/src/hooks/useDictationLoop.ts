@@ -39,6 +39,7 @@ import {
   shouldRestartCapture,
   type DictationMode,
 } from "@/lib/dictation-loop";
+import { notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 
 export interface UseDictationLoopOptions {
@@ -140,7 +141,15 @@ export function useDictationLoop({
         // to idle and the restart effect gets a chance to look.
         captureActiveRef.current = false;
         clearSoftStopTimer();
-        setNotice(getErrorMessage(err, "Couldn't add what you said. Tap the mic to try again."));
+        const message = getErrorMessage(err, "Couldn't add what you said. Tap the mic to try again.");
+        // Never a silent swallow: the soft-stopped banner below is the
+        // standing explanation for why capture just stopped, but a toast
+        // fires the instant it happens too — this is the one path in the
+        // whole dictation loop where something the user just said did NOT
+        // make it onto the page, so it gets both a persistent surface and an
+        // immediate one, not just one or the other.
+        notify(message, "error");
+        setNotice(message);
         setMode("soft-stopped");
       }
       // 'handoff', not 'done': the words have already landed in the caller's

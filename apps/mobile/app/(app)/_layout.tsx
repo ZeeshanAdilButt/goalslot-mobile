@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "@/components/ui/Icon";
 import { FloatingMessagesButton } from "@/components/messaging/FloatingMessagesButton";
 import { ScheduleRemindersSync } from "@/components/schedule";
+import { ScreenErrorBoundary } from "@/components/ScreenErrorBoundary";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
 import type { DrawerHref } from "@/components/navigation/DrawerContent";
@@ -380,85 +381,91 @@ export default function AppLayout() {
           "PLAN YOUR WEEK" heading) whenever a session was running. Zero when
           idle, so this is a no-op the vast majority of the time. */}
       <View style={{ flex: 1, paddingTop: bannerHeight }}>
-        <Tabs screenOptions={tabsScreenOptions}>
-          <Tabs.Screen name="index" options={todayTabOptions} />
-          <Tabs.Screen name="schedule" options={scheduleTabOptions} />
-          <Tabs.Screen name="voice" options={voiceTabOptions} />
-          <Tabs.Screen name="tasks" options={tasksTabOptions} />
-          <Tabs.Screen name="timer" options={timerTabOptions} />
-          {/* Off the bar to make room for the mic (see the note above), still a
-            first-class row in the drawer's Plan group. */}
-          <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
-          <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
-          <Tabs.Screen
-            name="reports"
-            options={{ title: "Reports", href: null }}
-          />
-          <Tabs.Screen
-            name="categories"
-            options={{ title: "Categories", href: null }}
-          />
-          <Tabs.Screen
-            name="journal"
-            options={{ title: "Journal", href: null }}
-          />
-          <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
-          {/* The note editor is a route, not a tab: hiding the tab bar while
-            it's focused makes it read as a full-screen push. */}
-          <Tabs.Screen
-            name="note/[id]"
-            options={{ href: null, tabBarStyle: { display: "none" } }}
-          />
-          {/* Messaging, same shape as Notes: a list screen plus a detail route
-            that presents as a full-screen push. Both stay registered even
-            when the service isn't configured — expo-router routes off the
-            files on disk, so unregistering them here would leave two screens
-            reachable by URL with no options applied. The drawer entry is what
-            actually gates discovery (see DrawerContent), and both screens
-            degrade to a clear "not available" state rather than crashing. */}
-          <Tabs.Screen
-            name="messages"
-            options={{ title: "Messages", href: null }}
-          />
-          <Tabs.Screen
-            name="message/[id]"
-            options={{ href: null, tabBarStyle: { display: "none" } }}
-          />
-          {/* Mentees: same "pushed, not tabbed" shape as Messages just above —
-              a list screen plus a detail route that hides the tab bar. See
-              DrawerContent for the entry point. */}
-          <Tabs.Screen name="mentees" options={{ title: "Sharing", href: null }} />
-          <Tabs.Screen
-            name="mentee/[id]"
-            options={{ href: null, tabBarStyle: { display: "none" } }}
-          />
-          <Tabs.Screen
-            name="settings"
-            options={{ title: "Settings", href: null }}
-          />
-          {/* Pushed from Settings' Notifications row once permission is
-              granted (app/(app)/settings.tsx) — not reachable from the
-              drawer, same as note/[id] and message/[id]. */}
-          <Tabs.Screen
-            name="notification-settings"
-            options={{ title: "Notifications", href: null }}
-          />
-          {/* Mentee-facing instructions list — pushed from the Today
-              screen's "Assigned to you" card, not reachable from the
-              drawer or tab bar. Same "pushed, not tabbed" shape as
-              mentee/[id] and note/[id]. */}
-          <Tabs.Screen
-            name="instructions"
-            options={{ title: "Instructions", href: null }}
-          />
-          {/* Notification center — pushed from the bell in the floating
-              header column below, not reachable from the drawer or tab bar.
-              Same "pushed, not tabbed" shape as instructions/mentee/[id]. */}
-          <Tabs.Screen
-            name="notifications"
-            options={{ title: "Notifications", href: null }}
-          />
-        </Tabs>
+        {/* See src/components/ScreenErrorBoundary.tsx: converts an uncaught
+            render/effect exception anywhere in the tab tree into a
+            recoverable "Something went wrong" screen instead of the whole
+            app going dark with no fallback UI at all. */}
+        <ScreenErrorBoundary>
+          <Tabs screenOptions={tabsScreenOptions}>
+            <Tabs.Screen name="index" options={todayTabOptions} />
+            <Tabs.Screen name="schedule" options={scheduleTabOptions} />
+            <Tabs.Screen name="voice" options={voiceTabOptions} />
+            <Tabs.Screen name="tasks" options={tasksTabOptions} />
+            <Tabs.Screen name="timer" options={timerTabOptions} />
+            {/* Off the bar to make room for the mic (see the note above), still a
+              first-class row in the drawer's Plan group. */}
+            <Tabs.Screen name="goals" options={{ title: "Goals", href: null }} />
+            <Tabs.Screen name="coach" options={{ title: "Coach", href: null }} />
+            <Tabs.Screen
+              name="reports"
+              options={{ title: "Reports", href: null }}
+            />
+            <Tabs.Screen
+              name="categories"
+              options={{ title: "Categories", href: null }}
+            />
+            <Tabs.Screen
+              name="journal"
+              options={{ title: "Journal", href: null }}
+            />
+            <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
+            {/* The note editor is a route, not a tab: hiding the tab bar while
+              it's focused makes it read as a full-screen push. */}
+            <Tabs.Screen
+              name="note/[id]"
+              options={{ href: null, tabBarStyle: { display: "none" } }}
+            />
+            {/* Messaging, same shape as Notes: a list screen plus a detail route
+              that presents as a full-screen push. Both stay registered even
+              when the service isn't configured — expo-router routes off the
+              files on disk, so unregistering them here would leave two screens
+              reachable by URL with no options applied. The drawer entry is what
+              actually gates discovery (see DrawerContent), and both screens
+              degrade to a clear "not available" state rather than crashing. */}
+            <Tabs.Screen
+              name="messages"
+              options={{ title: "Messages", href: null }}
+            />
+            <Tabs.Screen
+              name="message/[id]"
+              options={{ href: null, tabBarStyle: { display: "none" } }}
+            />
+            {/* Mentees: same "pushed, not tabbed" shape as Messages just above —
+                a list screen plus a detail route that hides the tab bar. See
+                DrawerContent for the entry point. */}
+            <Tabs.Screen name="mentees" options={{ title: "Sharing", href: null }} />
+            <Tabs.Screen
+              name="mentee/[id]"
+              options={{ href: null, tabBarStyle: { display: "none" } }}
+            />
+            <Tabs.Screen
+              name="settings"
+              options={{ title: "Settings", href: null }}
+            />
+            {/* Pushed from Settings' Notifications row once permission is
+                granted (app/(app)/settings.tsx) — not reachable from the
+                drawer, same as note/[id] and message/[id]. */}
+            <Tabs.Screen
+              name="notification-settings"
+              options={{ title: "Notifications", href: null }}
+            />
+            {/* Mentee-facing instructions list — pushed from the Today
+                screen's "Assigned to you" card, not reachable from the
+                drawer or tab bar. Same "pushed, not tabbed" shape as
+                mentee/[id] and note/[id]. */}
+            <Tabs.Screen
+              name="instructions"
+              options={{ title: "Instructions", href: null }}
+            />
+            {/* Notification center — pushed from the bell in the floating
+                header column below, not reachable from the drawer or tab bar.
+                Same "pushed, not tabbed" shape as instructions/mentee/[id]. */}
+            <Tabs.Screen
+              name="notifications"
+              options={{ title: "Notifications", href: null }}
+            />
+          </Tabs>
+        </ScreenErrorBoundary>
       </View>
 
       {/* Floating Messages button — web has had one in its bottom-right dock
