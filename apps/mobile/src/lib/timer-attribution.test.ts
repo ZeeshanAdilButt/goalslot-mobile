@@ -6,6 +6,8 @@ import type { ActiveTimerSession, Goal, ScheduleBlock, Task, WeekSchedule } from
 
 import {
   activeSessionElapsedMs,
+  applyOptimisticPause,
+  applyOptimisticResume,
   canAttemptAutoSelect,
   DORMANT_ELAPSED_TOLERANCE_MS,
   cleanLabel,
@@ -465,6 +467,152 @@ describe("activeSessionElapsedMs", () => {
   it("falls back to accumulatedMs when elapsedMs is missing", () => {
     const session = dormantSession({ elapsedMs: undefined as unknown as number, accumulatedMs: 30_000 });
     expect(activeSessionElapsedMs(session, AT)).toBe(30_000);
+  });
+});
+
+describe("applyOptimisticPause / applyOptimisticResume", () => {
+  const SEGMENT_START = "2026-08-14T09:00:00.000Z";
+  /** Ten minutes after the open segment began. */
+  const NOW = new Date("2026-08-14T09:10:00.000Z");
+  const FIVE_MIN = 300_000;
+  const TEN_MIN = 600_000;
+
+  const idleLocal = { status: "idle" as const, startedAt: null, pausedElapsedMs: 0, taskId: null, goalId: null };
+
+  /** Five minutes banked from earlier segments, plus one open since SEGMENT_START. */
+  function running(overrides: Partial<ActiveTimerSession> = {}): ActiveTimerSession {
+    return dormantSession({
+      status: "RUNNING",
+      segmentStartedAt: SEGMENT_START,
+      pausedAt: null,
+      accumulatedMs: FIVE_MIN,
+      elapsedMs: FIVE_MIN,
+      serverTime: SEGMENT_START,
+      taskId: "task-1",
+      goalId: "goal-1",
+      ...overrides,
+    });
+  }
+
+  /**
+   * The number the ring actually shows: the session put through
+   * `resolveEffectiveTimer` (the merge every timer surface uses) and then
+   * through the same arithmetic `getElapsedMs` in timer-store.ts performs.
+   * Asserting on this rather than on raw fields is what makes these tests
+   * about what the user sees.
+   */
+  function displayedElapsedMs(session: ActiveTimerSession, now: Date): number {
+    const merged = resolveEffectiveTimer(session, idleLocal);
+    if (merged.status === "running" && merged.startedAt !== null) {
+      return merged.pausedElapsedMs + Math.max(0, now.getTime() - merged.startedAt);
+    }
+    return merged.pausedElapsedMs;
+  }
+
+  it("stops the clock the moment pause is pressed, without waiting for the server", () => {
+    const session = running();
+    // What the user is looking at when they reach for the button.
+    expect(displayedElapsedMs(session, NOW)).toBe(FIVE_MIN + TEN_MIN);
+
+    const paused = applyOptimisticPause(session, NOW);
+
+    // The whole point: the merged view says "paused" on the press, so the
+    // ring, the Pause/Resume glyph, the tracking banner, the shade
+    // notification and the home-screen widget all flip immediately instead
+    // of after a POST plus a follow-up GET.
+    expect(resolveEffectiveTimer(paused, idleLocal).status).toBe("paused");
+    expect(displayedElapsedMs(paused, NOW)).toBe(FIVE_MIN + TEN_MIN);
+    // And it stays frozen as real time moves on.
+    expect(displayedElapsedMs(paused, new Date(NOW.getTime() + 60_000))).toBe(FIVE_MIN + TEN_MIN);
+  });
+
+  it("banks the open segment instead of rewinding to the last boundary", () => {
+    // The tempting-but-wrong version of this copies `previous.accumulatedMs`
+    // through untouched. `resolveEffectiveTimer` maps a paused session's
+    // whole clock to `accumulatedMs`, so that would visibly REWIND the ring
+    // by the length of the open segment — ten minutes of tracked time
+    // appearing to vanish on a press.
+    const paused = applyOptimisticPause(running(), NOW);
+    expect(paused.accumulatedMs).toBe(FIVE_MIN + TEN_MIN);
+    expect(paused.elapsedMs).toBe(FIVE_MIN + TEN_MIN);
+    expect(paused.segmentStartedAt).toBeNull();
+    expect(paused.pausedAt).toBe(NOW.toISOString());
+    // `elapsedMs` and `serverTime` are a matched pair — a stale serverTime
+    // would make `activeSessionElapsedMs` roll this total forward again.
+    expect(paused.serverTime).toBe(NOW.toISOString());
+    expect(activeSessionElapsedMs(paused, new Date(NOW.getTime() + 60_000))).toBe(FIVE_MIN + TEN_MIN);
+  });
+
+  it("does not double-count the open segment when pause is pressed twice", () => {
+    // Two fingers, or a retry after a failed request. The server guards this
+    // with a compare-and-set; the optimistic mirror has to guard it too, or
+    // the second press folds the already-closed segment in again.
+    const once = applyOptimisticPause(running(), NOW);
+    const twice = applyOptimisticPause(once, new Date(NOW.getTime() + TEN_MIN));
+    expect(twice).toBe(once);
+    expect(twice.accumulatedMs).toBe(FIVE_MIN + TEN_MIN);
+    // The already-paused session is not re-stamped either: a moved `pausedAt`
+    // is the visible symptom of a second pause having been applied at all.
+    expect(twice.pausedAt).toBe(NOW.toISOString());
+  });
+
+  it("leaves everything except the clock fields alone", () => {
+    const paused = applyOptimisticPause(running({ taskName: "Deep work", notes: "wip" }), NOW);
+    expect(paused.id).toBe("session-1");
+    expect(paused.startedAt).toBe("2026-08-14T09:00:00.000Z");
+    expect(paused.taskId).toBe("task-1");
+    expect(paused.goalId).toBe("goal-1");
+    expect(paused.taskName).toBe("Deep work");
+    expect(paused.notes).toBe("wip");
+  });
+
+  it("restarts the clock the moment resume is pressed, from where pause left it", () => {
+    const paused = applyOptimisticPause(running(), NOW);
+    const at = new Date(NOW.getTime() + TEN_MIN); // ten minutes spent paused
+    const resumed = applyOptimisticResume(paused, at);
+
+    expect(resolveEffectiveTimer(resumed, idleLocal).status).toBe("running");
+    expect(resumed.segmentStartedAt).toBe(at.toISOString());
+    expect(resumed.pausedAt).toBeNull();
+    // The paused stretch is not tracked time: the total is unchanged at the
+    // instant of the press, then ticks on from there.
+    expect(displayedElapsedMs(resumed, at)).toBe(FIVE_MIN + TEN_MIN);
+    expect(displayedElapsedMs(resumed, new Date(at.getTime() + 60_000))).toBe(FIVE_MIN + TEN_MIN + 60_000);
+  });
+
+  it("does not restart the count when resume is pressed twice", () => {
+    const resumed = applyOptimisticResume(applyOptimisticPause(running(), NOW), NOW);
+    const twice = applyOptimisticResume(resumed, new Date(NOW.getTime() + TEN_MIN));
+    // A second open segment would drop the first one's ten minutes.
+    expect(twice).toBe(resumed);
+    expect(displayedElapsedMs(twice, new Date(NOW.getTime() + TEN_MIN))).toBe(FIVE_MIN + TEN_MIN + TEN_MIN);
+  });
+
+  it("banks each segment exactly once across a pause/resume/pause cycle", () => {
+    const first = applyOptimisticPause(running(), NOW); // 5 + 10 = 15 min
+    const resumedAt = new Date(NOW.getTime() + TEN_MIN); // 10 min paused, tracks nothing
+    const resumed = applyOptimisticResume(first, resumedAt);
+    const second = applyOptimisticPause(resumed, new Date(resumedAt.getTime() + FIVE_MIN));
+    expect(second.accumulatedMs).toBe(FIVE_MIN + TEN_MIN + FIVE_MIN);
+  });
+
+  it("never lets an unusable number reach the clock", () => {
+    // Same live case `resolveEffectiveTimer` guards: these fields cross the
+    // network with no runtime validation, and a missing one used to render
+    // the ring as "NaN:NaN:NaN".
+    const resumed = applyOptimisticResume(
+      dormantSession({ accumulatedMs: undefined as unknown as number, elapsedMs: undefined as unknown as number }),
+      NOW,
+    );
+    expect(resumed.accumulatedMs).toBe(0);
+    expect(displayedElapsedMs(resumed, NOW)).toBe(0);
+
+    // A running session whose segment start is unreadable still pauses; it
+    // simply banks the total the server last reported rather than inventing
+    // one from a NaN.
+    const paused = applyOptimisticPause(running({ segmentStartedAt: "not-a-date", serverTime: "not-a-date" }), NOW);
+    expect(paused.accumulatedMs).toBe(FIVE_MIN);
+    expect(displayedElapsedMs(paused, NOW)).toBe(FIVE_MIN);
   });
 });
 

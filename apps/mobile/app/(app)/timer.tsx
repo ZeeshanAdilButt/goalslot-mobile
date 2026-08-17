@@ -40,6 +40,7 @@ import {
   hasResponse,
   namedTarget,
   resolveSpokenTarget,
+  toActiveTimerSession,
   updateTimeEntrySchema,
   type ActiveTimerClient,
   type ActiveTimerSession,
@@ -72,6 +73,8 @@ import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { useSettingsStore } from "@/lib/settings-store";
 import {
+  applyOptimisticPause,
+  applyOptimisticResume,
   canAttemptAutoSelect,
   cleanLabel,
   describeStartConflict,
@@ -1312,17 +1315,76 @@ export default function TimerScreen() {
     })();
   }, [analytics, postServerSessionStart, resetLocalSessionState, start, startConflict]);
 
+  /**
+   * Flips the cached server session to `next` right now, and hands back the
+   * exact snapshot to restore if the request behind it fails.
+   *
+   * The react-query cache is the thing to write, NOT the local zustand store:
+   * `resolveEffectiveTimer` ignores the store entirely while a server session
+   * exists, so pausing the store here would change nothing on screen while
+   * quietly desynchronising the mirror.
+   *
+   * Returns null when there is nothing to write over, in which case the caller
+   * has nothing to roll back either.
+   */
+  const applyOptimisticSessionState = useCallback(
+    (next: (session: ActiveTimerSession, now: Date) => ActiveTimerSession): ActiveTimerSession | null => {
+      const key = timerSessionQueries.active().queryKey;
+      const previous = queryClient.getQueryData<ActiveTimerSession | null>(key) ?? null;
+      if (!previous) return null;
+      // A poll GET that was already in flight when the button was pressed
+      // would otherwise land a moment later carrying the pre-press status and
+      // revert the ring to "running".
+      void queryClient.cancelQueries({ queryKey: key });
+      queryClient.setQueryData<ActiveTimerSession>(key, next(previous, new Date()));
+      return previous;
+    },
+    [],
+  );
+
+  /** Undoes `applyOptimisticSessionState`, then re-reads the truth in case the request landed after all. */
+  const rollbackOptimisticSessionState = useCallback((previous: ActiveTimerSession | null) => {
+    if (!previous) return;
+    queryClient.setQueryData<ActiveTimerSession>(timerSessionQueries.active().queryKey, previous);
+    // A timed-out request can still have been applied server-side, in which
+    // case the rollback above is itself a lie. Only on the failure path, so
+    // this costs nothing in the normal case.
+    void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+  }, []);
+
+  /**
+   * Pause. Optimistic, exactly like `beginSession` above — which is precisely
+   * what this was not, and why it was reported as taking "so much time".
+   *
+   * It used to do nothing at all until `POST /timer/session/pause` came back
+   * AND a follow-up `GET /timer/session` (an `invalidateQueries`) came back
+   * after it: two full sequential round trips, each preceded by an uncached
+   * SecureStore token read, before a single pixel moved. Even the haptic was
+   * inside `.then()`, so a press had no response of any kind — and when the
+   * POST timed out, the clock kept running for the full 20s request timeout
+   * and the user got only a toast.
+   *
+   * Now the cache flips on the press and the request confirms it. That is one
+   * request per pause instead of two: the endpoint already returns the updated
+   * session, which the old code threw away and then refetched. No polling
+   * cadence changes anywhere — this is strictly fewer requests, not more.
+   */
   const handlePause = useCallback(() => {
     if (hasServerSession) {
+      hapticLight();
+      analytics.track({ name: "timerPaused", payload: { taskId: serverSession?.taskId ?? undefined } });
+      const previous = applyOptimisticSessionState(applyOptimisticPause);
       void apiClient.timerSession
         .pause()
-        .then(() => {
-          hapticLight();
-          analytics.track({ name: "timerPaused", payload: { taskId: serverSession?.taskId ?? undefined } });
-          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        .then((res) => {
+          // Reconcile against the server's own arithmetic rather than
+          // invalidating: same data, no second round trip.
+          const confirmed = toActiveTimerSession(res.data);
+          if (confirmed) queryClient.setQueryData(timerSessionQueries.active().queryKey, confirmed);
         })
         .catch((err) => {
           console.error(err);
+          rollbackOptimisticSessionState(previous);
           notify(getErrorMessage(err, "Couldn't pause. Please check your connection and try again."), "error", {
             action: { label: "Retry", onPress: () => handlePause() },
           });
@@ -1332,18 +1394,30 @@ export default function TimerScreen() {
     pause();
     hapticLight();
     analytics.track({ name: "timerPaused", payload: { taskId: timerTaskId ?? undefined } });
-  }, [analytics, hasServerSession, pause, serverSession, timerTaskId]);
+  }, [
+    analytics,
+    applyOptimisticSessionState,
+    hasServerSession,
+    pause,
+    rollbackOptimisticSessionState,
+    serverSession,
+    timerTaskId,
+  ]);
 
+  /** Resume, optimistic for the same reason and in the same shape as `handlePause`. */
   const handleResume = useCallback(() => {
     if (hasServerSession) {
+      hapticLight();
+      const previous = applyOptimisticSessionState(applyOptimisticResume);
       void apiClient.timerSession
         .resume()
-        .then(() => {
-          hapticLight();
-          void queryClient.invalidateQueries({ queryKey: timerSessionQueries.timerSessionQueries.all });
+        .then((res) => {
+          const confirmed = toActiveTimerSession(res.data);
+          if (confirmed) queryClient.setQueryData(timerSessionQueries.active().queryKey, confirmed);
         })
         .catch((err) => {
           console.error(err);
+          rollbackOptimisticSessionState(previous);
           notify(getErrorMessage(err, "Couldn't resume. Please check your connection and try again."), "error", {
             action: { label: "Retry", onPress: () => handleResume() },
           });
@@ -1352,7 +1426,7 @@ export default function TimerScreen() {
     }
     resume();
     hapticLight();
-  }, [hasServerSession, resume]);
+  }, [applyOptimisticSessionState, hasServerSession, resume, rollbackOptimisticSessionState]);
 
   // `stop()` used to reset the local store synchronously, so a second press
   // could only land inside the same frame as the first — but two fingers do

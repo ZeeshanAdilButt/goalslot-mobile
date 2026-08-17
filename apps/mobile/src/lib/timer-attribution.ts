@@ -12,7 +12,10 @@
 //   5. `activeSessionElapsedMs` / `describeStartConflict` — what to tell the
 //      user about a session that is already running somewhere else when they
 //      press Start (the 409 path).
-//   6. `resolveRetargetedSessionName` / `resolveRefiledEntryName` — which
+//   6. `applyOptimisticPause` / `applyOptimisticResume` — the server session
+//      as it will read the instant a pause/resume lands, so the button can
+//      change the screen on the press instead of a round trip later.
+//   7. `resolveRetargetedSessionName` / `resolveRefiledEntryName` — which
 //      `taskName` a mid-session retarget must PATCH so the saved entry isn't
 //      named after the goal the user just moved away from, and how an entry
 //      already saved that way gets repaired when it is re-filed.
@@ -256,6 +259,86 @@ export function activeSessionElapsedMs(session: ActiveTimerSession, now: Date): 
   const serverTime = Date.parse(session.serverTime);
   if (!Number.isFinite(serverTime)) return Math.max(0, base);
   return Math.max(0, base + Math.max(0, now.getTime() - serverTime));
+}
+
+/**
+ * The server session exactly as it will read the moment a pause lands,
+ * computed locally so the Pause button can change the screen on the press
+ * instead of two network round trips later.
+ *
+ * This is the pure half of the fix for "pausing the timer takes so much
+ * time". Every surface that renders a timer reads the SERVER snapshot
+ * whenever one exists (see `resolveEffectiveTimer` — it returns the local
+ * store only `if (!server)`, and a session is mirrored to the server within
+ * moments of every Start), so nothing on screen could move until a refetched
+ * row arrived: the ring kept counting, the button kept saying "Pause", the
+ * banner kept saying "Tracking" and the shade notification kept saying
+ * running. Writing this result into the `['timer-session','active']` cache on
+ * the press is what makes pause feel like start already does.
+ *
+ * Mirrors ActiveTimerService#pause field for field:
+ *
+ *  - Idempotent. A session that is not RUNNING is returned untouched, because
+ *    folding an already-closed segment into `accumulatedMs` a second time is
+ *    exactly how a pause DOUBLE-COUNTS the last stretch. The server guards the
+ *    same way with a compare-and-set; this guards the optimistic mirror of it.
+ *  - `accumulatedMs` becomes the elapsed total as of `now`, NOT a copy of the
+ *    old `accumulatedMs`. `resolveEffectiveTimer` maps a paused session's
+ *    whole clock to `accumulatedMs`, so copying the stale value would visibly
+ *    REWIND the ring to the last segment boundary — losing the time the user
+ *    just watched accumulate. `activeSessionElapsedMs` is the same arithmetic
+ *    the server performs (`accumulatedMs + (now - segmentStartedAt)`, read via
+ *    the `elapsedMs`/`serverTime` pair), so the two agree to within clock
+ *    skew and the confirmed response makes it exact a moment later.
+ *  - `elapsedMs`/`serverTime` move together: they are a matched pair (see the
+ *    API's `toResponse`), and `activeSessionElapsedMs` reads both.
+ *
+ * `isStale`/`cappedElapsedMs` are deliberately left as they arrived — nothing
+ * on this client reads them, and re-deriving them here would mean duplicating
+ * server constants (STALE_AFTER_MS, MAX_ACCUMULATED_MS) that the confirmed
+ * response supplies correctly moments later anyway.
+ */
+export function applyOptimisticPause(session: ActiveTimerSession, now: Date): ActiveTimerSession {
+  if (session.status !== "RUNNING") return session;
+  const elapsedMs = activeSessionElapsedMs(session, now);
+  return {
+    ...session,
+    status: "PAUSED",
+    segmentStartedAt: null,
+    pausedAt: now.toISOString(),
+    accumulatedMs: elapsedMs,
+    elapsedMs,
+    serverTime: now.toISOString(),
+  };
+}
+
+/**
+ * The mirror image of `applyOptimisticPause`, for the same reason — resume was
+ * written the same way and felt identically slow.
+ *
+ * Opens a fresh segment at `now` and banks nothing: at the instant of a resume
+ * the open segment is zero long, so `elapsedMs` equals `accumulatedMs` and the
+ * clock carries on from precisely where the pause froze it. Idempotent for the
+ * server's own reason — resuming twice must not reopen two segments, which
+ * would restart the count from the second one.
+ *
+ * `accumulatedMs` is normalised through `firstFinite` rather than trusted:
+ * it crosses the network with no runtime validation despite its `number` type,
+ * and a live case produced a paused session whose ring read "NaN:NaN:NaN".
+ * `resolveEffectiveTimer` already applies the identical guard downstream.
+ */
+export function applyOptimisticResume(session: ActiveTimerSession, now: Date): ActiveTimerSession {
+  if (session.status !== "PAUSED") return session;
+  const accumulatedMs = Math.max(0, firstFinite(session.accumulatedMs, session.elapsedMs) ?? 0);
+  return {
+    ...session,
+    status: "RUNNING",
+    segmentStartedAt: now.toISOString(),
+    pausedAt: null,
+    accumulatedMs,
+    elapsedMs: accumulatedMs,
+    serverTime: now.toISOString(),
+  };
 }
 
 /**
