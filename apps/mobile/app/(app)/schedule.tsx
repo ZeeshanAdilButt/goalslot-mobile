@@ -26,6 +26,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   DAYS_OF_WEEK_FULL,
   formatDuration,
+  genId,
   type CreateScheduleBlockInput,
   type ScheduleBlock,
   type ScheduleDeleteScope,
@@ -295,16 +296,32 @@ export default function ScheduleScreen() {
     let queuedAny = false;
     let rejected = false;
     let lastError: unknown = null;
-    for (const block of blocks) {
+    // One key per block, minted before the live call and reused verbatim if
+    // that attempt has to queue — never a fresh one at outbox time. This is
+    // the same rule ScheduleBlockSheet.tsx's handleCreate follows and the
+    // reason it mints its own per-day keys: `queueOfflineEdit` defaults to
+    // `genId()` when no key is passed, so an unkeyed create that actually
+    // committed server-side before the client timed out would be replayed
+    // under a DIFFERENT key and be indistinguishable from a brand-new
+    // request — restoring a block the undo had already restored.
+    const idempotencyKeys = blocks.map(() => genId());
+
+    for (const [index, block] of blocks.entries()) {
       const payload = toCreateInput(block);
+      const idempotencyKey = idempotencyKeys[index];
       try {
-        await apiClient.schedule.create(payload);
+        await apiClient.schedule.create(payload, { idempotencyKey });
       } catch (err) {
         // Same offline treatment the delete itself gets: connectivity can
         // drop in the seconds between deleting and undoing, and "your undo
         // silently failed" is the worst possible outcome for a control whose
         // entire job is rescuing a mistake.
-        const queued = await queueOfflineEdit("schedule-block-create", payload, err);
+        const queued = await queueOfflineEdit(
+          "schedule-block-create",
+          payload,
+          err,
+          idempotencyKey,
+        );
         if (queued) {
           queuedAny = true;
         } else {

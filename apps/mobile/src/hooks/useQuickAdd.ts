@@ -65,6 +65,7 @@ import { hapticCompletion } from "../lib/haptics";
 import { offlineSync, outbox } from "../lib/offline";
 import { categoryQueries, goalQueries, scheduleQueries, taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
+import { defaultSlotRange } from "../lib/quick-add-slot-times";
 import { useAnalytics } from "../providers/growth-provider";
 
 export interface QuickAddGoalInput {
@@ -95,26 +96,7 @@ export interface UseQuickAddResult {
 
 const FALLBACK_CATEGORY = "general";
 const DEFAULT_GOAL_TARGET_HOURS = 1;
-const DEFAULT_SLOT_DURATION_MINUTES = 60;
 const PLACEHOLDER_COLOR = "#94A3B8";
-
-/** HH:mm for "the next half hour from now" — a sane default start time for a quick-added slot. */
-function defaultStartTime(now: Date = new Date()): string {
-  const roundUpToHalfHour = now.getMinutes() < 30 ? 30 : 60;
-  const totalMinutes = now.getHours() * 60 + roundUpToHalfHour;
-  return minutesToHHmm(totalMinutes % (24 * 60));
-}
-
-function addMinutes(hhmm: string, minutesToAdd: number): string {
-  const [hours, minutes] = hhmm.split(":").map(Number);
-  return minutesToHHmm((hours * 60 + minutes + minutesToAdd) % (24 * 60));
-}
-
-function minutesToHHmm(totalMinutes: number): string {
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
 
 /**
  * Resolves the user's default category (`Category.isDefault`) for the goal
@@ -317,8 +299,11 @@ async function submitTask(input: QuickAddTaskInput, analytics: AnalyticsCapabili
 
 async function submitSlot(input: QuickAddSlotInput, analytics: AnalyticsCapability): Promise<void> {
   const category = await resolveDefaultCategory();
-  const startTime = defaultStartTime();
-  const endTime = addMinutes(startTime, DEFAULT_SLOT_DURATION_MINUTES);
+  // Clamped, never wrapped: see src/lib/quick-add-slot-times.ts. Wrapping
+  // past midnight here produced inverted ranges like 23:00-00:00 that the
+  // API's conflict check could not see, so every repeat quick-add in the
+  // 22:30-23:29 window wrote another real duplicate row.
+  const { startTime, endTime } = defaultSlotRange();
 
   const payload: CreateScheduleBlockInput = createScheduleBlockSchema.parse({
     title: input.title,
