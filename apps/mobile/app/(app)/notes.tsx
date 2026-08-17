@@ -1242,8 +1242,19 @@ const NoteRow = memo(function NoteRow({
       <Pressable
         style={[styles.swipeAction, styles.deleteAction]}
         onPress={() => {
-          swipeableRef.current?.close();
+          // onDelete must fire regardless of what `.close()` does — it
+          // opens the confirmation dialog, so a throw from `.close()`
+          // (seen on Android when the swipeable is still mid-animation)
+          // must never be able to swallow it silently. Ordered first, and
+          // `.close()` itself guarded, rather than trusting two statements
+          // in a row to both always run.
           onDelete(item);
+          try {
+            swipeableRef.current?.close();
+          } catch {
+            // Cosmetic only — the row stays visually open, but the
+            // confirmation dialog above already has what it needs.
+          }
         }}
         accessibilityRole="button"
         accessibilityLabel={`Delete "${item.title}"`}
