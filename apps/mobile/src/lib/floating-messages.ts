@@ -5,7 +5,7 @@
 // checks inline in app/(app)/_layout.tsx, which is exactly the kind of
 // condition that silently rots as routes are added.
 //
-// Three separate reasons a screen is on this list, and they are worth
+// Four separate reasons a screen is on this list, and they are worth
 // keeping distinct:
 //
 //   1. REDUNDANT. On Messages and inside a thread, a button that navigates to
@@ -29,6 +29,26 @@
 //      floating element has to be checked against what a screen already
 //      docks in that corner, not just against the tab bar and the other
 //      candidate placements.
+//   4. OBSCURES OWN CONTENT. Journal has no competing button in this corner
+//      — the collision here is with CONTENT, not a control. journal.tsx
+//      renders its date-nav row, voice-capture invite, the editor card and
+//      the "Recent entries" heading + first row(s) all inside ONE FlashList
+//      (the editor stack is its `ListHeaderComponent`), and that stack alone
+//      runs to roughly 470-500pt before any entry row appears. On a typical
+//      phone viewport that leaves only the screen's last ~150-200pt for
+//      "Recent entries" — squarely inside the ~50-65pt band directly above
+//      the tab bar this button docks in, on first paint, before any
+//      scrolling. Reported by the user as "the right icon hides under
+//      notifications": the button sits on top of the "RECENT ENTRIES"
+//      label and the top of the first entry row, both visually (painted
+//      over the FlashList since the button is a sibling overlay outside the
+//      scroll view, so it never moves as the list scrolls under it) and for
+//      touch (its 44pt hitbox + hitSlop 8 intercepts taps meant for the
+//      row's own onPress/swipe-to-delete). Not a REDUNDANT case (Journal is
+//      an ordinary screen the button should still be reachable from) and
+//      not CORNER-ALREADY-OWNED (Journal has no FAB of its own there) —
+//      the reason this button has to disappear here is unique enough to
+//      warrant its own list rather than folding into #3.
 //
 // The Messages screens themselves are covered by reason 1.
 
@@ -42,6 +62,12 @@ const REDUNDANT_ON = ["/messages"] as const;
 const OWNS_THE_CORNER = ["/", "/goals", "/tasks", "/schedule"] as const;
 
 /**
+ * Screens whose own bottom-of-scroll CONTENT (not a control) this button's
+ * fixed footprint would otherwise sit on top of. See reason 4 above.
+ */
+const OBSCURES_OWN_CONTENT = ["/journal"] as const;
+
+/**
  * @param pathname expo-router's `usePathname()` — a path with no query string.
  * @param messagingEnabled build-time config (src/lib/messaging-config.ts). A
  *   build with no messaging service must not float a button to a screen that
@@ -52,5 +78,6 @@ export function shouldShowFloatingMessagesButton(pathname: string, messagingEnab
   if (!messagingEnabled) return false;
   if (REDUNDANT_ON.some((route) => pathname === route)) return false;
   if (OWNS_THE_CORNER.some((route) => pathname === route)) return false;
+  if (OBSCURES_OWN_CONTENT.some((route) => pathname === route)) return false;
   return !TAB_BAR_HIDDEN_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }

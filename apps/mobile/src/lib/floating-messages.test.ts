@@ -4,7 +4,7 @@ const ENABLED = true;
 
 describe("shouldShowFloatingMessagesButton", () => {
   it("shows on the ordinary tab screens that have no competing FAB", () => {
-    for (const pathname of ["/timer", "/voice", "/journal", "/notes"]) {
+    for (const pathname of ["/timer", "/voice", "/notes"]) {
       expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(true);
     }
   });
@@ -17,6 +17,20 @@ describe("shouldShowFloatingMessagesButton", () => {
     for (const pathname of ["/", "/goals", "/tasks", "/schedule"]) {
       expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(false);
     }
+  });
+
+  it("hides on Journal, where the button's fixed footprint covers the screen's own content", () => {
+    // Journal has no competing FAB in this corner — unlike the four screens
+    // above, this is a content collision, not a button collision. Journal's
+    // editor stack (date nav, voice invite, editor card, Save) runs to
+    // ~470-500pt as the FlashList's ListHeaderComponent before "Recent
+    // entries" and its rows even start, which on a typical phone viewport
+    // leaves them sitting in the same ~50-65pt band above the tab bar this
+    // button docks in — on first paint, no scrolling required. Reported by
+    // the user as "the right icon hides under notifications": the button
+    // painted over the "RECENT ENTRIES" heading and the first entry row,
+    // and its hitbox ate taps meant for that row's own onPress/swipe.
+    expect(shouldShowFloatingMessagesButton("/journal", ENABLED)).toBe(false);
   });
 
   it("shows on the notification centre — the two are separate surfaces now", () => {
