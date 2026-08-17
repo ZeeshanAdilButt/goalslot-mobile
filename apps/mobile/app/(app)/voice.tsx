@@ -34,6 +34,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   createTimeEntrySchema,
   currentCoachWeekScopeKey,
+  describeCoachProposalFailure,
   extractCoachProposals,
   genId,
   getLocalDateString,
@@ -753,7 +754,14 @@ export default function VoiceScreen() {
         // change had already been made.
         return { kind: "handoff" };
       } catch (err) {
-        if (controller.signal.aborted) return { kind: "handoff" };
+        if (controller.signal.aborted) {
+          // The turn is kept (whatever arrived before the interruption is
+          // still worth reading) but it is NOT still streaming. Without this
+          // patch an aborted turn stays `streaming: true` forever, and if it
+          // was cut off mid-fence "Preparing a change…" never clears.
+          patchTurn({ streaming: false });
+          return { kind: "handoff" };
+        }
         removeTurn(turnId);
         const status = (err as { status?: number } | undefined)?.status;
         return {
@@ -922,13 +930,30 @@ export default function VoiceScreen() {
 
   /** The choose panel's escape hatch — runs the ORIGINAL words through the
    *  Coach directly, bypassing planNoteCommand entirely so an ambiguous
-   *  page name can't just re-plan straight back into the same 'choose'. */
+   *  page name can't just re-plan straight back into the same 'choose'.
+   *
+   *  Only offered when NOTHING matched. With candidates on screen this used
+   *  to be the primary button, and pressing it destructured
+   *  `notePending.intent.transcript` past `notePending.candidates` — throwing
+   *  away the real page title the app had already resolved and asking a model
+   *  that is never given note titles to guess one instead. See
+   *  `dismissNoteChoice` for what replaced it. */
   const askCoachInstead = useCallback(() => {
     if (notePending?.kind !== "choose") return;
     const { transcript } = notePending.intent;
     setNotePending(null);
     void runCoachTurn(transcript);
   }, [notePending, runCoachTurn]);
+
+  /** "None of these" — the app matched the spoken name against real pages and
+   *  the user says every match is wrong. Says what to do next rather than
+   *  handing the same misheard words to the Coach, which cannot do better
+   *  here: it is not given the user's note titles at all. */
+  const dismissNoteChoice = useCallback(() => {
+    if (notePending?.kind !== "choose") return;
+    setNotePending(null);
+    setNoteNotice("Say the page name again, or add it from the Notes tab.");
+  }, [notePending]);
 
   const handlePickTrackingCandidate = useCallback(
     (target: ResolvedTarget) => {
@@ -1268,6 +1293,24 @@ export default function VoiceScreen() {
     applyHandlersRef.current = nextApplyHandlers;
     return result;
   }, [appliedNotices, applyForTurn, dismissedProposals, dismissProposal, history]);
+  // Diagnostics, never rendered. The live occurrence of this bug could only
+  // be investigated from the user's screenshots, because the parse error was
+  // swallowed by a bare `catch {}` in extractCoachProposals. Logged once per
+  // turn so a repeat is one `adb logcat` away from a cause.
+  const warnedFailures = useRef(new Set<number>());
+  useEffect(() => {
+    for (const { turn, parsed } of turns) {
+      const failure = parsed.unrenderable;
+      if (turn.streaming || !failure || warnedFailures.current.has(turn.id)) continue;
+      warnedFailures.current.add(turn.id);
+      if (failure.reason === "bad-json") {
+        console.warn("[coach-proposal] unparseable block:", failure.detail, failure.raw);
+      } else {
+        console.warn("[coach-proposal] block produced no card:", JSON.stringify(failure));
+      }
+    }
+  }, [turns]);
+
   const latestReply = history.length > 0 ? history[history.length - 1].reply : "";
   const totalVisibleProposals = turns.reduce((sum, { visibleProposals }) => sum + visibleProposals.length, 0);
 
@@ -1380,10 +1423,34 @@ export default function VoiceScreen() {
                   </Text>
                 ) : null}
 
+                {/* `!turn.streaming` as well as `!parsed.pending`: prose can
+                    arrive after a closed-but-unrenderable block, so without
+                    the streaming guard the red line flashes mid-reply for a
+                    turn that hasn't finished arriving. The copy names WHICH
+                    of the four failures happened — see
+                    describeCoachProposalFailure — because one sentence
+                    standing in for all of them is what a user reported twice
+                    in one session as the app refusing to say what was wrong. */}
                 {body.showUnrenderable && parsed.unrenderable ? (
-                  <Text style={styles.unrenderableText} accessibilityRole="alert">
-                    Something went wrong preparing that change. Try asking again.
-                  </Text>
+                  <View style={styles.unrenderableBlock}>
+                    <Text style={styles.unrenderableText} accessibilityRole="alert">
+                      {describeCoachProposalFailure(parsed.unrenderable)}
+                    </Text>
+                    {/* The one recoverable move from here. Some malformed
+                        blocks are genuinely undecidable (see
+                        escapeStrayQuotes' KNOWN LIMIT), and re-asking is what
+                        actually works — so it's a control, not advice buried
+                        in the sentence. */}
+                    <Pressable
+                      onPress={() => void runCoachTurn(turn.transcript)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Ask again"
+                      accessibilityHint="Sends the same words to GoalSlot AI again"
+                      style={({ pressed }) => [styles.retryButton, pressed && styles.noteRowPressed]}
+                    >
+                      <Text style={styles.retryLabel}>Ask again</Text>
+                    </Pressable>
+                  </View>
                 ) : null}
 
                 {visibleProposals.length > 0 ? (
@@ -1433,16 +1500,41 @@ export default function VoiceScreen() {
             </Text>
             {/* Never a silent fallback to the first page in the list: the
                 whole reason this command asks by name is that guessing
-                wrong writes into the wrong page. */}
-            {notePending.candidates.map((candidate) => (
+                wrong writes into the wrong page.
+
+                THESE ROWS MUST READ AS BUTTONS. They previously rendered the
+                bare page title in a hairline-bordered, background-coloured
+                box directly above a [Cancel] [Ask GoalSlot AI] row — which a
+                real user read as a PRE-FILLED TEXT INPUT, ignored, and
+                pressed the button beside instead. That handed the raw
+                transcript to a Coach that is explicitly not given note titles
+                (see coach-ai.service.ts's APPEND_NOTE_CONTENT instruction),
+                so it invented a page name that did not exist and the whole
+                turn failed. The verb, the chevron and the filled treatment on
+                the top-ranked row exist to stop that misread. */}
+            {notePending.candidates.map((candidate, candidateIndex) => (
               <Pressable
                 key={candidate.id}
                 onPress={() => handlePickNoteCandidate(candidate)}
                 accessibilityRole="button"
-                accessibilityLabel={candidate.name}
-                style={({ pressed }) => [styles.noteCandidateRow, pressed && styles.noteRowPressed]}
+                accessibilityLabel={`Add to ${candidate.name}`}
+                style={({ pressed }) => [
+                  styles.noteCandidateRow,
+                  candidateIndex === 0 && styles.noteCandidateRowPrimary,
+                  pressed && styles.noteRowPressed,
+                ]}
               >
-                <Text style={styles.noteCandidateName}>{candidate.name}</Text>
+                <Text
+                  style={[styles.noteCandidateName, candidateIndex === 0 && styles.noteCandidateNamePrimary]}
+                  numberOfLines={2}
+                >
+                  {`Add to "${candidate.name}"`}
+                </Text>
+                <Icon
+                  name="chevron"
+                  size={iconSize.sm}
+                  color={candidateIndex === 0 ? colors.primaryForeground : colors.mutedForeground}
+                />
               </Pressable>
             ))}
             <View style={styles.notePanelActions}>
@@ -1454,14 +1546,31 @@ export default function VoiceScreen() {
               >
                 <Text style={styles.noteSecondaryLabel}>Cancel</Text>
               </Pressable>
-              <Pressable
-                onPress={askCoachInstead}
-                accessibilityRole="button"
-                accessibilityLabel="Ask GoalSlot AI instead"
-                style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
-              >
-                <Text style={styles.notePrimaryLabel}>Ask GoalSlot AI</Text>
-              </Pressable>
+              {/* Deliberately NOT a Coach hand-off once candidates exist. The
+                  app has already matched the spoken name against the user's
+                  real pages; sending the transcript to a model that is never
+                  told those titles can only replace a right answer with a
+                  guessed one. When nothing matched, the Coach is still the
+                  right escape hatch — it can do things this command can't. */}
+              {notePending.candidates.length > 0 ? (
+                <Pressable
+                  onPress={dismissNoteChoice}
+                  accessibilityRole="button"
+                  accessibilityLabel="None of these pages"
+                  style={({ pressed }) => [styles.noteSecondaryButton, pressed && styles.noteRowPressed]}
+                >
+                  <Text style={styles.noteSecondaryLabel}>None of these</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={askCoachInstead}
+                  accessibilityRole="button"
+                  accessibilityLabel="Ask GoalSlot AI instead"
+                  style={({ pressed }) => [styles.notePrimaryButton, pressed && styles.noteRowPressed]}
+                >
+                  <Text style={styles.notePrimaryLabel}>Ask GoalSlot AI</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         ) : null}
@@ -1508,15 +1617,35 @@ export default function VoiceScreen() {
             </Text>
             {/* Never a silent fallback to an unattributed timer: the whole
                 reason this feature exists is a goal the user could not find. */}
-            {trackingPending.candidates.map((candidate) => (
+            {/* Same button affordance as the note panel above, and for the
+                same reason — a bordered box holding a bare name reads as a
+                text field, not a choice. Unlike the note panel this one KEEPS
+                its Coach hand-off: goals and tasks ARE in the Coach's
+                context, so escalating here can genuinely do better, whereas
+                note titles are not. */}
+            {trackingPending.candidates.map((candidate, candidateIndex) => (
               <Pressable
                 key={`${candidate.kind}-${candidate.id}`}
                 onPress={() => handlePickTrackingCandidate(candidate)}
                 accessibilityRole="button"
-                accessibilityLabel={`${candidate.name}, ${candidate.kind}`}
-                style={({ pressed }) => [styles.noteCandidateRow, pressed && styles.noteRowPressed]}
+                accessibilityLabel={`Track ${candidate.name}, ${candidate.kind}`}
+                style={({ pressed }) => [
+                  styles.noteCandidateRow,
+                  candidateIndex === 0 && styles.noteCandidateRowPrimary,
+                  pressed && styles.noteRowPressed,
+                ]}
               >
-                <Text style={styles.noteCandidateName}>{candidate.name}</Text>
+                <Text
+                  style={[styles.noteCandidateName, candidateIndex === 0 && styles.noteCandidateNamePrimary]}
+                  numberOfLines={2}
+                >
+                  {`Track "${candidate.name}"`}
+                </Text>
+                <Icon
+                  name="chevron"
+                  size={iconSize.sm}
+                  color={candidateIndex === 0 ? colors.primaryForeground : colors.mutedForeground}
+                />
               </Pressable>
             ))}
             <View style={styles.notePanelActions}>
@@ -1830,6 +1959,10 @@ const styles = StyleSheet.create({
   // a journal-entry request, which has no proposal action type at all).
   // Without this, the reply text could claim a change was prepared while no
   // card ever appeared and nothing on screen said why.
+  unrenderableBlock: {
+    alignSelf: "flex-start",
+    gap: spacing.sm,
+  },
   // The durable "here's what that did" row. Styled like the card's own
   // result row on purpose — it is the same statement, just one that outlives
   // the card.
@@ -1849,6 +1982,20 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     fontWeight: "600",
     color: colors.destructive,
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.control,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  retryLabel: {
+    ...typography.bodySmall,
+    fontWeight: "700",
+    color: colors.foreground,
   },
   dock: {
     alignItems: "center",
@@ -1956,17 +2103,31 @@ const styles = StyleSheet.create({
   noteCandidateRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: spacing.sm,
     minHeight: minTouchTarget,
+    paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: radii.control,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.background,
   },
+  // The top-ranked candidate is the answer the matcher is most confident in,
+  // so it gets the filled treatment the panel's own confirm button has. A row
+  // that looks identical to a disabled text field is what sent a user to the
+  // Coach with the right answer already on screen.
+  noteCandidateRowPrimary: {
+    borderWidth: 0,
+    backgroundColor: colors.primary,
+  },
   noteCandidateName: {
     ...typography.body,
     color: colors.foreground,
     flex: 1,
+  },
+  noteCandidateNamePrimary: {
+    color: colors.primaryForeground,
+    fontWeight: "700",
   },
   notePanelActions: {
     flexDirection: "row",
