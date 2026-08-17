@@ -83,6 +83,7 @@ import { queryClient } from "@/lib/query-client";
 import { DEFAULT_SESSION_LABEL } from "@/lib/session-label";
 import { isDormantServerSession } from "@/lib/timer-attribution";
 import { useTimerStore, type TimerStatus } from "@/lib/timer-store";
+import { describeVoiceTurnBody, VOICE_TURN_INTERRUPTED_TEXT } from "@/lib/voice-turn-body";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { colors, iconSize, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
@@ -295,6 +296,22 @@ export default function VoiceScreen() {
   const [dismissedProposals, setDismissedProposals] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
     new Map(),
   );
+  // What applying this turn's proposals actually did, keyed by turn id.
+  //
+  // This is the record the user reported losing. It used to live ONLY in
+  // `CoachProposalCard`'s own `useState` (its `state.phase === "applied"`
+  // row), which means every path that unmounts the card — the card's own
+  // "Done" button, a dismissal, a remount — took the sole evidence that
+  // anything happened with it. When the reply was a bare ```coach-proposal
+  // block (the prompt makes the prose around one OPTIONAL), that card was
+  // the entire assistant turn, so dismissing it left "You said …" and a
+  // blank space, with the dock cheerfully reading "Tap the mic to ask
+  // something else". The change had really been made; nothing on screen
+  // said so. Lifted here, the confirmation outlives the card.
+  const [appliedNotices, setAppliedNotices] = useState<ReadonlyMap<number, string>>(new Map());
+  // The same message in the dock's status line, following the exact
+  // precedent `noteNotice`/`trackingNotice` already set below.
+  const [proposalNotice, setProposalNotice] = useState<string | null>(null);
   // The append-to-note question currently on screen, if any — see
   // `NotePending`'s doc comment above.
   const [notePending, setNotePending] = useState<NotePending | null>(null);
@@ -344,6 +361,12 @@ export default function VoiceScreen() {
   const removeTurn = useCallback((turnId: number) => {
     setHistory((current) => current.filter((turn) => turn.id !== turnId));
     setDismissedProposals((current) => {
+      if (!current.has(turnId)) return current;
+      const next = new Map(current);
+      next.delete(turnId);
+      return next;
+    });
+    setAppliedNotices((current) => {
       if (!current.has(turnId)) return current;
       const next = new Map(current);
       next.delete(turnId);
@@ -676,6 +699,9 @@ export default function VoiceScreen() {
   const runCoachTurn = useCallback(
     async (transcript: string): Promise<VoiceCommandOutcome> => {
       const turnId = nextTurnId.current++;
+      // A new question supersedes the last change's dock line — the inline
+      // per-turn notice above stays, so nothing is actually lost.
+      setProposalNotice(null);
       // Appended, not assigned — whatever is already in `history` (an
       // earlier answer, its proposal cards) stays exactly where it is.
       setHistory((current) => [...current, { id: turnId, transcript, reply: "", streaming: true }]);
@@ -1056,8 +1082,28 @@ export default function VoiceScreen() {
     void stop();
   }, [stop]);
 
-  const applyActions = useCallback(
-    (actions: CoachProposalAction[]) => apply({ actions }),
+  /**
+   * Applies one turn's proposals AND records what happened against that
+   * turn, so the confirmation survives the card being dismissed.
+   *
+   * Deliberately not a single shared closure any more: the notice has to be
+   * keyed by turn id, and a `(turnId) => (actions) => …` built inline in the
+   * JSX would be a fresh function every render, defeating
+   * `CoachProposalCard`'s `memo()` for every visible card. Cached per turn
+   * in `applyHandlersRef` below, exactly like `dismissHandlersRef`.
+   *
+   * The `await` result is returned unchanged so the card still renders its
+   * own inline "Applied ✓" row; the rethrow on failure is likewise left
+   * alone so the card's failure row still works. This only ADDS a durable
+   * copy alongside the card's ephemeral one.
+   */
+  const applyForTurn = useCallback(
+    async (turnId: number, actions: CoachProposalAction[]) => {
+      const message = await apply({ actions });
+      setAppliedNotices((current) => new Map(current).set(turnId, message));
+      setProposalNotice(message);
+      return message;
+    },
     [apply],
   );
 
@@ -1125,6 +1171,8 @@ export default function VoiceScreen() {
       }
       setHistory([]);
       setDismissedProposals(new Map());
+      setAppliedNotices(new Map());
+      setProposalNotice(null);
       void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
       void markLiveConversationReset(scopeKey);
       setNewChatBusy(false);
@@ -1165,6 +1213,11 @@ export default function VoiceScreen() {
   // (see removeTurn) just don't get carried into the next cache.
   const dismissHandlersRef = useRef(new Map<string, () => void>());
 
+  // Same caching rule, one per turn rather than one per card: the apply
+  // handler now closes over the turn's id (see `applyForTurn`), so it can no
+  // longer be the single shared `applyActions` every card used to get.
+  const applyHandlersRef = useRef(new Map<number, (actions: CoachProposalAction[]) => Promise<string>>());
+
   // Every turn, parsed once per render — each carries its own reply text,
   // so a turn already on screen from an earlier command never re-parses
   // when a later one streams in.
@@ -1173,6 +1226,8 @@ export default function VoiceScreen() {
     const nextCache = new Map<number, { reply: string; parsed: ReturnType<typeof extractCoachProposals> }>();
     const dismissHandlers = dismissHandlersRef.current;
     const nextDismissHandlers = new Map<string, () => void>();
+    const applyHandlers = applyHandlersRef.current;
+    const nextApplyHandlers = new Map<number, (actions: CoachProposalAction[]) => Promise<string>>();
     const result = history.map((turn) => {
       const cached = cache.get(turn.id);
       const parsed = cached && cached.reply === turn.reply ? cached.parsed : extractCoachProposals(turn.reply);
@@ -1187,14 +1242,32 @@ export default function VoiceScreen() {
           nextDismissHandlers.set(key, onDismiss);
           return { block, index, onDismiss };
         });
-      return { turn, parsed, visibleProposals };
+      const onApply =
+        applyHandlers.get(turn.id) ?? ((actions: CoachProposalAction[]) => applyForTurn(turn.id, actions));
+      nextApplyHandlers.set(turn.id, onApply);
+      const appliedNotice = appliedNotices.get(turn.id) ?? null;
+      // The ONE place the turn's body is decided — see voice-turn-body.ts
+      // for the invariant it holds and the bug it exists to prevent. Note
+      // `parsed.proposals.length`, not `visibleProposals.length`: what the
+      // reply proposed is a fact about the reply, and dismissing a card must
+      // not be able to rewrite it into "the assistant said nothing".
+      const body = describeVoiceTurnBody({
+        cleaned: parsed.cleaned,
+        proposalCount: parsed.proposals.length,
+        pending: parsed.pending,
+        unrenderable: parsed.unrenderable !== null,
+        streaming: turn.streaming,
+        appliedNotice,
+      });
+      return { turn, parsed, visibleProposals, appliedNotice, body, onApply };
     });
     // Turns removed from `history` (see removeTurn) simply don't get carried
     // into the next cache — nothing to evict explicitly.
     parseCacheRef.current = nextCache;
     dismissHandlersRef.current = nextDismissHandlers;
+    applyHandlersRef.current = nextApplyHandlers;
     return result;
-  }, [dismissedProposals, dismissProposal, history]);
+  }, [appliedNotices, applyForTurn, dismissedProposals, dismissProposal, history]);
   const latestReply = history.length > 0 ? history[history.length - 1].reply : "";
   const totalVisibleProposals = turns.reduce((sum, { visibleProposals }) => sum + visibleProposals.length, 0);
 
@@ -1228,6 +1301,12 @@ export default function VoiceScreen() {
         // logTrackedTime's callers: neither runs through useVoiceCapture's
         // own `onCommand`, so there is no 'success'/'error' state for either
         // to occupy).
+        // Applying a proposal lands here for the same reason: by the time
+        // the round trip settles, `state` is long since back to idle.
+        // Without this the dock read "Tap the mic to ask something else"
+        // immediately after a change was made — the screen's own summary of
+        // the exchange said nothing had happened.
+        if (proposalNotice !== null) return proposalNotice;
         if (trackingNotice !== null) return trackingNotice;
         if (noteNotice !== null) return noteNotice;
         return !hasAnswer ? "Tap the mic and say what you need" : "Tap the mic to ask something else";
@@ -1272,7 +1351,7 @@ export default function VoiceScreen() {
           // the last one rather than replacing it, so a follow-up reads as
           // a continuation of the same conversation, not a reset of it.
           <View style={styles.thread}>
-            {turns.map(({ turn, parsed, visibleProposals }, turnPosition) => (
+            {turns.map(({ turn, parsed, visibleProposals, appliedNotice, body, onApply }, turnPosition) => (
               <View key={turn.id} style={styles.turn}>
                 {turnPosition > 0 ? <View style={styles.turnDivider} /> : null}
 
@@ -1281,15 +1360,27 @@ export default function VoiceScreen() {
                   <Text style={styles.saidText}>{turn.transcript}</Text>
                 </View>
 
-                {parsed.cleaned.length > 0 ? (
+                {/* `body.replyText`, never `parsed.cleaned` directly — the
+                    bare-cleaned check is what produced a wordless turn for a
+                    block-only reply. See voice-turn-body.ts. */}
+                {body.replyText.length > 0 ? (
                   <View style={styles.replyBubble} accessibilityLiveRegion="polite">
-                    <FormattedText text={parsed.cleaned} style={styles.replyText} />
+                    <FormattedText text={body.replyText} style={styles.replyText} />
                   </View>
                 ) : null}
 
-                {parsed.pending ? <Text style={styles.pendingText}>Preparing a change…</Text> : null}
+                {body.showPending ? <Text style={styles.pendingText}>Preparing a change…</Text> : null}
 
-                {!parsed.pending && parsed.unrenderable ? (
+                {/* The stream ended having produced nothing renderable at
+                    all. Silence here is indistinguishable from a reply the
+                    user simply missed, so the turn says so outright. */}
+                {body.interrupted ? (
+                  <Text style={styles.unrenderableText} accessibilityRole="alert">
+                    {VOICE_TURN_INTERRUPTED_TEXT}
+                  </Text>
+                ) : null}
+
+                {body.showUnrenderable && parsed.unrenderable ? (
                   <Text style={styles.unrenderableText} accessibilityRole="alert">
                     Something went wrong preparing that change. Try asking again.
                   </Text>
@@ -1306,10 +1397,24 @@ export default function VoiceScreen() {
                       <CoachProposalCard
                         key={index}
                         block={block}
-                        onApply={applyActions}
+                        onApply={onApply}
                         onDismiss={onDismiss}
                       />
                     ))}
+                  </View>
+                ) : null}
+
+                {/* The one line no dismissal can remove. Rendered
+                    UNCONDITIONALLY on `visibleProposals.length` — that
+                    coupling is precisely the bug: "Done" empties
+                    `visibleProposals`, and when the reply was a bare
+                    proposal block the whole turn went blank with it, leaving
+                    the user unable to tell a silent success from a silent
+                    failure. */}
+                {appliedNotice !== null ? (
+                  <View style={styles.appliedNotice} accessibilityLiveRegion="polite">
+                    <Icon name="check" size={iconSize.sm} color={colors.success} />
+                    <Text style={styles.appliedNoticeText}>{appliedNotice}</Text>
                   </View>
                 ) : null}
               </View>
@@ -1725,6 +1830,21 @@ const styles = StyleSheet.create({
   // a journal-entry request, which has no proposal action type at all).
   // Without this, the reply text could claim a change was prepared while no
   // card ever appeared and nothing on screen said why.
+  // The durable "here's what that did" row. Styled like the card's own
+  // result row on purpose — it is the same statement, just one that outlives
+  // the card.
+  appliedNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: spacing.xs,
+  },
+  appliedNoticeText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.success,
+    flexShrink: 1,
+  },
   unrenderableText: {
     ...typography.bodySmall,
     fontWeight: "600",
