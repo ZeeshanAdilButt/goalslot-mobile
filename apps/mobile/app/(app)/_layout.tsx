@@ -5,6 +5,7 @@ import { Redirect, Tabs, usePathname, useRouter, type Href } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/components/ui/Icon";
+import { FloatingMessagesButton } from "@/components/messaging/FloatingMessagesButton";
 import { ScheduleRemindersSync } from "@/components/schedule";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
@@ -14,6 +15,9 @@ import { GlobalTrackingBanner } from "@/components/timer/GlobalTrackingBanner";
 import { SearchOverlay } from "@/components/search/SearchOverlay";
 import type { SearchHref } from "@/components/search/search-index";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
+import { useUnreadMessagesCount } from "@/hooks/useUnreadMessagesCount";
+import { shouldShowFloatingMessagesButton } from "@/lib/floating-messages";
+import { messagingEnabled } from "@/lib/messaging-config";
 import { BELL_SCOPE } from "@/lib/notification-feed";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -125,7 +129,7 @@ const tasksTabOptions = { title: "Tasks", tabBarIcon: renderTasksIcon };
 const timerTabOptions = { title: "Timer", tabBarIcon: renderTimerIcon };
 
 export default function AppLayout() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   // Top search bar's own open state — see SearchOverlay.tsx for why it's a
   // plain overlay (not a <Modal>) and why it's mounted below.
@@ -182,6 +186,19 @@ export default function AppLayout() {
   // back onto this key when it loads — see notifications.tsx.
   const unreadNotifications = useUnreadNotificationsCount(status === "authenticated");
 
+  // The floating Messages button's badge — unread CONVERSATIONS, the same
+  // hook the drawer's Messages row uses, so the two can never disagree. This
+  // is the ONLY thing counting messages now that they are off the bell (see
+  // src/lib/messages-badge.ts for why it is never notification rows).
+  //
+  // Costs no request: AppDrawer renders DrawerContent unconditionally, so the
+  // conversations query is already an active observer for the whole session,
+  // kept fresh by the socket above and the foreground invalidate below.
+  //
+  // Same unconditional-hook rule as the two above — `status` can flip while
+  // this layout is mounted, so it must run before the redirect.
+  const unreadMessages = useUnreadMessagesCount(user?.id);
+
   // Hooks above this point must all run unconditionally on every render —
   // `status` can flip from 'authenticated' to 'unauthenticated' (logout)
   // while this component is already mounted, so the redirect below has to
@@ -210,6 +227,9 @@ export default function AppLayout() {
   // same constraint).
   const openNotifications = useCallback(() => {
     router.push("/notifications" as Href);
+  }, [router]);
+  const openMessages = useCallback(() => {
+    router.push("/messages" as Href);
   }, [router]);
 
   // Two independently-sourced readings of the same physical quantity, taken
@@ -441,6 +461,48 @@ export default function AppLayout() {
         </Tabs>
       </View>
 
+      {/* Floating Messages button — web has had one in its bottom-right dock
+          for a while; this is its mobile counterpart, and it is where message
+          notifications now live (the bell no longer carries them).
+
+          BOTTOM-right, deliberately NOT a fourth button in the top-right
+          column above. That column already stacks three 40pt buttons whose
+          live touch band reaches ~152pt down the right edge of EVERY screen,
+          and its own comment records the shipped bug that caused — its dead
+          zone eating the top of messages.tsx's header action row. A fourth
+          button would extend that band by another ~48pt at exactly the moment
+          a "Mark all read" button is being added into the same band. See
+          FloatingMessagesButton's header for the full reasoning, including
+          why the tab bar and Today's quick-access rail were also ruled out.
+
+          Docked above the tab bar using the two values this file already
+          computes for the bar itself, so it tracks the bar automatically
+          rather than duplicating its arithmetic. `box-none` on the SafeAreaView
+          so the area around the button never swallows a tap — the same lesson
+          the header column above had to learn.
+
+          The only other bottom-docked floating control in the app is notes.tsx's
+          scroll-to-top button, which is deliberately centre-aligned; no
+          collision.
+
+          Mounted BEFORE <SearchOverlay/> — later siblings paint over earlier
+          ones — so the search overlay covers this rather than the reverse.
+          The hamburger column below deliberately does the opposite (it has to
+          stay reachable to close the overlay); a Messages button floating on
+          top of an open search is just a mis-tap waiting to happen. */}
+      {shouldShowFloatingMessagesButton(pathname, messagingEnabled) ? (
+        <SafeAreaView
+          style={[
+            styles.floatingMessagesSafeArea,
+            { bottom: TAB_BAR_CONTENT_HEIGHT + bottomClearance + spacing.lg },
+          ]}
+          edges={["right"]}
+          pointerEvents="box-none"
+        >
+          <FloatingMessagesButton unreadCount={unreadMessages} onPress={openMessages} />
+        </SafeAreaView>
+      ) : null}
+
       {/* Mounted BEFORE <GlobalTrackingBanner/> and the hamburger row below on
           purpose — later siblings paint over earlier ones (the same rule
           tracking-banner-store.ts's header documents), so this order is what
@@ -569,6 +631,12 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 0,
     right: 0,
+  },
+  // `bottom` is supplied at the call site — it depends on the tab bar's
+  // measured height, which is state, not a static token.
+  floatingMessagesSafeArea: {
+    position: "absolute",
+    right: spacing.lg,
   },
   headerButtonColumn: {
     alignItems: "flex-end",

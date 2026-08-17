@@ -38,12 +38,12 @@
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
 
-import { countUnreadConversations } from "@goalslot/shared";
-
+// Shared with the floating Messages button in app/(app)/_layout.tsx, so the
+// two surfaces cannot show different numbers — see src/lib/messages-badge.ts
+// for what the count is derived from and why it is never notification rows.
+import { useUnreadMessagesCount } from "@/hooks/useUnreadMessagesCount";
 import { useAuth } from "@/providers/auth-provider";
-import { messagingQueries } from "@/lib/queries";
 import { messagingEnabled } from "@/lib/messaging-config";
 import { GoalSlotLogo } from "@/components/brand/GoalSlotLogo";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -74,26 +74,6 @@ interface DrawerNavItem {
   href: DrawerHref;
   label: string;
   icon: IconName;
-}
-
-/**
- * Unread conversation count for the Messages row's badge.
- *
- * Reads the conversations query rather than fetching its own: the Messages
- * screen and the app-wide socket (useMessagingLiveUpdates in
- * app/(app)/_layout.tsx) already keep that cache current, so the drawer
- * shows whatever the app most recently knew without adding a request every
- * time the drawer opens. `enabled: messagingEnabled` keeps this inert in
- * builds with no messaging service configured, matching the nav row itself.
- */
-function useUnreadMessagesCount(currentUserId: string | undefined): number {
-  const conversationsQuery = useQuery({
-    ...messagingQueries.conversations(),
-    enabled: messagingEnabled && !!currentUserId,
-  });
-
-  if (!currentUserId || !conversationsQuery.data) return 0;
-  return countUnreadConversations(conversationsQuery.data, currentUserId);
 }
 
 interface DrawerNavGroup {
