@@ -5,10 +5,15 @@
 // Voice and Coach, each mounting its own instance — same convention as
 // EditGoalSheet.tsx (a `present()`/`dismiss()` ref, no shared owner screen).
 //
-// Row tap, three different outcomes:
-//   - "live", this week: dismiss and land on Coach's default thread (no
-//     scopeKey param) — the same conversation this device is already
-//     showing, just from whichever screen the tap happened on.
+// Row tap, four different outcomes:
+//   - the conversation the presenting screen is ALREADY showing (`activeScopeKey`,
+//     passed by Coach, not by Voice): labelled "Currently open", dismisses
+//     without navigating. Pushing the route you're already on is a no-op in
+//     expo-router, so this used to close the sheet and change nothing.
+//   - "live", this week, from a screen that isn't showing it: dismiss and land
+//     on Coach's default thread (no scopeKey param) — the same conversation
+//     this device is already showing, just from whichever screen the tap
+//     happened on.
 //   - "live", a past week: dismiss and push Coach with `scopeKey` in the
 //     route params. Coach renders that thread read-only rather than letting
 //     a message post into an old week's schedule/reflection context — see
@@ -22,7 +27,7 @@
 //     conversation, so "continuing the topic" needs nothing more than that.
 
 import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   BottomSheetBackdrop,
   BottomSheetFlatList,
@@ -72,15 +77,41 @@ function recentPastScopeKeys(count: number): string[] {
 // shared across both since they import the same module.
 let backfillTriggeredThisSession = false;
 
-function ConversationRow({ entry, onPress }: { entry: ConversationIndexEntry; onPress: () => void }) {
+function ConversationRow({
+  entry,
+  onPress,
+  busy,
+  disabled,
+  isCurrentlyOpen,
+}: {
+  entry: ConversationIndexEntry;
+  onPress: () => void;
+  /** This row is the one that was tapped, and its navigation is in flight. */
+  busy: boolean;
+  /** Some row is opening — the whole list goes inert so a second tap can't queue a second navigation. */
+  disabled: boolean;
+  /** This row IS the conversation the presenting screen is already showing. */
+  isCurrentlyOpen: boolean;
+}) {
   const isPastWeek = entry.kind === "live" && entry.scopeKey !== currentCoachWeekScopeKey();
-  const meta = entry.kind === "archived" ? "Archived" : isPastWeek ? "Read-only" : null;
+  // "Currently open" wins over "Read-only": a past week the user is already
+  // viewing is both, and which conversation you're looking at is the more
+  // useful of the two to say on a row you're deciding whether to tap.
+  const meta = isCurrentlyOpen
+    ? "Currently open"
+    : entry.kind === "archived"
+      ? "Archived"
+      : isPastWeek
+        ? "Read-only"
+        : null;
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       accessibilityRole="button"
       accessibilityLabel={`${entry.title || "Conversation"}. ${entry.messageCount} messages, ${formatConversationTimestamp(entry.updatedAt)}${meta ? `, ${meta}` : ""}.`}
+      accessibilityState={{ disabled, busy, selected: isCurrentlyOpen }}
     >
       <View style={styles.rowIcon}>
         <Icon name={entry.kind === "archived" ? "inbox" : "coach"} size={18} color={colors.mutedForeground} />
@@ -107,6 +138,7 @@ function ConversationRow({ entry, onPress }: { entry: ConversationIndexEntry; on
           ) : null}
         </View>
       </View>
+      {busy ? <ActivityIndicator color={colors.mutedForeground} style={styles.rowSpinner} /> : null}
     </Pressable>
   );
 }
@@ -180,7 +212,24 @@ function ArchivedDetail({
   );
 }
 
-export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(function CoachHistorySheet(_props, ref) {
+export interface CoachHistorySheetProps {
+  /**
+   * The scopeKey the presenting screen is currently displaying, if it is
+   * displaying one. Coach passes it; Voice doesn't (it never shows a thread
+   * for a particular week). The row matching it is labelled "Currently open"
+   * and doesn't navigate — before this, tapping it pushed the route the
+   * screen was already on, which expo-router resolves to a no-op, so the
+   * most-tapped row in the list (the list is sorted by recency, so the live
+   * current-week conversation is usually first) closed the sheet and changed
+   * nothing. That is indistinguishable from the feature being broken.
+   */
+  activeScopeKey?: string;
+}
+
+export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, CoachHistorySheetProps>(function CoachHistorySheet(
+  { activeScopeKey },
+  ref,
+) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
   const router = useRouter();
@@ -189,11 +238,25 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
   const [conversations, setConversations] = useState<ConversationIndexEntry[] | null>(null);
   const [archived, setArchived] = useState<ArchivedConversationPayload | null>(null);
   const [archivedLoading, setArchivedLoading] = useState(false);
+  /** The row whose navigation is in flight, so it can show a spinner and the rest of the list can go inert. */
+  const [openingId, setOpeningId] = useState<string | null>(null);
 
-  const loadList = useCallback(() => {
-    setConversations(null);
+  /**
+   * Swaps the rendered rows in place, WITHOUT blanking first. Used by the
+   * backfill's late `.then`: `setConversations(null)` there swapped the whole
+   * FlatList out for the "Loading…" view seconds after the sheet had already
+   * painted, which unmounted the row under the user's finger — a tap during
+   * that window was genuinely lost, not just unacknowledged.
+   */
+  const refreshList = useCallback(() => {
     void listConversations().then(setConversations);
   }, []);
+
+  /** Blanking, for `present()` only — there is nothing on screen yet to destroy. */
+  const loadList = useCallback(() => {
+    setConversations(null);
+    refreshList();
+  }, [refreshList]);
 
   useImperativeHandle(
     ref,
@@ -201,6 +264,11 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
       present: () => {
         setView({ mode: "list" });
         setArchived(null);
+        // Mandatory reset: unlike NewConversationSheet's `creatingFor`, this
+        // is never cleared by a resolving promise — a row press ends in
+        // navigation, and this sheet stays mounted behind it. Without this
+        // every row would be permanently `disabled` from the second open on.
+        setOpeningId(null);
         loadList();
         // Best-effort, non-blocking, once per app session: recovers
         // conversations that predate this feature or happened on another
@@ -209,13 +277,13 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
         // cheap on every open after the first.
         if (!backfillTriggeredThisSession) {
           backfillTriggeredThisSession = true;
-          void backfillFromServer(recentPastScopeKeys(4)).then(loadList);
+          void backfillFromServer(recentPastScopeKeys(4)).then(refreshList);
         }
         sheetRef.current?.present();
       },
       dismiss: () => sheetRef.current?.dismiss(),
     }),
-    [loadList],
+    [loadList, refreshList],
   );
 
   const renderBackdrop = useCallback(
@@ -247,14 +315,33 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
         openArchived(entry.id);
         return;
       }
-      sheetRef.current?.dismiss();
+      // Already showing this exact conversation: there is nothing to navigate
+      // to, so just close. The row says "Currently open" rather than looking
+      // like a destination that did nothing.
+      if (activeScopeKey !== undefined && entry.scopeKey === activeScopeKey) {
+        sheetRef.current?.dismiss();
+        return;
+      }
+      // Immediate acknowledgement of the tap. Loading the target thread is a
+      // network round trip (coach.tsx's `refetchOnMount: "always"`), and until
+      // now the only feedback in that window was the sheet closing.
+      setOpeningId(entry.id);
+      // Navigate BEFORE dismissing. Same ordering SearchOverlay.tsx uses, and
+      // the shape fixed in notes.tsx (8838b5e): if the dismiss ever throws,
+      // the navigation must already have happened rather than being skipped.
       if (entry.scopeKey === currentCoachWeekScopeKey()) {
         router.push("/coach");
       } else {
         router.push({ pathname: "/coach", params: { scopeKey: entry.scopeKey } });
       }
+      try {
+        sheetRef.current?.dismiss();
+      } catch {
+        // Cosmetic only — the navigation above already happened, and
+        // `present()` resets this sheet's state on the next open anyway.
+      }
     },
-    [openArchived, router],
+    [activeScopeKey, openArchived, router],
   );
 
   return (
@@ -291,7 +378,19 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, object>(functi
               keyExtractor={(item: ConversationIndexEntry) => item.id}
               contentContainerStyle={styles.listContent}
               renderItem={({ item }: { item: ConversationIndexEntry }) => (
-                <ConversationRow entry={item} onPress={() => handleRowPress(item)} />
+                <ConversationRow
+                  entry={item}
+                  onPress={() => handleRowPress(item)}
+                  busy={openingId === item.id}
+                  // The whole list, not just the tapped row: a second tap on a
+                  // DIFFERENT row while one is opening would queue a second
+                  // navigation, which is exactly what a user does when the
+                  // first tap looks like it did nothing.
+                  disabled={openingId !== null}
+                  isCurrentlyOpen={
+                    item.kind === "live" && activeScopeKey !== undefined && item.scopeKey === activeScopeKey
+                  }
+                />
               )}
             />
           )}
@@ -391,6 +490,9 @@ const styles = StyleSheet.create({
   rowMetaDot: {
     ...typography.label,
     color: colors.mutedForegroundLight,
+  },
+  rowSpinner: {
+    alignSelf: "center",
   },
   archivedContainer: {
     flex: 1,

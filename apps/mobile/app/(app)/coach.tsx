@@ -64,10 +64,16 @@ import {
   type TimeEntry,
 } from "@goalslot/shared";
 
-import { EmptyState, QueryErrorState, Skeleton } from "@/components";
+import { EmptyState, QueryErrorState } from "@/components";
 import { CoachHistorySheet, type CoachHistorySheetRef } from "@/components/coach/CoachHistorySheet";
 import { CoachProposalCard } from "@/components/coach/CoachProposalCard";
 import { formatMessageTime } from "@/components/messaging/format";
+// Deep import, not the `@/components/messaging` barrel: that barrel re-exports
+// NewConversationSheet, and Metro doesn't tree-shake unused named exports out
+// of an `export *` (see the comment in src/components/index.ts) — pulling it
+// through the barrel would drag the whole messaging surface into this screen's
+// bundle graph. Same reason `format` above is deep-imported.
+import { ThreadSkeleton } from "@/components/messaging/MessagingSkeletons";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -79,6 +85,7 @@ import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
 import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
+import { coachChatQuery } from "@/lib/coach-chat-query";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
 import { htmlToPlainText } from "@/lib/note-content";
 import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
@@ -319,15 +326,11 @@ export default function CoachScreen() {
   // for its own second entry point. See HiddenTabBackButton.tsx.
   useHiddenTabBackHandler("/voice");
 
-  const historyQuery = useQuery({
-    ...coachQueries.chat(scopeKey),
-    // A reply that was still streaming server-side when the user navigated
-    // away keeps generating on the server (the SSE bridge doesn't cancel on
-    // client disconnect for a completed persist), so refetch on every
-    // return to this screen picks it up instead of showing a stale thread.
-    refetchOnMount: "always",
-    staleTime: 0,
-  });
+  // Options live in src/lib/coach-chat-query.ts — see that file for why this
+  // one query opts out of the global `keepPreviousData` default, which was
+  // leaving the PREVIOUS conversation on screen (with `isPending` false, so
+  // the skeleton below never fired) for the whole duration of a chat switch.
+  const historyQuery = useQuery(coachChatQuery(scopeKey));
 
   const [input, setInput] = useState("");
   // Same focus-ring treatment as journal.tsx's editor (`isEditorFocused` /
@@ -671,21 +674,11 @@ export default function CoachScreen() {
 
   let body: React.ReactNode;
   if (historyQuery.isPending) {
-    body = (
-      <View style={styles.skeletonArea} accessibilityLabel="Loading conversation">
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleAssistant]}>
-          <Skeleton height={14} width="70%" />
-          <Skeleton height={14} width="45%" style={styles.skeletonLine} />
-        </View>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleUser]}>
-          <Skeleton height={14} width="50%" />
-        </View>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleAssistant]}>
-          <Skeleton height={14} width="80%" />
-          <Skeleton height={14} width="60%" style={styles.skeletonLine} />
-        </View>
-      </View>
-    );
+    // The shared thread placeholder, not a hand-rolled one: it carries
+    // `accessibilityRole="progressbar"` (which the local version lacked, so a
+    // screen reader announced nothing while a chat loaded) and bottom-anchors
+    // its bubbles, which is right for a thread that fills from the bottom.
+    body = <ThreadSkeleton />;
   } else if (historyQuery.isError && !historyQuery.data) {
     // `isError && !data`, matching goals.tsx/tasks.tsx/schedule.tsx's own
     // guard: `refetchOnMount: "always"` above means this refetches on every
@@ -707,6 +700,13 @@ export default function CoachScreen() {
   } else {
     body = (
       <ScrollView
+        // Keyed on the conversation: switching to an already-cached scopeKey
+        // renders no skeleton in between, so without this the ScrollView is
+        // reused and keeps the previous thread's scroll offset. The
+        // auto-scroll effect above can't recover it either — it depends on
+        // `allMessages.length`, which doesn't change when two conversations
+        // happen to have the same message count.
+        key={scopeKey}
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -909,7 +909,11 @@ export default function CoachScreen() {
         onCancel={cancelNewChat}
       />
 
-      <CoachHistorySheet ref={historySheetRef} />
+      {/* `activeScopeKey` is what stops the sheet offering this screen's own
+          conversation as somewhere to navigate to — tapping it did nothing
+          visible. Voice mounts the same sheet without it, because Voice is
+          never showing a thread for a particular scopeKey. */}
+      <CoachHistorySheet ref={historySheetRef} activeScopeKey={scopeKey} />
     </SafeAreaView>
   );
 }
@@ -971,28 +975,6 @@ const styles = StyleSheet.create({
   },
   bodyArea: {
     flex: 1,
-  },
-  skeletonArea: {
-    flex: 1,
-    padding: spacing.lg,
-    gap: spacing.md,
-  },
-  skeletonBubble: {
-    maxWidth: "78%",
-    borderRadius: radii.lg,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  skeletonBubbleAssistant: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.card,
-  },
-  skeletonBubbleUser: {
-    alignSelf: "flex-end",
-    backgroundColor: colors.secondary,
-  },
-  skeletonLine: {
-    marginTop: spacing.xxs,
   },
   scroll: {
     flex: 1,

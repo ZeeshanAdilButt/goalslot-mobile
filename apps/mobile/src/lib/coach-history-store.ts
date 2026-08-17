@@ -180,30 +180,51 @@ export async function backfillFromServer(scopeKeys: readonly string[]): Promise<
   if (missing.length === 0) return;
 
   const recovered: ConversationIndexEntry[] = [];
-  for (const scopeKey of missing) {
-    try {
-      const res = await apiClient.coach.getChatHistory(scopeKey);
-      const messages = res.data.filter((m) => m.role === "USER" || m.role === "ASSISTANT");
-      if (messages.length === 0) continue;
-      const first = messages[0];
-      const last = messages[messages.length - 1];
-      const now = new Date().toISOString();
-      recovered.push({
-        id: scopeKey,
-        kind: "live",
-        scopeKey,
-        title: deriveConversationTitle(first.content),
-        preview: deriveConversationPreview(last.content),
-        createdAt: first.createdAt || now,
-        updatedAt: last.createdAt || now,
-        messageCount: messages.length,
-      });
-    } catch {
-      // Offline, or no conversation ever existed for that week (404) — either
-      // way, best-effort means skip it and keep going.
-    }
-  }
+  // Concurrent, not serial. Each key is independent and every failure is
+  // already swallowed, so the old `for…of` with an awaited fetch inside was
+  // paying up to four full round trips end-to-end — each one downloading a
+  // whole week of message content just to derive a title, a preview and a
+  // count — while "Previous chats" sat there waiting on it. Same four
+  // requests, one round trip of wall-clock instead of four.
+  await Promise.allSettled(
+    missing.map(async (scopeKey) => {
+      try {
+        const res = await apiClient.coach.getChatHistory(scopeKey);
+        const messages = res.data.filter((m) => m.role === "USER" || m.role === "ASSISTANT");
+        if (messages.length === 0) return;
+        const first = messages[0];
+        const last = messages[messages.length - 1];
+        const now = new Date().toISOString();
+        recovered.push({
+          id: scopeKey,
+          kind: "live",
+          scopeKey,
+          title: deriveConversationTitle(first.content),
+          preview: deriveConversationPreview(last.content),
+          createdAt: first.createdAt || now,
+          updatedAt: last.createdAt || now,
+          messageCount: messages.length,
+        });
+      } catch {
+        // Offline, or no conversation ever existed for that week (404) — either
+        // way, best-effort means skip it and keep going.
+      }
+    }),
+  );
+
   if (recovered.length > 0) {
-    await writeIndex([...entries, ...recovered]);
+    // Re-read rather than reusing `entries`: that snapshot was taken before
+    // several seconds of network. A `recordConversationActivity` write that
+    // landed in that window (coach.tsx and voice.tsx both call it after every
+    // send) was being silently clobbered by writing the stale snapshot back.
+    const current = await readIndex();
+    const currentLive = new Set(
+      current.filter((entry) => entry.kind === "live").map((entry) => entry.scopeKey),
+    );
+    // Re-filter for the same reason: a send during the backfill can create a
+    // live entry for a scopeKey the backfill also recovered, and a live
+    // entry's `id` IS its scopeKey — an unfiltered concat would put two rows
+    // with the same key in the list's keyExtractor. The fresher entry wins.
+    await writeIndex([...current, ...recovered.filter((entry) => !currentLive.has(entry.scopeKey))]);
   }
 }
