@@ -90,6 +90,20 @@ const ACTION_TYPE_SYNONYMS: Record<string, CoachProposalActionType> = {
   APPEND_PAGE: 'APPEND_NOTE_CONTENT',
   ADD_PAGE_CONTENT: 'APPEND_NOTE_CONTENT',
   UPDATE_PAGE: 'APPEND_NOTE_CONTENT',
+  // Every one of these was verified to be dropped (and therefore to produce a
+  // card-less "Something went wrong preparing that change") before being
+  // listed here. CREATE_NOTE/NEW_NOTE/CREATE_PAGE are safe to fold onto the
+  // append action for the same reason as the UPDATE_ verbs above: the
+  // executor is append-only and fails loudly when no page matches, so it can
+  // never silently create a page the user did not ask for.
+  APPEND_TO_NOTE: 'APPEND_NOTE_CONTENT',
+  ADD_TO_NOTES: 'APPEND_NOTE_CONTENT',
+  APPEND_NOTES: 'APPEND_NOTE_CONTENT',
+  ADD_NOTES: 'APPEND_NOTE_CONTENT',
+  CREATE_NOTE: 'APPEND_NOTE_CONTENT',
+  NEW_NOTE: 'APPEND_NOTE_CONTENT',
+  CREATE_PAGE: 'APPEND_NOTE_CONTENT',
+  APPEND_NOTE_ENTRY: 'APPEND_NOTE_CONTENT',
 }
 
 /**
@@ -110,7 +124,7 @@ export function normalizeCoachActionType(raw: unknown): CoachProposalActionType 
 // proposal silently vanishes, leaving the user with prose and no approval
 // card. Strip those tolerantly before parsing. String-aware, so "https://"
 // and apostrophes inside string values are never touched.
-function parseLenientJson(text: string): unknown {
+function stripCommentsAndTrailingCommas(text: string): string {
   let out = ''
   let inStr = false
   let esc = false
@@ -143,8 +157,132 @@ function parseLenientJson(text: string): unknown {
     out += c
   }
   // Drop trailing commas before a closing } or ].
-  out = out.replace(/,(\s*[}\]])/g, '$1')
-  return JSON.parse(out)
+  return out.replace(/,(\s*[}\]])/g, '$1')
+}
+
+// Curly quotes. Models that have been writing prose immediately above the
+// fence sometimes carry the typographic quotes straight into the JSON, where
+// they are illegal. Only ever applied on the repair retry (see
+// parseLenientJson), so a valid block's apostrophes are never rewritten.
+function normalizeSmartQuotes(text: string): string {
+  return text.replace(/[“”„‟″]/g, '"').replace(/[‘’‚‛]/g, "'")
+}
+
+/**
+ * Escape double quotes the model left unescaped INSIDE a JSON string value —
+ * the single most likely way a real proposal dies, because the assistant's
+ * own prose quotes the user's words ("I'll append "customise" to ...") and it
+ * repeats that habit inside `summary`.
+ *
+ * Heuristic, and deliberately a conservative one: an unescaped `"` is treated
+ * as closing the string only when the next non-whitespace character is one of
+ * `: , } ]` or the end of input — the only places a string can legally end in
+ * JSON. Anything else means the model is quoting mid-sentence, so the quote
+ * gets escaped instead.
+ *
+ * KNOWN LIMIT, stated rather than papered over: `"He said "hi", then left"`
+ * is genuinely undecidable — the `"` before the comma is indistinguishable
+ * from a real terminator, and this will (wrongly) treat it as one. No repair
+ * can win that case, which is exactly why extractCoachProposals reports a
+ * specific `bad-json` failure and the UI offers a retry rather than pretending
+ * every block is recoverable.
+ *
+ * Raw control characters inside strings (a literal newline/tab, also illegal
+ * in JSON) are escaped in the same pass.
+ */
+function escapeStrayQuotes(text: string): string {
+  let out = ''
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string
+    if (!inStr) {
+      out += c
+      if (c === '"') inStr = true
+      continue
+    }
+    if (esc) {
+      out += c
+      esc = false
+      continue
+    }
+    if (c === '\\') {
+      out += c
+      esc = true
+      continue
+    }
+    if (c === '\n') {
+      out += '\\n'
+      continue
+    }
+    if (c === '\r') {
+      out += '\\r'
+      continue
+    }
+    if (c === '\t') {
+      out += '\\t'
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < text.length && /\s/.test(text[j] as string)) j++
+      const next = j < text.length ? (text[j] as string) : ''
+      if (next === '' || next === ':' || next === ',' || next === '}' || next === ']') {
+        out += c
+        inStr = false
+      } else {
+        out += '\\"'
+      }
+      continue
+    }
+    out += c
+  }
+  return out
+}
+
+/**
+ * Parse the fence body, tolerating the ways models mangle JSON.
+ *
+ * Two passes, and the order matters: the first is the long-standing
+ * comment/trailing-comma strip and NOTHING else, so valid JSON is byte-for-byte
+ * untouched by the repair heuristics. Only when that throws do the lossy
+ * repairs run. Throws (with the second pass's error) when even the repaired
+ * text is unparseable — the caller records that message.
+ */
+function parseLenientJson(text: string): unknown {
+  try {
+    return JSON.parse(stripCommentsAndTrailingCommas(text))
+  } catch {
+    // fall through to the repair pass
+  }
+  return JSON.parse(stripCommentsAndTrailingCommas(escapeStrayQuotes(normalizeSmartQuotes(text))))
+}
+
+/**
+ * Pull the action list out of whatever envelope the model reached for.
+ * Returns null when there is no action list at all (as distinct from an empty
+ * one, which is a different failure the user gets told about differently).
+ *
+ * `{"action": {...}}` (singular) and `{"actions": {...}}` (a bare object
+ * rather than an array) were both verified to produce a card-less failure
+ * before being accepted here.
+ */
+function readActionsEnvelope(parsed: unknown): unknown[] | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const record = parsed as Record<string, unknown>
+  for (const key of ['actions', 'action'] as const) {
+    const value = record[key]
+    if (Array.isArray(value)) return value
+    if (value && typeof value === 'object') return [value]
+  }
+  return null
+}
+
+function describeRejectedType(action: Record<string, unknown>): string {
+  const raw = action.type
+  if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  if (raw === undefined) return '(no type)'
+  return String(raw)
 }
 
 // Collapse identical single-day CREATE_SCHEDULE_BLOCK actions (same title,
@@ -224,6 +362,60 @@ function fillJournalDates(actions: CoachProposalAction[]): CoachProposalAction[]
   })
 }
 
+/**
+ * WHY this is a discriminated union and not a boolean.
+ *
+ * It used to be `unrenderable: boolean`, and all four of the ways a closed
+ * ```coach-proposal block can yield nothing collapsed into it — including a
+ * `catch {}` that threw the parse error away entirely. Every one of them
+ * reached the user as the same sentence: "Something went wrong preparing that
+ * change. Try asking again." A real user hit that twice in one session and
+ * (correctly) reported it as the app refusing to say what was actually wrong.
+ *
+ * Keeping the reason means the UI can say something true and specific, and
+ * `bad-json.raw` means the NEXT occurrence is diagnosable from a log line
+ * instead of from screenshots.
+ */
+export type CoachProposalFailure =
+  /** The fence body was not JSON, even after the repair pass. `detail` is the
+   *  JSON.parse message; `raw` is the (truncated) block, for diagnostics only
+   *  — never render it. */
+  | { reason: 'bad-json'; detail: string; raw: string }
+  /** Parsed fine, but carried no `actions`/`action` field at all. */
+  | { reason: 'no-actions' }
+  /** Parsed fine and had an actions list, but it was empty. */
+  | { reason: 'empty-actions' }
+  /** Every action's `type` failed to normalize. `types` holds the raw strings
+   *  the model emitted, so the message can name them. */
+  | { reason: 'unknown-types'; types: string[] }
+
+/**
+ * The one place the user-facing sentence for each failure is written, so it
+ * is unit-testable and cannot quietly regress to a generic "something went
+ * wrong" again.
+ *
+ * Every string ends with "Nothing was changed." — which is always true here:
+ * this whole code path runs on the model's text before any apply call exists,
+ * so no write has been attempted, let alone made. That reassurance is
+ * precisely what the old sentence left the user to guess at.
+ */
+export function describeCoachProposalFailure(failure: CoachProposalFailure): string {
+  switch (failure.reason) {
+    case 'unknown-types': {
+      const named = failure.types.filter((t) => t && t !== '(no type)')
+      if (named.length) {
+        return `The Coach proposed "${named.join('", "')}", which this version of the app can't apply. Nothing was changed.`
+      }
+      return "The Coach's change didn't name an action this app recognises. Nothing was changed."
+    }
+    case 'bad-json':
+      return "The Coach's change didn't arrive in a form the app could read, so there's nothing to approve. Nothing was changed."
+    case 'no-actions':
+    case 'empty-actions':
+      return "The Coach said it prepared a change but didn't include one. Nothing was changed."
+  }
+}
+
 export interface ExtractedCoachProposals {
   /** The assistant's message text with all ```coach-proposal blocks removed. */
   cleaned: string
@@ -232,23 +424,18 @@ export interface ExtractedCoachProposals {
   /** True while a coach-proposal block is still being streamed in (not yet closed by a trailing ```). */
   pending: boolean
   /**
-   * True when a fully-closed ```coach-proposal block was present but produced
-   * zero renderable proposals: malformed/non-JSON content, no `actions`
-   * array, an empty one, or every action's `type` failing to normalize to a
-   * known CoachProposalActionType (e.g. the model hallucinating a type like
-   * "ARCHIVE_GOAL" that has no client- or server-side handling).
+   * Non-null when a fully-closed ```coach-proposal block was present but
+   * produced zero renderable proposals — carrying WHICH of the four ways it
+   * failed (see CoachProposalFailure).
    *
-   * Without this flag that case is indistinguishable from "no proposal was
-   * ever intended" — the block is stripped from `cleaned` either way, so the
-   * assistant's prose can say "I've prepared a proposal" while nothing
-   * renders for the user to review or apply. A real user hit exactly this by
-   * asking the Coach to add a journal entry back when journal writes were not
-   * a proposal action at all; they now are (APPEND_JOURNAL_ENTRY, mapped from
-   * the model's usual near-misses in ACTION_TYPE_SYNONYMS above), but the flag
-   * still has to exist for the next type the model invents. Callers should
-   * surface it as a visible inline notice instead of a silent no-op.
+   * Without this, that case is indistinguishable from "no proposal was ever
+   * intended": the block is stripped from `cleaned` either way, so the
+   * assistant's prose can say "Here's the proposal:" while nothing renders
+   * for the user to review or apply. Callers must surface
+   * `describeCoachProposalFailure(...)` as a visible inline notice — never a
+   * silent no-op, and never a generic one.
    */
-  unrenderable: boolean
+  unrenderable: CoachProposalFailure | null
 }
 
 /**
@@ -261,56 +448,74 @@ export interface ExtractedCoachProposals {
  *  - opening fence partially typed (e.g. "```coach")   trimmed off the tail so the user never sees raw fence/JSON
  */
 export function extractCoachProposals(raw: string): ExtractedCoachProposals {
-  if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: false }
+  if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: null }
 
   const proposals: CoachProposalBlock[] = []
   // Set when a closed block existed but yielded nothing renderable — see the
   // `unrenderable` field doc on ExtractedCoachProposals for why this is
-  // tracked separately from "no block was ever present".
-  let unrenderable = false
+  // tracked separately from "no block was ever present", and why it carries a
+  // reason rather than being a boolean.
+  let unrenderable: CoachProposalFailure | null = null
 
   // 1. Pull out any fully-closed blocks.
   const closed = /```coach-proposal\s*\n([\s\S]*?)```/g
   let cleaned = raw.replace(closed, (_m, jsonText: string) => {
     try {
-      const parsed = parseLenientJson(jsonText.trim()) as {
-        actions?: unknown[]
-        summary?: unknown
+      const parsed = parseLenientJson(jsonText.trim())
+      const summary = (parsed as { summary?: unknown } | null)?.summary
+      const rawActions = readActionsEnvelope(parsed)
+      if (rawActions === null) {
+        // Parsed as JSON, but there is no action list under any envelope the
+        // model might have reached for.
+        unrenderable = { reason: 'no-actions' }
+        return ''
       }
-      if (parsed && Array.isArray(parsed.actions) && parsed.actions.length) {
-        // Normalize + validate types here so a hallucinated action (e.g.
-        // "ADD_SCHEDULE_BLOCK") is either remapped or dropped, rather than
-        // sent on to /apply where one bad type 400s the whole batch.
-        const normalized = parsed.actions
-          .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
-          .map((a) => {
-            const type = normalizeCoachActionType((a as Record<string, unknown>).type)
-            return type ? ({ ...a, type } as CoachProposalAction) : null
-          })
-          .filter((a): a is CoachProposalAction => a !== null)
-        // Fold per-day repeats into compact multi-day actions so a full week
-        // fits under the apply cap even when the model emits one block per day,
-        // then pin any dateless journal append to the device's local day.
-        const actions = fillJournalDates(collapseMultiDayBlocks(normalized))
-        if (actions.length) {
-          proposals.push({
-            summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
-            actions,
-          })
-        } else {
-          // Every action in the block failed to normalize (e.g. all of them
-          // were an unknown type like "ARCHIVE_GOAL"). The model believed it
-          // emitted a real proposal; the user must be told nothing came of it
-          // rather than seeing silence.
-          unrenderable = true
-        }
+      if (rawActions.length === 0) {
+        unrenderable = { reason: 'empty-actions' }
+        return ''
+      }
+      // Normalize + validate types here so a hallucinated action (e.g.
+      // "ADD_SCHEDULE_BLOCK") is either remapped or dropped, rather than
+      // sent on to /apply where one bad type 400s the whole batch. The
+      // rejected names are kept so a total failure can name them.
+      const rejectedTypes: string[] = []
+      const normalized = rawActions
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+        .map((a) => {
+          const type = normalizeCoachActionType(a.type)
+          if (!type) {
+            rejectedTypes.push(describeRejectedType(a))
+            return null
+          }
+          return { ...a, type } as CoachProposalAction
+        })
+        .filter((a): a is CoachProposalAction => a !== null)
+      // Fold per-day repeats into compact multi-day actions so a full week
+      // fits under the apply cap even when the model emits one block per day,
+      // then pin any dateless journal append to the device's local day.
+      const actions = fillJournalDates(collapseMultiDayBlocks(normalized))
+      if (actions.length) {
+        proposals.push({
+          summary: typeof summary === 'string' ? summary : undefined,
+          actions,
+        })
       } else {
-        // Valid JSON, but no actions array or an empty one.
-        unrenderable = true
+        // Every action in the block failed to normalize (e.g. all of them
+        // were an unknown type like "ARCHIVE_GOAL"). The model believed it
+        // emitted a real proposal; the user must be told nothing came of it,
+        // and told WHICH type the app couldn't apply.
+        unrenderable = { reason: 'unknown-types', types: rejectedTypes }
       }
-    } catch {
-      // Malformed/non-JSON content inside the fence.
-      unrenderable = true
+    } catch (err) {
+      // Malformed/non-JSON content inside the fence, even after the repair
+      // pass. The error message and the offending block are kept rather than
+      // discarded: this used to be a bare `catch {}`, which is exactly why the
+      // real cause of a live user-visible failure could not be recovered.
+      unrenderable = {
+        reason: 'bad-json',
+        detail: err instanceof Error ? err.message : String(err),
+        raw: jsonText.trim().slice(0, 2000),
+      }
     }
     return ''
   })

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractCoachProposals, normalizeCoachActionType } from './proposals'
+import {
+  describeCoachProposalFailure,
+  extractCoachProposals,
+  normalizeCoachActionType,
+  type CoachProposalFailure,
+} from './proposals'
 import { todayKey } from '../scheduling/time'
 
 describe('normalizeCoachActionType', () => {
@@ -89,7 +94,7 @@ describe('extractCoachProposals', () => {
       cleaned: 'Just a normal reply.',
       proposals: [],
       pending: false,
-      unrenderable: false,
+      unrenderable: null,
     })
   })
 
@@ -104,7 +109,7 @@ describe('extractCoachProposals', () => {
 
     const { cleaned, proposals, pending, unrenderable } = extractCoachProposals(raw)
     expect(pending).toBe(false)
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
     expect(cleaned).toBe('Here is a plan.\n\nLet me know what you think.')
     expect(proposals).toEqual([
       {
@@ -178,7 +183,7 @@ describe('extractCoachProposals', () => {
 
     const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(proposals[0]?.actions).toEqual([{ type: 'CREATE_TASK', payload: { title: 'Ship it' } }])
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
   })
 
   it('flags unrenderable when every action in the block is an unknown type', () => {
@@ -197,7 +202,7 @@ describe('extractCoachProposals', () => {
 
     const { proposals, unrenderable, cleaned } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
-    expect(unrenderable).toBe(true)
+    expect(unrenderable).toEqual({ reason: 'unknown-types', types: ['ARCHIVE_GOAL'] })
     expect(cleaned).toBe('')
   })
 
@@ -249,7 +254,7 @@ describe('extractCoachProposals', () => {
     const { proposals, cleaned, unrenderable } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
     expect(cleaned).toBe('')
-    expect(unrenderable).toBe(true)
+    expect(unrenderable).toEqual({ reason: 'empty-actions' })
   })
 
   it('drops a malformed block instead of throwing, flagged unrenderable', () => {
@@ -257,26 +262,26 @@ describe('extractCoachProposals', () => {
     expect(() => extractCoachProposals(raw)).not.toThrow()
     const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
-    expect(unrenderable).toBe(true)
+    expect(unrenderable?.reason).toBe('bad-json')
   })
 
   it('flags unrenderable when the block has no actions field at all', () => {
     const raw = ['```coach-proposal', '{"summary":"oops"}', '```'].join('\n')
     const { proposals, unrenderable } = extractCoachProposals(raw)
     expect(proposals).toEqual([])
-    expect(unrenderable).toBe(true)
+    expect(unrenderable).toEqual({ reason: 'no-actions' })
   })
 
   it('does not flag unrenderable when no coach-proposal block is present at all', () => {
     const { unrenderable } = extractCoachProposals('Just a normal reply with no block.')
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
   })
 
   it('does not flag unrenderable while a block is still streaming in, unclosed', () => {
     const raw = 'Here is a plan.\n```coach-proposal\n{"actions":[{"type":"CREATE_GOAL"'
     const { unrenderable, pending } = extractCoachProposals(raw)
     expect(pending).toBe(true)
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
   })
 })
 
@@ -290,7 +295,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals, unrenderable, cleaned } = extractCoachProposals(raw)
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
     expect(proposals).toHaveLength(1)
     expect(proposals[0]?.actions[0]?.type).toBe('APPEND_JOURNAL_ENTRY')
     expect(proposals[0]?.actions[0]?.payload?.content).toBe('Felt scattered all afternoon.')
@@ -342,7 +347,7 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
     ].join('\n')
 
     const { proposals, unrenderable } = extractCoachProposals(raw)
-    expect(unrenderable).toBe(false)
+    expect(unrenderable).toBeNull()
     expect(proposals[0]?.actions[0]).toEqual({
       type: 'APPEND_JOURNAL_ENTRY',
       payload: { content: 'Great workout', date: todayKey() },
@@ -358,5 +363,184 @@ describe('extractCoachProposals — APPEND_JOURNAL_ENTRY', () => {
 
     const { proposals } = extractCoachProposals(raw)
     expect(proposals[0]?.actions[0]?.payload).toEqual({ title: 'Ship it' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The failure the user actually hit: the Coach's prose said "Here's the
+// proposal:", no card rendered, and a single generic red line appeared —
+// "Something went wrong preparing that change. Try asking again." — that was
+// the SAME sentence for four different causes, with the parse error thrown
+// away by a bare `catch {}`.
+//
+// These tests lock in both halves of the fix: the blocks that used to die
+// silently now render, and the ones that genuinely cannot be recovered report
+// a specific, diagnosable reason instead of a boolean.
+// ---------------------------------------------------------------------------
+describe('extractCoachProposals — malformed blocks that used to vanish', () => {
+  const wrap = (body: string) =>
+    ["I'll append \"customise\" to your notes. Here's the proposal:", '```coach-proposal', body, '```', 'Shall I go ahead and add this to your notes?'].join('\n')
+
+  it('recovers a block whose summary contains unescaped inner double quotes', () => {
+    // Verbatim the shape the model emits when it quotes the user's own word,
+    // which is what its visible prose does one line above the fence.
+    const raw = wrap(
+      '{"summary": "Add "customise" to your learning notes", "actions": [{"type": "APPEND_NOTE_CONTENT", "payload": {"titleHint": "learning notes", "content": "customise"}}]}',
+    )
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals).toHaveLength(1)
+    expect(proposals[0]?.summary).toBe('Add "customise" to your learning notes')
+    expect(proposals[0]?.actions[0]).toEqual({
+      type: 'APPEND_NOTE_CONTENT',
+      payload: { titleHint: 'learning notes', content: 'customise' },
+    })
+  })
+
+  it('recovers a block written with typographic smart quotes', () => {
+    const raw = wrap('{“actions”: [{“type”: “CREATE_TASK”, “payload”: {“title”: “Call the bank”}}]}')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals[0]?.actions).toEqual([{ type: 'CREATE_TASK', payload: { title: 'Call the bank' } }])
+  })
+
+  it('recovers a block with a raw newline inside a string value', () => {
+    const raw = wrap('{"actions":[{"type":"APPEND_NOTE_CONTENT","payload":{"titleHint":"Tech to learn","content":"line one\nline two"}}]}')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals[0]?.actions[0]?.payload?.content).toBe('line one\nline two')
+  })
+
+  it('accepts a singular "action" envelope', () => {
+    const raw = wrap('{"summary":"Add it","action":{"type":"APPEND_NOTE_CONTENT","payload":{"titleHint":"Tech to learn","content":"customise"}}}')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals[0]?.actions).toEqual([
+      { type: 'APPEND_NOTE_CONTENT', payload: { titleHint: 'Tech to learn', content: 'customise' } },
+    ])
+  })
+
+  it('accepts an "actions" object that is not wrapped in an array', () => {
+    const raw = wrap('{"actions":{"type":"CREATE_TASK","payload":{"title":"Ship it"}}}')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals[0]?.actions).toEqual([{ type: 'CREATE_TASK', payload: { title: 'Ship it' } }])
+  })
+
+  it.each(['APPEND_TO_NOTE', 'ADD_TO_NOTES', 'APPEND_NOTES', 'ADD_NOTES', 'CREATE_NOTE', 'NEW_NOTE', 'CREATE_PAGE', 'APPEND_NOTE_ENTRY'])(
+    'maps the note near-miss %s rather than emptying the whole block',
+    (type) => {
+      const raw = wrap(`{"actions":[{"type":"${type}","payload":{"titleHint":"Tech to learn","content":"customise"}}]}`)
+      const { proposals, unrenderable } = extractCoachProposals(raw)
+      expect(unrenderable).toBeNull()
+      expect(proposals[0]?.actions[0]?.type).toBe('APPEND_NOTE_CONTENT')
+    },
+  )
+})
+
+describe('extractCoachProposals — the repair pass must never touch valid JSON', () => {
+  it('leaves URLs, // sequences and typographic apostrophes in valid JSON exactly as written', () => {
+    // The repair heuristics are lossy by design (see escapeStrayQuotes). They
+    // must only ever run on the retry, so a block that was valid all along is
+    // byte-for-byte unaffected.
+    const payload = {
+      titleHint: "don’t forget",
+      content: 'see https://x.com/a, and a // b -- plus a "quoted" word',
+    }
+    const raw = ['```coach-proposal', JSON.stringify({ actions: [{ type: 'APPEND_NOTE_CONTENT', payload }] }), '```'].join('\n')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toBeNull()
+    expect(proposals[0]?.actions[0]?.payload).toEqual(payload)
+  })
+})
+
+describe('extractCoachProposals — failures report a specific, diagnosable reason', () => {
+  it('reports bad-json with the parse error and the offending block, not a bare flag', () => {
+    const raw = ['Some text', '```coach-proposal', '{not json at all', '```', 'more text'].join('\n')
+    const { unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable?.reason).toBe('bad-json')
+    // The bare `catch {}` this replaces is why the live occurrence could not
+    // be diagnosed from anything but screenshots.
+    expect(unrenderable?.reason === 'bad-json' && unrenderable.detail.length).toBeGreaterThan(0)
+    expect(unrenderable?.reason === 'bad-json' && unrenderable.raw).toBe('{not json at all')
+  })
+
+  it('reports the genuinely undecidable quote case honestly rather than mangling it', () => {
+    // `"` followed by `,` is indistinguishable from a real string terminator.
+    // No repair can win this; the contract is that it fails LOUDLY and
+    // specifically, which is what makes the retry affordance worth offering.
+    const raw = ['```coach-proposal', '{"summary": "He said "hi", then left", "actions": []}', '```'].join('\n')
+    const { proposals, unrenderable } = extractCoachProposals(raw)
+    expect(proposals).toEqual([])
+    expect(unrenderable).not.toBeNull()
+    expect(unrenderable?.reason).toBe('bad-json')
+  })
+
+  it('names the action types it could not apply', () => {
+    const raw = ['```coach-proposal', '{"actions":[{"type":"ARCHIVE_GOAL"},{"type":"SHARE_NOTE"}]}', '```'].join('\n')
+    const { unrenderable } = extractCoachProposals(raw)
+    expect(unrenderable).toEqual({ reason: 'unknown-types', types: ['ARCHIVE_GOAL', 'SHARE_NOTE'] })
+  })
+
+  it('distinguishes an absent actions field from an empty one', () => {
+    const noField = extractCoachProposals(['```coach-proposal', '{"summary":"oops"}', '```'].join('\n'))
+    const emptyList = extractCoachProposals(['```coach-proposal', '{"actions":[]}', '```'].join('\n'))
+    expect(noField.unrenderable).toEqual({ reason: 'no-actions' })
+    expect(emptyList.unrenderable).toEqual({ reason: 'empty-actions' })
+  })
+})
+
+describe('describeCoachProposalFailure', () => {
+  it('names the offending action type', () => {
+    expect(describeCoachProposalFailure({ reason: 'unknown-types', types: ['ARCHIVE_GOAL'] })).toBe(
+      'The Coach proposed "ARCHIVE_GOAL", which this version of the app can\'t apply. Nothing was changed.',
+    )
+  })
+
+  it('lists every offending action type', () => {
+    expect(describeCoachProposalFailure({ reason: 'unknown-types', types: ['ARCHIVE_GOAL', 'SHARE_NOTE'] })).toContain(
+      '"ARCHIVE_GOAL", "SHARE_NOTE"',
+    )
+  })
+
+  it('falls back to a readable sentence when the model emitted no type at all', () => {
+    expect(describeCoachProposalFailure({ reason: 'unknown-types', types: ['(no type)'] })).toBe(
+      "The Coach's change didn't name an action this app recognises. Nothing was changed.",
+    )
+  })
+
+  it('explains an unreadable block', () => {
+    expect(describeCoachProposalFailure({ reason: 'bad-json', detail: 'Unexpected token n', raw: '{not json' })).toBe(
+      "The Coach's change didn't arrive in a form the app could read, so there's nothing to approve. Nothing was changed.",
+    )
+  })
+
+  it('explains a proposal that carried no action', () => {
+    const expected = "The Coach said it prepared a change but didn't include one. Nothing was changed."
+    expect(describeCoachProposalFailure({ reason: 'no-actions' })).toBe(expected)
+    expect(describeCoachProposalFailure({ reason: 'empty-actions' })).toBe(expected)
+  })
+
+  // The regression guard proper. The whole incident was one sentence standing
+  // in for four causes; if anyone collapses these back to a generic string,
+  // this fails.
+  it.each<[CoachProposalFailure]>([
+    [{ reason: 'bad-json', detail: 'x', raw: 'y' }],
+    [{ reason: 'no-actions' }],
+    [{ reason: 'empty-actions' }],
+    [{ reason: 'unknown-types', types: ['ARCHIVE_GOAL'] }],
+  ])('never falls back to a generic "something went wrong" (%o)', (failure) => {
+    const copy = describeCoachProposalFailure(failure)
+    expect(copy.toLowerCase()).not.toContain('something went wrong')
+    expect(copy).toContain('Nothing was changed.')
+  })
+
+  it('gives a distinct message for every failure reason', () => {
+    const messages = [
+      describeCoachProposalFailure({ reason: 'bad-json', detail: 'x', raw: 'y' }),
+      describeCoachProposalFailure({ reason: 'no-actions' }),
+      describeCoachProposalFailure({ reason: 'unknown-types', types: ['ARCHIVE_GOAL'] }),
+    ]
+    expect(new Set(messages).size).toBe(messages.length)
   })
 })

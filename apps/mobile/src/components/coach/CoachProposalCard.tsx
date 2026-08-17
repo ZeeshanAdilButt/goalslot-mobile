@@ -35,6 +35,7 @@ import type {
   CoachProposalActionType,
   CoachProposalBlock,
   Goal,
+  Note,
   ScheduleBlock,
   Task,
   TimeEntry,
@@ -43,7 +44,8 @@ import type {
 
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
-import { goalQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
+import { describeNoteTitlePreflight } from "@/components/coach/note-title-preflight";
+import { goalQueries, noteQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 /** Human label per action type. Kept exhaustive by the Record's key type. */
@@ -136,6 +138,14 @@ interface ProposalCacheLookups {
   taskName: (id: string) => string | null;
   scheduleBlockTitle: (id: string) => string | null;
   timeEntry: (id: string) => TimeEntry | null;
+  /**
+   * Every page title this app has already fetched. Unlike the id lookups
+   * above this is a LIST, not a resolver, because APPEND_NOTE_CONTENT carries
+   * no id at all — only a `titleHint` the model guessed. See
+   * note-title-preflight.ts. Empty means "not fetched", and every caller must
+   * treat that as "say nothing", never as "the user has no pages".
+   */
+  noteTitles: readonly string[];
 }
 
 function findInCachedLists<T>(lists: readonly (T[] | undefined)[], predicate: (item: T) => boolean): T | null {
@@ -167,7 +177,13 @@ function buildProposalCacheLookups(queryClient: QueryClient): ProposalCacheLooku
     .getQueriesData<WeekSchedule>({ queryKey: scheduleQueries.scheduleQueries.root() })
     .map(([, week]) => (week ? Object.values(week).flat() : undefined)) as (ScheduleBlock[] | undefined)[];
 
+  const noteTitles = queryClient
+    .getQueriesData<Note[]>({ queryKey: noteQueries.noteQueries.list() })
+    .flatMap(([, notes]) => (notes ?? []).map((note) => note.title))
+    .filter((title): title is string => typeof title === "string");
+
   return {
+    noteTitles,
     goalName: (id) => findInCachedLists(goalLists, (g) => g.id === id)?.title ?? null,
     taskName: (id) => findInCachedLists(taskLists, (t) => t.id === id)?.title ?? null,
     scheduleBlockTitle: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id)?.title ?? null,
@@ -380,6 +396,12 @@ interface ActionRowProps {
 
 function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps) {
   const detail = describeProposalAction(action, lookups, allActions);
+  // Only the note append can name a target that doesn't exist — it's the one
+  // action whose payload is a guessed title rather than a resolved id.
+  const notePreflight =
+    action.type === "APPEND_NOTE_CONTENT"
+      ? describeNoteTitlePreflight(readString(action.payload ?? {}, "titleHint"), lookups.noteTitles)
+      : null;
   return (
     <View style={styles.row}>
       <View style={[styles.rowMarker, destructive && styles.rowMarkerDestructive]} />
@@ -396,6 +418,14 @@ function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps)
         {detail !== null ? (
           <Text style={styles.actionDetail} numberOfLines={3} ellipsizeMode="tail">
             {detail}
+          </Text>
+        ) : null}
+        {/* Said BEFORE Apply, not after. The server has excellent copy for a
+            missing page, but it only arrives once the write has been
+            attempted — and the user who reported this never got that far. */}
+        {notePreflight !== null ? (
+          <Text style={styles.actionWarning} accessibilityRole="alert" numberOfLines={4}>
+            {notePreflight.message}
           </Text>
         ) : null}
       </View>
@@ -751,6 +781,22 @@ const styles = StyleSheet.create({
   actionDetail: {
     ...typography.bodySmall,
     color: colors.mutedForeground,
+  },
+  // Warning, not error: the row is still applicable, and the server has the
+  // final say on which page a titleHint lands in. This says what the app can
+  // prove — that no page is named that — and leaves the decision with the user.
+  actionWarning: {
+    ...typography.bodySmall,
+    marginTop: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.sm,
+    fontWeight: "600",
+    // The app's standard warning tone (see src/components/lists/tones.ts) —
+    // not `destructive`, which would claim the row is broken when the server
+    // still gets the final say on which page a titleHint lands in.
+    backgroundColor: colors.warningMuted,
+    color: colors.warning,
   },
   expander: {
     flexDirection: "row",

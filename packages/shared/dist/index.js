@@ -2504,7 +2504,21 @@ var ACTION_TYPE_SYNONYMS = {
   WRITE_NOTE: "APPEND_NOTE_CONTENT",
   APPEND_PAGE: "APPEND_NOTE_CONTENT",
   ADD_PAGE_CONTENT: "APPEND_NOTE_CONTENT",
-  UPDATE_PAGE: "APPEND_NOTE_CONTENT"
+  UPDATE_PAGE: "APPEND_NOTE_CONTENT",
+  // Every one of these was verified to be dropped (and therefore to produce a
+  // card-less "Something went wrong preparing that change") before being
+  // listed here. CREATE_NOTE/NEW_NOTE/CREATE_PAGE are safe to fold onto the
+  // append action for the same reason as the UPDATE_ verbs above: the
+  // executor is append-only and fails loudly when no page matches, so it can
+  // never silently create a page the user did not ask for.
+  APPEND_TO_NOTE: "APPEND_NOTE_CONTENT",
+  ADD_TO_NOTES: "APPEND_NOTE_CONTENT",
+  APPEND_NOTES: "APPEND_NOTE_CONTENT",
+  ADD_NOTES: "APPEND_NOTE_CONTENT",
+  CREATE_NOTE: "APPEND_NOTE_CONTENT",
+  NEW_NOTE: "APPEND_NOTE_CONTENT",
+  CREATE_PAGE: "APPEND_NOTE_CONTENT",
+  APPEND_NOTE_ENTRY: "APPEND_NOTE_CONTENT"
 };
 function normalizeCoachActionType(raw) {
   if (typeof raw !== "string") return null;
@@ -2513,7 +2527,7 @@ function normalizeCoachActionType(raw) {
   if (key in ACTION_TYPE_SYNONYMS) return ACTION_TYPE_SYNONYMS[key] ?? null;
   return null;
 }
-function parseLenientJson(text) {
+function stripCommentsAndTrailingCommas(text) {
   let out = "";
   let inStr = false;
   let esc = false;
@@ -2545,8 +2559,82 @@ function parseLenientJson(text) {
     }
     out += c;
   }
-  out = out.replace(/,(\s*[}\]])/g, "$1");
-  return JSON.parse(out);
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+function normalizeSmartQuotes(text) {
+  return text.replace(/[“”„‟″]/g, '"').replace(/[‘’‚‛]/g, "'");
+}
+function escapeStrayQuotes(text) {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (!inStr) {
+      out += c;
+      if (c === '"') inStr = true;
+      continue;
+    }
+    if (esc) {
+      out += c;
+      esc = false;
+      continue;
+    }
+    if (c === "\\") {
+      out += c;
+      esc = true;
+      continue;
+    }
+    if (c === "\n") {
+      out += "\\n";
+      continue;
+    }
+    if (c === "\r") {
+      out += "\\r";
+      continue;
+    }
+    if (c === "	") {
+      out += "\\t";
+      continue;
+    }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      const next = j < text.length ? text[j] : "";
+      if (next === "" || next === ":" || next === "," || next === "}" || next === "]") {
+        out += c;
+        inStr = false;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+function parseLenientJson(text) {
+  try {
+    return JSON.parse(stripCommentsAndTrailingCommas(text));
+  } catch {
+  }
+  return JSON.parse(stripCommentsAndTrailingCommas(escapeStrayQuotes(normalizeSmartQuotes(text))));
+}
+function readActionsEnvelope(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed;
+  for (const key of ["actions", "action"]) {
+    const value = record[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return [value];
+  }
+  return null;
+}
+function describeRejectedType(action) {
+  const raw = action.type;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (raw === void 0) return "(no type)";
+  return String(raw);
 }
 function collapseMultiDayBlocks(actions) {
   const keyOf = (p) => [p.title, p.startTime, p.endTime, p.category ?? "", p.goalId ?? ""].join("|");
@@ -2595,33 +2683,64 @@ function fillJournalDates(actions) {
     return { ...action, payload: { ...payload, date: todayKey() } };
   });
 }
+function describeCoachProposalFailure(failure) {
+  switch (failure.reason) {
+    case "unknown-types": {
+      const named = failure.types.filter((t) => t && t !== "(no type)");
+      if (named.length) {
+        return `The Coach proposed "${named.join('", "')}", which this version of the app can't apply. Nothing was changed.`;
+      }
+      return "The Coach's change didn't name an action this app recognises. Nothing was changed.";
+    }
+    case "bad-json":
+      return "The Coach's change didn't arrive in a form the app could read, so there's nothing to approve. Nothing was changed.";
+    case "no-actions":
+    case "empty-actions":
+      return "The Coach said it prepared a change but didn't include one. Nothing was changed.";
+  }
+}
 function extractCoachProposals(raw) {
-  if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: false };
+  if (!raw) return { cleaned: raw, proposals: [], pending: false, unrenderable: null };
   const proposals = [];
-  let unrenderable = false;
+  let unrenderable = null;
   const closed = /```coach-proposal\s*\n([\s\S]*?)```/g;
   let cleaned = raw.replace(closed, (_m, jsonText) => {
     try {
       const parsed = parseLenientJson(jsonText.trim());
-      if (parsed && Array.isArray(parsed.actions) && parsed.actions.length) {
-        const normalized = parsed.actions.filter((a) => !!a && typeof a === "object").map((a) => {
-          const type = normalizeCoachActionType(a.type);
-          return type ? { ...a, type } : null;
-        }).filter((a) => a !== null);
-        const actions = fillJournalDates(collapseMultiDayBlocks(normalized));
-        if (actions.length) {
-          proposals.push({
-            summary: typeof parsed.summary === "string" ? parsed.summary : void 0,
-            actions
-          });
-        } else {
-          unrenderable = true;
-        }
-      } else {
-        unrenderable = true;
+      const summary = parsed?.summary;
+      const rawActions = readActionsEnvelope(parsed);
+      if (rawActions === null) {
+        unrenderable = { reason: "no-actions" };
+        return "";
       }
-    } catch {
-      unrenderable = true;
+      if (rawActions.length === 0) {
+        unrenderable = { reason: "empty-actions" };
+        return "";
+      }
+      const rejectedTypes = [];
+      const normalized = rawActions.filter((a) => !!a && typeof a === "object").map((a) => {
+        const type = normalizeCoachActionType(a.type);
+        if (!type) {
+          rejectedTypes.push(describeRejectedType(a));
+          return null;
+        }
+        return { ...a, type };
+      }).filter((a) => a !== null);
+      const actions = fillJournalDates(collapseMultiDayBlocks(normalized));
+      if (actions.length) {
+        proposals.push({
+          summary: typeof summary === "string" ? summary : void 0,
+          actions
+        });
+      } else {
+        unrenderable = { reason: "unknown-types", types: rejectedTypes };
+      }
+    } catch (err) {
+      unrenderable = {
+        reason: "bad-json",
+        detail: err instanceof Error ? err.message : String(err),
+        raw: jsonText.trim().slice(0, 2e3)
+      };
     }
     return "";
   });
@@ -3814,6 +3933,7 @@ export {
   currentCoachWeekScopeKey,
   deriveConversationPreview,
   deriveConversationTitle,
+  describeCoachProposalFailure,
   extractCoachProposals,
   findCounterpart,
   findNextScheduleBlock,
