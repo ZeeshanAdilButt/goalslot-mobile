@@ -96,13 +96,18 @@ export default function MessagesScreen() {
 
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
 
-  const existingCounterpartIds = useMemo(
-    () =>
-      conversations
-        .map((conversation) => findCounterpart(conversation, currentUserId)?.userId)
-        .filter((id): id is string => typeof id === "string"),
-    [conversations, currentUserId],
-  );
+  // counterpart id -> conversation id. The sheet needs the id, not just
+  // membership: when every contact already has a thread it lists them and
+  // opens the existing conversation on tap, instead of dead-ending on a
+  // sentence telling the user to go back and find it themselves.
+  const existingConversationsByCounterpartId = useMemo(() => {
+    const byCounterpart: Record<string, string> = {};
+    for (const conversation of conversations) {
+      const counterpartId = findCounterpart(conversation, currentUserId)?.userId;
+      if (counterpartId) byCounterpart[counterpartId] = conversation.id;
+    }
+    return byCounterpart;
+  }, [conversations, currentUserId]);
 
   const openThread = useCallback((conversationId: string) => {
     router.push(`/message/${conversationId}`);
@@ -231,7 +236,7 @@ export default function MessagesScreen() {
 
       <NewConversationSheet
         ref={sheetRef}
-        existingCounterpartIds={existingCounterpartIds}
+        existingConversationsByCounterpartId={existingConversationsByCounterpartId}
         onConversationReady={openThread}
       />
     </SafeAreaView>

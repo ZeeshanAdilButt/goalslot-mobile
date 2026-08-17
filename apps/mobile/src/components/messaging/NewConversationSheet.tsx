@@ -8,12 +8,25 @@
 // clear 403 message, never unauthorised access — which is why the 403 branch
 // below is a real, specifically-worded state rather than a generic error.
 //
-// Empty is the interesting state. A brand-new user has no sharing
-// relationships at all, so "no one to message yet" is the FIRST thing most
-// people will see here — it has to explain the sharing prerequisite rather
-// than showing a bare "Nothing here". Sharing is set up on the web (see
-// DECISIONS.md §5: sharing management is not a mobile v1 surface), so the
-// copy says so instead of offering a button that goes nowhere.
+// The guiding rule for this sheet, learned the hard way: it must NEVER be
+// possible to open it and be shown nothing. It has five states — loading,
+// failed to load, nobody in the sharing graph, everybody already has a
+// thread, and a real list — and every one of them has to say something true
+// and offer something to do. Four of the five used to be silently
+// unreachable, because the sheet couldn't compute its own height and so
+// never opened at all (see the enableDynamicSizing note below); with that
+// fixed, they're worth designing:
+//
+//   - Nobody in the sharing graph. A brand-new user's FIRST experience here,
+//     so it explains the sharing prerequisite rather than saying "Nothing
+//     here". Sharing is set up on the web (DECISIONS.md §5: sharing
+//     management is not a mobile v1 surface), so the copy says so instead of
+//     offering a button that goes nowhere.
+//   - Everybody already has a thread. Lists them and opens the existing
+//     conversation on tap, rather than dead-ending on a sentence.
+//   - Someone who hasn't accepted their invite yet is LISTED, greyed, with
+//     the reason — not hidden. Hiding them is what emptied this list and
+//     made the feature look broken; see buildMessagingContacts.
 
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
@@ -47,15 +60,78 @@ const RELATIONSHIP_LABEL: Record<MessagingContact["relationship"], string> = {
   "shared-with-me": "They share their progress with you",
 };
 
+/**
+ * Why a row can't be tapped. Every value here has to read as a fact about
+ * the world plus what changes it — "Invite not accepted yet" tells the user
+ * both that nothing is broken and who they're waiting on.
+ */
+const BLOCKED_REASON_LABEL: Record<NonNullable<MessagingContact["blockedReason"]>, string> = {
+  "invite-pending": "Invite not accepted yet",
+};
+
+/**
+ * One person. Shared by all three list states so a tappable row, a greyed
+ * "waiting on them" row and an "open the existing thread" row can't drift
+ * apart visually.
+ */
+function ContactRow({
+  contact,
+  subtitle,
+  onPress,
+  disabled = false,
+  busy = false,
+  accessibilityLabel,
+}: {
+  contact: MessagingContact;
+  subtitle: string;
+  onPress?: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  accessibilityLabel: string;
+}) {
+  const inert = disabled || !onPress;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={inert}
+      style={({ pressed }) => [
+        styles.contactRow,
+        pressed && !inert && styles.contactRowPressed,
+        inert && styles.contactRowDisabled,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: inert, busy }}
+    >
+      <Avatar name={contact.name} size={40} />
+      <View style={styles.contactBody}>
+        <Text style={styles.contactName} numberOfLines={1}>
+          {contact.name}
+        </Text>
+        <Text style={styles.contactMeta} numberOfLines={1}>
+          {subtitle}
+        </Text>
+      </View>
+      {busy ? <ActivityIndicator color={colors.mutedForeground} /> : null}
+    </Pressable>
+  );
+}
+
 export interface NewConversationSheetProps {
-  /** User ids already in a conversation — those people belong in the list, not here. */
-  existingCounterpartIds: string[];
+  /**
+   * counterpart user id -> the conversation id already open with them.
+   *
+   * A map rather than the bare id list it used to be, because "you're
+   * already talking to everyone" is no longer a dead end: those people are
+   * listed, and tapping one has to be able to jump straight to the thread.
+   */
+  existingConversationsByCounterpartId: Record<string, string>;
   /** Called with the new (or existing) conversation id once the server answers. */
   onConversationReady: (conversationId: string) => void;
 }
 
 export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversationSheetProps>(
-  function NewConversationSheet({ existingCounterpartIds, onConversationReady }, ref) {
+  function NewConversationSheet({ existingConversationsByCounterpartId, onConversationReady }, ref) {
     const sheetRef = useRef<BottomSheetModal>(null);
     useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
     // See the hook's own header for why this is needed at all — the library
@@ -67,9 +143,29 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
 
     const contactsQuery = useQuery(messagingQueries.contacts());
 
+    const contacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
+
+    /** People without a thread yet — including ones that can't be messaged, which are shown greyed. */
     const available = useMemo(
-      () => contactsWithoutConversation(contactsQuery.data ?? [], existingCounterpartIds),
-      [contactsQuery.data, existingCounterpartIds],
+      () => contactsWithoutConversation(contacts, Object.keys(existingConversationsByCounterpartId)),
+      [contacts, existingConversationsByCounterpartId],
+    );
+
+    /** People who already have a thread — the "already talking to everyone" state lists these. */
+    const existingContacts = useMemo(
+      () => contacts.filter((contact) => existingConversationsByCounterpartId[contact.userId]),
+      [contacts, existingConversationsByCounterpartId],
+    );
+
+    const openExisting = useCallback(
+      (contact: MessagingContact) => {
+        const conversationId = existingConversationsByCounterpartId[contact.userId];
+        if (!conversationId) return;
+        hapticLight();
+        sheetRef.current?.dismiss();
+        onConversationReady(conversationId);
+      },
+      [existingConversationsByCounterpartId, onConversationReady],
     );
 
     const handleSelect = useCallback(
@@ -169,48 +265,82 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
             message="Couldn't load the people you can message."
             onRetry={() => void contactsQuery.refetch()}
           />
-        ) : available.length === 0 ? (
+        ) : contacts.length === 0 ? (
+          // Genuinely nobody in the sharing graph. The only true empty state
+          // left, and it explains the prerequisite rather than just saying
+          // "nothing here".
           <View style={styles.centered}>
-            <Text style={styles.emptyTitle}>
-              {(contactsQuery.data ?? []).length === 0
-                ? "No one to message yet"
-                : "You're already talking to everyone"}
-            </Text>
+            <Text style={styles.emptyTitle}>No one to message yet</Text>
             <Text style={styles.emptyBody}>
-              {(contactsQuery.data ?? []).length === 0
-                ? "Messaging is for people you share your progress with. Set up sharing on GoalSlot for web, then they'll show up here."
-                : "Every one of your sharing connections already has a conversation. Open it from the list."}
+              Messaging is for people you share your progress with. Set up sharing on GoalSlot for web, then
+              they&apos;ll show up here.
             </Text>
           </View>
+        ) : available.length === 0 ? (
+          // Everyone is already in a thread. This used to be a dead end — a
+          // sentence telling the user to go back and find the conversation
+          // themselves. Listing those people and opening the existing thread
+          // on tap turns the same information into the thing they came here
+          // to do.
+          <>
+            <Text style={styles.sectionNote}>
+              You already have a conversation with everyone you share with. Pick one to open it.
+            </Text>
+            <BottomSheetFlatList
+              data={existingContacts}
+              keyExtractor={(contact: MessagingContact) => contact.userId}
+              contentContainerStyle={styles.listContent}
+              renderItem={({ item }: { item: MessagingContact }) => (
+                <ContactRow
+                  contact={item}
+                  subtitle="Already in your messages"
+                  onPress={() => openExisting(item)}
+                  accessibilityLabel={`Open your conversation with ${item.name}.`}
+                />
+              )}
+            />
+          </>
         ) : (
           <BottomSheetFlatList
             data={available}
             keyExtractor={(contact: MessagingContact) => contact.userId}
             contentContainerStyle={styles.listContent}
-            renderItem={({ item }: { item: MessagingContact }) => {
-              const busy = creatingFor === item.userId;
-              return (
-                <Pressable
+            ListFooterComponent={
+              // Only when the list is ENTIRELY unmessageable. Otherwise the
+              // per-row subtitle already says it, and a footer would just be
+              // noise under a list of people they can message right now.
+              available.some((contact) => contact.messageable) ? null : (
+                <Text style={styles.sectionNote}>
+                  Once they accept your invite on GoalSlot for web, you&apos;ll be able to message them here.
+                </Text>
+              )
+            }
+            renderItem={({ item }: { item: MessagingContact }) =>
+              item.messageable ? (
+                <ContactRow
+                  contact={item}
+                  subtitle={RELATIONSHIP_LABEL[item.relationship]}
                   onPress={() => void handleSelect(item)}
+                  // The whole list goes inert while one row is opening: a tap
+                  // on a different row would start a second conversation the
+                  // user never asked for.
                   disabled={creatingFor !== null}
-                  style={({ pressed }) => [styles.contactRow, pressed && styles.contactRowPressed]}
-                  accessibilityRole="button"
+                  busy={creatingFor === item.userId}
                   accessibilityLabel={`Message ${item.name}. ${RELATIONSHIP_LABEL[item.relationship]}.`}
-                  accessibilityState={{ disabled: creatingFor !== null, busy }}
-                >
-                  <Avatar name={item.name} size={40} />
-                  <View style={styles.contactBody}>
-                    <Text style={styles.contactName} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.contactMeta} numberOfLines={1}>
-                      {RELATIONSHIP_LABEL[item.relationship]}
-                    </Text>
-                  </View>
-                  {busy ? <ActivityIndicator color={colors.mutedForeground} /> : null}
-                </Pressable>
-              );
-            }}
+                />
+              ) : (
+                // Shown, not hidden. Hiding these is what emptied the picker
+                // and made the sheet look broken — see buildMessagingContacts.
+                <ContactRow
+                  contact={item}
+                  subtitle={BLOCKED_REASON_LABEL[item.blockedReason ?? "invite-pending"]}
+                  disabled
+                  accessibilityLabel={`${item.name}. ${
+                    BLOCKED_REASON_LABEL[item.blockedReason ?? "invite-pending"]
+                  }, so you can't message them yet.`}
+                />
+              )
+            }
           />
         )}
       </BottomSheetModal>
@@ -265,6 +395,16 @@ const styles = StyleSheet.create({
   },
   contactRowPressed: {
     backgroundColor: colors.secondary,
+  },
+  contactRowDisabled: {
+    // Dimmed rather than hidden — the row is there to be read, not tapped.
+    opacity: 0.55,
+  },
+  sectionNote: {
+    ...typography.bodySmall,
+    color: colors.mutedForeground,
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.sm,
   },
   contactBody: {
     flex: 1,

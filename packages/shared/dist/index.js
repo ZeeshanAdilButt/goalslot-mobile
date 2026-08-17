@@ -503,29 +503,40 @@ function displayName(peer) {
   const trimmed = peer.name?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : peer.email;
 }
-function toContact(peer, relationship) {
+function toContact(peer, relationship, messageable) {
   return {
     userId: peer.id,
     name: displayName(peer),
     email: peer.email,
     ...peer.avatar ? { avatar: peer.avatar } : {},
-    relationship
+    relationship,
+    messageable,
+    ...messageable ? {} : { blockedReason: "invite-pending" }
   };
 }
 function buildMessagingContacts(outgoing = [], incoming = []) {
   const byUserId = /* @__PURE__ */ new Map();
   for (const share of outgoing) {
-    if (!share.sharedWith || share.isAccepted !== true) continue;
-    byUserId.set(share.sharedWith.id, toContact(share.sharedWith, "shared-with-them"));
+    if (!share.sharedWith) continue;
+    byUserId.set(
+      share.sharedWith.id,
+      toContact(share.sharedWith, "shared-with-them", share.isAccepted === true)
+    );
   }
   for (const share of incoming) {
     const existing = byUserId.get(share.owner.id);
-    byUserId.set(
-      share.owner.id,
-      existing ? { ...existing, relationship: "mutual" } : toContact(share.owner, "shared-with-me")
-    );
+    if (!existing) {
+      byUserId.set(share.owner.id, toContact(share.owner, "shared-with-me", true));
+      continue;
+    }
+    const merged = { ...existing, relationship: "mutual", messageable: true };
+    delete merged.blockedReason;
+    byUserId.set(share.owner.id, merged);
   }
-  return Array.from(byUserId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  return Array.from(byUserId.values()).sort((a, b) => {
+    if (a.messageable !== b.messageable) return a.messageable ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 }
 function contactsByUserId(contacts) {
   const index = {};

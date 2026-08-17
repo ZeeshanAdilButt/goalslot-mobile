@@ -190,7 +190,7 @@ describe('messaging queries', () => {
     expect(sharingApi.getMyShares).toHaveBeenCalled()
     expect(sharingApi.getSharedWithMe).toHaveBeenCalled()
     expect(contacts).toEqual([
-      { userId: 'u2', name: 'Zoe', email: 'z@e.com', relationship: 'shared-with-them' },
+      { userId: 'u2', name: 'Zoe', email: 'z@e.com', relationship: 'shared-with-them', messageable: true },
     ])
   })
 })

@@ -561,6 +561,22 @@ interface MessagingContact {
     avatar?: string;
     /** How the sharing relationship runs, purely for a subtitle in the picker. */
     relationship: 'shared-with-them' | 'shared-with-me' | 'mutual';
+    /**
+     * Whether the server would actually let a conversation be opened with this
+     * person — i.e. what `canMessage` checks (an accepted share in either
+     * direction). False people are still returned, deliberately: the picker
+     * lists them greyed out with `blockedReason` as the explanation instead of
+     * hiding them. Hiding was tried and made the list empty, which is a worse
+     * outcome than a row the user can see and understand.
+     */
+    messageable: boolean;
+    /**
+     * Why `messageable` is false. Only meaningful when it is.
+     *
+     * 'invite-pending' — the user shared with this person, but they haven't
+     * accepted yet, so the server's canMessage would refuse.
+     */
+    blockedReason?: 'invite-pending';
 }
 /** Connection state of the live-delivery socket, for the UI's offline banner. */
 type MessagingSocketStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -1242,6 +1258,12 @@ declare function contactsByUserId(contacts: MessagingContact[]): Record<string, 
  * Everyone in the directory who doesn't already have a conversation — what
  * the "new conversation" picker should offer. Someone you're already talking
  * to belongs in the list you came from, not in the new-thread picker.
+ *
+ * Note that this deliberately does NOT drop `messageable: false` people.
+ * They have no conversation and can't yet have one, so the picker is the
+ * only surface where they exist at all; showing them greyed with a reason is
+ * the entire point of that flag. Filtering here would reintroduce the empty
+ * list this flag was added to prevent.
  */
 declare function contactsWithoutConversation(contacts: MessagingContact[], existingCounterpartIds: Iterable<string>): MessagingContact[];
 

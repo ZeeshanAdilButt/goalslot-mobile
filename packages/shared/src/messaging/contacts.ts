@@ -20,13 +20,19 @@ function displayName(peer: SharingPeer): string {
   return trimmed && trimmed.length > 0 ? trimmed : peer.email
 }
 
-function toContact(peer: SharingPeer, relationship: MessagingContact['relationship']): MessagingContact {
+function toContact(
+  peer: SharingPeer,
+  relationship: MessagingContact['relationship'],
+  messageable: boolean,
+): MessagingContact {
   return {
     userId: peer.id,
     name: displayName(peer),
     email: peer.email,
     ...(peer.avatar ? { avatar: peer.avatar } : {}),
     relationship,
+    messageable,
+    ...(messageable ? {} : { blockedReason: 'invite-pending' as const }),
   }
 }
 
@@ -37,29 +43,56 @@ export function buildMessagingContacts(
   const byUserId = new Map<string, MessagingContact>()
 
   for (const share of outgoing) {
-    // Null while an emailed invite is still outstanding — there is no account
-    // to address a message to yet. `getSharedWithMe` (the `incoming` half)
-    // is already filtered to accepted shares server-side, but `getMyShares`
-    // is not — it returns every share the caller sent regardless of whether
-    // the recipient has accepted, so this direction needs its own check.
-    // Skipping unaccepted ones matters beyond tidiness: the server's
-    // canMessage check requires isAccepted, so offering someone here who
-    // hasn't accepted yet would let the user pick them and then 403.
-    if (!share.sharedWith || share.isAccepted !== true) continue
-    byUserId.set(share.sharedWith.id, toContact(share.sharedWith, 'shared-with-them'))
+    // A null `sharedWith` is the one case that really is dropped: the invite
+    // was emailed and nobody has claimed it, so there is no account to
+    // address a message to. There is nothing to render and no id to render
+    // it under.
+    if (!share.sharedWith) continue
+
+    // Acceptance, by contrast, is reported rather than filtered. This
+    // direction needs its own check — `getSharedWithMe` (the `incoming`
+    // half) is filtered to accepted shares server-side, but `getMyShares`
+    // returns every share the caller sent regardless — because the server's
+    // canMessage requires isAccepted, so opening a conversation with someone
+    // who hasn't accepted 403s.
+    //
+    // An earlier fix (991310f) drew the obvious conclusion and `continue`d
+    // past them. That removed the 403, but for a user whose only sharing
+    // links are unaccepted it emptied the picker completely, which read as
+    // the feature being broken. Keeping the person visible with
+    // `messageable: false` prevents the 403 the same way — the row isn't
+    // tappable — while still answering the question the user actually has,
+    // which is "where is everyone?".
+    byUserId.set(
+      share.sharedWith.id,
+      toContact(share.sharedWith, 'shared-with-them', share.isAccepted === true),
+    )
   }
 
   for (const share of incoming) {
     const existing = byUserId.get(share.owner.id)
-    byUserId.set(
-      share.owner.id,
-      existing
-        ? { ...existing, relationship: 'mutual' }
-        : toContact(share.owner, 'shared-with-me'),
-    )
+    if (!existing) {
+      byUserId.set(share.owner.id, toContact(share.owner, 'shared-with-me', true))
+      continue
+    }
+
+    // Mutual. `messageable` is OR-ed, never overwritten: canMessage matches
+    // an accepted share in EITHER direction, so an accepted incoming share
+    // makes this person reachable even if the outgoing half is still
+    // pending. Overwriting would have re-hidden the reason on one side and
+    // wrongly blocked on the other.
+    const merged: MessagingContact = { ...existing, relationship: 'mutual', messageable: true }
+    delete merged.blockedReason
+    byUserId.set(share.owner.id, merged)
   }
 
-  return Array.from(byUserId.values()).sort((a, b) => a.name.localeCompare(b.name))
+  // Messageable people first, then by name. Someone the user can actually
+  // start a conversation with should never be pushed below a row that only
+  // explains why it can't be tapped.
+  return Array.from(byUserId.values()).sort((a, b) => {
+    if (a.messageable !== b.messageable) return a.messageable ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
 }
 
 /** Index for joining a bare participant id to a name at render time. */
@@ -75,6 +108,12 @@ export function contactsByUserId(contacts: MessagingContact[]): Record<string, M
  * Everyone in the directory who doesn't already have a conversation — what
  * the "new conversation" picker should offer. Someone you're already talking
  * to belongs in the list you came from, not in the new-thread picker.
+ *
+ * Note that this deliberately does NOT drop `messageable: false` people.
+ * They have no conversation and can't yet have one, so the picker is the
+ * only surface where they exist at all; showing them greyed with a reason is
+ * the entire point of that flag. Filtering here would reintroduce the empty
+ * list this flag was added to prevent.
  */
 export function contactsWithoutConversation(
   contacts: MessagingContact[],
