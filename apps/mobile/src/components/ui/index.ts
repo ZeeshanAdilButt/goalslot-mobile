@@ -4,5 +4,6 @@ export * from "./FormattedText";
 export * from "./Icon";
 export * from "./IconBadge";
 export * from "./KeyboardSheet";
+export * from "./markdown-lite";
 export * from "./TextField";
 export * from "./TypingIndicator";

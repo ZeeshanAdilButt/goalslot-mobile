@@ -71,7 +71,7 @@ import { formatMessageTime } from "@/components/messaging/format";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { CoachBudgetNotice } from "@/components/settings/CoachBudgetNotice";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { FormattedText } from "@/components/ui/FormattedText";
+import { FormattedText, toPlainText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
@@ -215,7 +215,13 @@ const ChatBubble = memo(function ChatBubble({
       <View
         style={[styles.bubble, styles.bubbleAssistant]}
         accessible={!showTypingOnly}
-        accessibilityLabel={showTypingOnly ? undefined : `Coach replied: ${cleaned}${time ? ` at ${time}.` : ""}`}
+        // `toPlainText`, not the raw content: the reply is markdown, and a
+        // screen reader given it verbatim announces "hash hash hash What
+        // Worked colon" / "star star bold star star" — the same bug sighted
+        // users hit, just in audio.
+        accessibilityLabel={
+          showTypingOnly ? undefined : `Coach replied: ${toPlainText(cleaned)}${time ? ` at ${time}.` : ""}`
+        }
       >
         {showTypingOnly ? (
           <View
