@@ -6,8 +6,8 @@
 // This is the direct fix for the user feedback that prompted this work —
 // "I can't see notes. There is no way for me to easily go through all the
 // different areas. Should have been the side task bar sidebar." — so every
-// one of the app's screens gets a row here, not just the five that fit the
-// tab bar (see app/(app)/_layout.tsx for why those five stayed on the
+// one of the app's screens gets a row here, not just the seven that fit the
+// tab bar (see app/(app)/_layout.tsx for why those seven stayed on the
 // physical tab bar and the rest didn't).
 //
 // Structure is ported from web's `app-sidebar.tsx`, which is the real
@@ -89,14 +89,17 @@ interface DrawerNavGroup {
 // ONE deliberate mobile-only divergence: Journal is promoted out of the
 // "Reflect" pair and up beside Today, ahead of Plan. Web can leave it fourth
 // because its sidebar is always on screen — depth there costs a glance. On a
-// phone the drawer is closed by default, so a row in the fourth group is
-// three interactions deep for a habit that only works if it's daily, and the
-// tab bar has no sixth slot to give it (see app/(app)/_layout.tsx). Today +
-// Journal is also a coherent unlabelled pair on its own terms: the day's
-// plan and the day's reflection, the two rows a user touches every day.
-// Coach AI stays in "Reflect" — Journal is the daily habit; Coach is a thing
-// you go to when you want it — which keeps the labelled groups reading
-// Plan -> Do -> Reflect, the same sequence as the header tagline.
+// phone the drawer is closed by default, so a row in the fourth group would
+// be three interactions deep for a habit that only works if it's daily.
+// Journal has since also gained its own bottom tab (see
+// app/(app)/_layout.tsx) — this row is kept anyway rather than demoted back
+// to "Reflect", on the same "already a tab AND a drawer row" precedent
+// Today/Schedule/Tasks/Timer/Notes all follow below. Today + Journal is also
+// a coherent unlabelled pair on its own terms: the day's plan and the day's
+// reflection, the two rows a user touches every day. Coach AI stays in
+// "Reflect" — Journal is the daily habit; Coach is a thing you go to when
+// you want it — which keeps the labelled groups reading Plan -> Do ->
+// Reflect, the same sequence as the header tagline.
 const NAV_GROUPS: DrawerNavGroup[] = [
   {
     items: [

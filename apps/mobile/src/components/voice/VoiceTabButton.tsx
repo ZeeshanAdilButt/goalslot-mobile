@@ -1,5 +1,7 @@
 // The centre control in the tab bar: a raised circle that breaks the bar's
-// top line, sitting where the third of five tabs would be.
+// top line, sitting where the fourth of seven tabs would be — the exact
+// geometric centre (three tabs either side). See app/(app)/_layout.tsx for
+// why that centring constraint is non-negotiable regardless of slot count.
 //
 // It is a real registered route (app/(app)/voice.tsx), not a button that
 // opens a sheet over whatever screen you were on. That costs a navigation

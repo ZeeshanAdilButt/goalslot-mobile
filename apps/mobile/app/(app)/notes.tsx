@@ -100,8 +100,6 @@ import { queryClient } from "@/lib/query-client";
 import { useNotesUiStore } from "@/lib/notes-ui-store";
 import { useAnalytics } from "@/providers/growth-provider";
 import { useAuth } from "@/providers/auth-provider";
-import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
-import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 /**
  * Create/delete/reorder/favorite now queue to the offline outbox exactly
@@ -162,7 +160,6 @@ export default function NotesScreen() {
   const [reduceMotion, setReduceMotion] = useState(false);
 
   useScreenView("notes");
-  useHiddenTabBackHandler(hiddenTabBackDestination("notes"));
 
   useEffect(() => {
     let mounted = true;

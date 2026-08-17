@@ -12,7 +12,7 @@
 // list. An ESLint rule cannot do this — ESLint sees one file at a time, and a
 // rule running inside message/[id].tsx has no way to know that _layout.tsx
 // registered that filename as a hidden tab. Any selector broad enough to fire
-// there would also fire on the five real tabs, which must NOT have a handler.
+// there would also fire on the seven real tabs, which must NOT have a handler.
 // A source-scanning test can tell them apart, and this repo already uses that
 // pattern (see note-row-actions.test.ts).
 
@@ -97,7 +97,10 @@ describe("hidden tab back destinations", () => {
   // every other assertion here has quietly stopped checking anything. Pin it
   // so that failure is loud rather than an empty `it.each` that always passes.
   it("actually finds the hidden tabs in the layout", () => {
-    expect(hiddenTabs.length).toBeGreaterThanOrEqual(15);
+    // Was >= 15 when Journal and Notes were still `href: null` routes; both
+    // are now real Tabs.Screen entries on the (now seven-slot) bar, so the
+    // hidden set dropped by two. See app/(app)/_layout.tsx.
+    expect(hiddenTabs.length).toBeGreaterThanOrEqual(13);
     expect(hiddenTabs).toContain("message/[id]");
     expect(hiddenTabs).toContain("notifications");
     // A real, visible tab must never show up here.

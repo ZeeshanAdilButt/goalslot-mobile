@@ -42,9 +42,11 @@ import type { Href } from "expo-router";
  */
 export const HIDDEN_TAB_BACK_DESTINATIONS = {
   // Drawer-level screens whose parent genuinely is the Today dashboard.
+  // Journal and Notes are NOT here: both are real Tabs.Screen entries in the
+  // bar (see app/(app)/_layout.tsx), not hidden `href: null` routes, so
+  // hardware back on either one is the tab navigator's own back behaviour,
+  // not this table's concern.
   goals: "/",
-  journal: "/",
-  notes: "/",
   messages: "/",
   mentees: "/",
   settings: "/",

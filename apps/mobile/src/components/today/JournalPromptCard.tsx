@@ -10,10 +10,14 @@
 // half-width tile, because this is one destination rather than a grid of
 // equal options.
 //
-// Why it exists at all: journal has no bottom tab (the five slots are
-// Today/Schedule/Voice/Tasks/Timer) and lived only behind the drawer plus a
-// tile at the very bottom of this screen. A daily writing habit that takes
-// two taps and a scroll to reach is a habit that doesn't happen.
+// Why it exists at all: Journal now has its own bottom tab (see
+// app/(app)/_layout.tsx), but this card predates that and stays anyway —
+// it's a same-screen shortcut into an existing tab, not a substitute for one,
+// the same way Today/Schedule/Tasks/Timer are already both a tab AND a
+// drawer row. Before Journal was on the bar this was the only fast path in;
+// keeping it here still saves the reach across the bar for whoever is
+// already looking at Today, which is exactly the moment a daily writing
+// habit needs to be one tap, not a glance-and-decide.
 //
 // The card stays NEUTRAL even though it's a prompt: the hero above it is the
 // one brand-tinted surface at the top of Today, and a second yellow card

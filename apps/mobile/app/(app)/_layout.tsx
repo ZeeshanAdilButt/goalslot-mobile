@@ -90,8 +90,14 @@ function renderTodayIcon({ color, size }: { color: ColorValue; size: number }) {
 function renderScheduleIcon({ color, size }: { color: ColorValue; size: number }) {
   return <Icon name="schedule" color={color} size={size} />;
 }
+function renderJournalIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="journal" color={color} size={size} />;
+}
 function renderTasksIcon({ color, size }: { color: ColorValue; size: number }) {
   return <Icon name="tasks" color={color} size={size} />;
+}
+function renderNotesIcon({ color, size }: { color: ColorValue; size: number }) {
+  return <Icon name="notes" color={color} size={size} />;
 }
 function renderTimerIcon({ color, size }: { color: ColorValue; size: number }) {
   return <Icon name="timer" color={color} size={size} />;
@@ -121,12 +127,14 @@ function useUnreadNotificationsCount(enabled: boolean): number {
 
 const todayTabOptions = { title: "Today", tabBarIcon: renderTodayIcon };
 const scheduleTabOptions = { title: "Schedule", tabBarIcon: renderScheduleIcon };
+const journalTabOptions = { title: "Journal", tabBarIcon: renderJournalIcon };
 // The mic. `tabBarButton` replaces the whole tab item, which is what lets
 // the control break the bar's top line — see VoiceTabButton. It stays a
 // real route so a screen reader announces it as a tab and the back gesture
 // behaves normally.
 const voiceTabOptions = { title: "Voice", tabBarButton: renderVoiceTabButton };
 const tasksTabOptions = { title: "Tasks", tabBarIcon: renderTasksIcon };
+const notesTabOptions = { title: "Notes", tabBarIcon: renderNotesIcon };
 const timerTabOptions = { title: "Timer", tabBarIcon: renderTimerIcon };
 
 export default function AppLayout() {
@@ -252,7 +260,7 @@ export default function AppLayout() {
   // drawer/search open-close, and timer transition (GlobalTrackingBanner's
   // onLayout -> setBannerHeight) — a fresh object literal here every render
   // means <Tabs> can never shallow-bail on unchanged options, so it
-  // re-resolves the whole tab bar's chrome (all 5 icon closures, label
+  // re-resolves the whole tab bar's chrome (all 7 icon closures, label
   // styles, bar height/padding) on renders that have nothing to do with the
   // bar itself. Only bottomClearance actually varies; everything else below
   // is a static theme token.
@@ -347,21 +355,33 @@ export default function AppLayout() {
     return <Redirect href="/login" />;
   }
 
-  // Five slots on the bar — more than that is unreadable at phone width —
-  // and the middle one is the voice mic rather than a screen: Today,
-  // Schedule, [mic], Tasks, Timer. The other routes stay registered but off
-  // the bar via `href: null`, and every one of them is reachable from the
-  // slide-out drawer opened by the hamburger below.
+  // Seven slots on the bar, and the middle one is the voice mic rather than
+  // a screen: Today, Schedule, Journal, [mic], Tasks, Notes, Timer. This
+  // used to be five (see git history / commit that introduced Voice as a
+  // tab) on the reasoning that "more than five is unreadable at phone
+  // width." That specific claim is retracted here, by explicit user
+  // direction, not by drift or oversight — Journal and Notes were both
+  // already real, fully-built screens one tap deep in the drawer, and the
+  // user judged seven readable rather than the tab bar staying capped at
+  // five. What is NOT retracted is the constraint that made five the number
+  // in the first place: a raised centre control still has to sit at the
+  // bar's exact geometric centre or it reads as an extra tab someone bolted
+  // on rather than a deliberate hero control. At seven slots that still
+  // means 3-and-3 around the mic, just recomputed for the new count —
+  // Today/Schedule/Journal to its left, Tasks/Notes/Timer to its right. The
+  // remaining routes stay registered but off the bar via `href: null`, and
+  // every one of them (Journal and Notes included, for anyone who still
+  // reaches them that way out of habit) is also reachable from the slide-out
+  // drawer opened by the hamburger below.
   //
-  // GOALS CAME OFF THE BAR to make room, and that is a real trade, not an
-  // oversight. A raised centre control has to be the geometric centre or it
-  // reads as a sixth tab someone bolted on, and five slots means one of the
-  // existing five moves. Goals is the one that survives the move best: it is
-  // the longest-horizon surface of the five (the others are all "today" or
-  // "this week"), Today already renders goal progress and links into it, the
-  // Timer attaches sessions to it, and it keeps a top-level row in the
-  // drawer under Plan. Schedule, Tasks and Timer are all daily-use screens
-  // where a second tap would be felt every day.
+  // GOALS CAME OFF THE BAR EARLIER to make room for the mic, and Journal and
+  // Notes moving onto the bar now is not a reversal of that decision —
+  // Goals is not moving back. The original trade-off reasoning (Goals is the
+  // longest-horizon of the original five, already surfaced on Today, and
+  // keeps a top-level drawer row under Plan, while Schedule/Tasks/Timer are
+  // daily-use screens where a second tap would be felt every day) is still
+  // why Goals specifically stayed off rather than Journal or Notes going on
+  // instead of it.
   //
   // The drawer exists because relying on a link buried in Settings was a real
   // discoverability failure: "I can't see notes. There is no way for me to
@@ -389,8 +409,10 @@ export default function AppLayout() {
           <Tabs screenOptions={tabsScreenOptions}>
             <Tabs.Screen name="index" options={todayTabOptions} />
             <Tabs.Screen name="schedule" options={scheduleTabOptions} />
+            <Tabs.Screen name="journal" options={journalTabOptions} />
             <Tabs.Screen name="voice" options={voiceTabOptions} />
             <Tabs.Screen name="tasks" options={tasksTabOptions} />
+            <Tabs.Screen name="notes" options={notesTabOptions} />
             <Tabs.Screen name="timer" options={timerTabOptions} />
             {/* Off the bar to make room for the mic (see the note above), still a
               first-class row in the drawer's Plan group. */}
@@ -404,11 +426,6 @@ export default function AppLayout() {
               name="categories"
               options={{ title: "Categories", href: null }}
             />
-            <Tabs.Screen
-              name="journal"
-              options={{ title: "Journal", href: null }}
-            />
-            <Tabs.Screen name="notes" options={{ title: "Notes", href: null }} />
             {/* The note editor is a route, not a tab: hiding the tab bar while
               it's focused makes it read as a full-screen push. */}
             <Tabs.Screen

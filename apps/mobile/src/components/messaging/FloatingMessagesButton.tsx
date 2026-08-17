@@ -25,10 +25,12 @@
 //  4. Web's own button lives in the BOTTOM-right dock. Docking here matches
 //     it; adding to the top-right column would not.
 //
-// Not the tab bar either: the layout documents five slots with the mic as
-// the geometric centre, and Goals was already sacrificed to get there. Not
-// the Today quick-access rail either: that rail is four items wide by
-// design and exists only on Today, whereas web's button is global.
+// Not the tab bar either: the layout documents seven slots with the mic as
+// the geometric centre, and there is no free eighth slot to give this its
+// own home there even before counting that Goals was already sacrificed to
+// get the mic centred in the first place. Not the Today quick-access rail
+// either: that rail is four items wide by design and exists only on Today,
+// whereas web's button is global.
 //
 // Presentation only, matching this folder's rule — the count and the
 // navigation are passed in. See src/hooks/useUnreadMessagesCount.ts for what
