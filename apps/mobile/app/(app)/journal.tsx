@@ -62,6 +62,7 @@ import {
 } from "@/components/journal/recent-entries";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
+import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -261,6 +262,25 @@ export default function JournalScreen() {
   // Today is where journal is actually surfaced now — both the "Jump back
   // in" grid and the prominent JournalPromptCard just under the hero.
   useHiddenTabBackHandler(hiddenTabBackDestination("journal"));
+
+  // The editor is a multiline TextInput with the Save button BELOW it, and
+  // the whole screen is one scroll container (the FlashList below renders the
+  // editor as its ListHeaderComponent). Android does not shrink the window
+  // for the keyboard under edge-to-edge, so without this inset the Save
+  // button is laid out under the keyboard and cannot be scrolled to — you can
+  // type an entry and have no way to save it. Same defect as the search
+  // overlay, same fix; see useKeyboardInset.
+  const keyboardInset = useKeyboardInset();
+  const scrollContentStyle = useMemo(
+    () => [styles.scrollContent, { paddingBottom: spacing.xxl + keyboardInset }],
+    [keyboardInset],
+  );
+  // FlashList's contentContainerStyle takes a restricted object, not an
+  // array, so this one is spread rather than composed.
+  const recentListContentStyle = useMemo(
+    () => ({ ...styles.recentListContent, paddingBottom: spacing.xxl + keyboardInset }),
+    [keyboardInset],
+  );
 
   // --- "Talk about my day" voice capture ------------------------------
   // Deep link contract: `/journal?voice=1` (goalslot://journal?voice=1),
@@ -1135,7 +1155,7 @@ export default function JournalScreen() {
   let body: React.ReactNode;
   if (recentQuery.isPending) {
     body = (
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={scrollContentStyle} keyboardShouldPersistTaps="handled">
         {header}
         <View style={styles.recentSkeletonArea}>
           {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
@@ -1149,7 +1169,7 @@ export default function JournalScreen() {
     // shared classifier — Retry stays available either way since
     // connectivity can return at any moment.
     body = (
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={scrollContentStyle} keyboardShouldPersistTaps="handled">
         {header}
         <QueryErrorState
           compact
@@ -1162,7 +1182,7 @@ export default function JournalScreen() {
     );
   } else if (recentEntries.length === 0) {
     body = (
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={scrollContentStyle} keyboardShouldPersistTaps="handled">
         {header}
         <EmptyState
           compact
@@ -1198,7 +1218,7 @@ export default function JournalScreen() {
           keyExtractor={(item) => item.date}
           renderItem={renderRecentItem}
           ListHeaderComponent={header}
-          contentContainerStyle={styles.recentListContent}
+          contentContainerStyle={recentListContentStyle}
           keyboardShouldPersistTaps="handled"
         />
       </Reveal>
@@ -1655,7 +1675,8 @@ const styles = StyleSheet.create({
   // whatever space is left under the header content that scrolls above them.
   scrollContent: {
     flexGrow: 1,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied at the call site so it can carry the live
+    // keyboard inset; spacing.xxl is the keyboard-down baseline.
   },
   recentSkeletonArea: {
     flex: 1,
@@ -1684,7 +1705,7 @@ const styles = StyleSheet.create({
   },
   recentListContent: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied at the call site — see scrollContent above.
   },
   // Wrapper exists purely to clip the swipe-revealed delete panel to the row
   // (see the note at its render site). The row keeps its own separator, so

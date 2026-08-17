@@ -25,7 +25,7 @@
 // stand-in for "id already exists") to keep the fake server here in one
 // place rather than needing Prisma's actual error shape.
 
-import axios, { type AxiosInstance } from 'axios'
+import axios from 'axios'
 import MockAdapter from 'axios-mock-adapter'
 import { describe, expect, it } from 'vitest'
 

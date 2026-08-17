@@ -50,6 +50,7 @@ import { useRouter, type Href } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { Icon, type IconName } from "@/components/ui/Icon";
+import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import { goalQueries, noteQueries, taskQueries } from "@/lib/queries";
 import { useTrackingBannerHeight } from "@/lib/tracking-banner-store";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -70,6 +71,7 @@ export interface SearchOverlayProps {
 
 export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps) {
   const insets = useSafeAreaInsets();
+  const keyboardInset = useKeyboardInset();
   const router = useRouter();
   const trackingBannerHeight = useTrackingBannerHeight((state) => state.height);
   const [query, setQuery] = useState("");
@@ -227,7 +229,12 @@ export function SearchOverlay({ open, onClose, onNavigate }: SearchOverlayProps)
 
         <ScrollView
           style={styles.results}
-          contentContainerStyle={styles.resultsContent}
+          // The keyboard is up for the entire life of this overlay (the field
+          // autofocuses), and Android does not shrink the window for it under
+          // edge-to-edge — so without this inset the last rows are laid out
+          // below the keyboard line and cannot be scrolled to at all. See
+          // useKeyboardInset for why this pads rather than shrinking.
+          contentContainerStyle={[styles.resultsContent, { paddingBottom: spacing.xxl + keyboardInset }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -375,7 +382,8 @@ const styles = StyleSheet.create({
   },
   resultsContent: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied inline at the call site so it can carry the
+    // live keyboard inset; spacing.xxl is the keyboard-down baseline.
   },
   sectionLabel: {
     ...typography.label,
