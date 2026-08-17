@@ -30,6 +30,10 @@ import type { Task, TaskStatus } from "@goalslot/shared";
 // and board-columns.test.ts covers it — the deep import is what keeps that
 // possible.
 import { taskStatusTone, type Tone } from "@/components/lists/tones";
+// Type-only: erased at compile time, so this doesn't pull SegmentedControl's
+// react-native-reanimated runtime dependency into this module the way the
+// `@/components/lists` barrel import above would.
+import type { SegmentOption } from "@/components/lists/SegmentedControl";
 
 export interface BoardColumnDef {
   status: TaskStatus;
@@ -50,6 +54,17 @@ export const BOARD_COLUMNS: readonly BoardColumnDef[] = [
 export interface BoardColumnData extends BoardColumnDef {
   tasks: Task[];
 }
+
+/**
+ * BOARD_COLUMNS projected into the {value, label} shape SegmentedControl
+ * needs, for EditTaskSheet's status control — same four statuses, same
+ * order, same "To Do"/"Doing" prose labels the board already renders, so
+ * that control doesn't invent a second wording for the same four states.
+ */
+export const TASK_STATUS_OPTIONS: SegmentOption<TaskStatus>[] = BOARD_COLUMNS.map((column) => ({
+  value: column.status,
+  label: column.title,
+}));
 
 /**
  * Buckets tasks into the four board columns.

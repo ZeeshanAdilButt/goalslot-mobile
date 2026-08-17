@@ -5,7 +5,7 @@
 
 import type { Task } from "@goalslot/shared";
 
-import { BOARD_COLUMNS, buildBoardColumns } from "./board-columns";
+import { BOARD_COLUMNS, buildBoardColumns, TASK_STATUS_OPTIONS } from "./board-columns";
 
 function task(id: string, status: Task["status"], order?: number): Task {
   return { id, title: id, status, ...(order === undefined ? {} : { order }) };
@@ -52,5 +52,17 @@ describe("buildBoardColumns", () => {
 
   it("carries a tone and a helper line for every column", () => {
     expect(BOARD_COLUMNS.every((column) => !!column.tone && !!column.helper && !!column.title)).toBe(true);
+  });
+});
+
+describe("TASK_STATUS_OPTIONS", () => {
+  it("mirrors BOARD_COLUMNS' statuses, order, and labels", () => {
+    expect(TASK_STATUS_OPTIONS).toEqual(
+      BOARD_COLUMNS.map((column) => ({ value: column.status, label: column.title })),
+    );
+  });
+
+  it("covers all four statuses exactly once", () => {
+    expect(TASK_STATUS_OPTIONS.map((option) => option.value)).toEqual(["BACKLOG", "TODO", "DOING", "DONE"]);
   });
 });

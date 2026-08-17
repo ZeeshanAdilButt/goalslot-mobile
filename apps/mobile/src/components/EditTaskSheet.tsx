@@ -60,8 +60,9 @@ import {
   BottomSheetTextInput,
   type BottomSheetBackdropProps,
 } from "@gorhom/bottom-sheet";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { getLocalDateString, updateTaskSchema, type Task, type UpdateTaskInput } from "@goalslot/shared";
+import { getLocalDateString, updateTaskSchema, type Task, type TaskStatus, type UpdateTaskInput } from "@goalslot/shared";
 
 import { apiClient, notify } from "../lib/api-client";
 import { getErrorMessage } from "../lib/get-error-message";
@@ -70,14 +71,31 @@ import { taskQueries } from "../lib/queries";
 import { queryClient } from "../lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
+import { SegmentedControl } from "@/components/lists";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 import { formatDateKey } from "@/components/ui/calendar-math";
+import { TASK_STATUS_OPTIONS } from "@/components/tasks/board-columns";
 import { toDueDateKey } from "@/components/tasks/due-date";
 
 export interface EditTaskSheetRef {
   present: (task: Task) => void;
   dismiss: () => void;
+}
+
+export interface EditTaskSheetProps {
+  /**
+   * Status changes bypass this sheet's own title/category/dueDate PUT
+   * entirely — the DONE boundary is an event (POST /complete writes a
+   * TimeEntry and rolls hours onto the goal; POST /restore undoes that), not
+   * a plain field, so a raw `apiClient.tasks.update(id, { status })` here
+   * would silently skip those side effects for any transition touching
+   * DONE. `tasks.tsx` already owns that branching as `handleMoveToStatus`
+   * (also used by the board's Move sheet) — this prop is that same function,
+   * passed down so the sheet becomes a third caller of one shared
+   * implementation instead of a second, drifting copy of it.
+   */
+  onChangeStatus: (task: Task, status: TaskStatus) => Promise<void>;
 }
 
 function addDays(date: Date, days: number): Date {
@@ -105,13 +123,32 @@ function isPresetDueDate(date: string | undefined): boolean {
 /** For the Custom chip's label once a non-preset date is selected. */
 const formatCustomDueDate = formatDateKey;
 
-export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditTaskSheet(_props, ref) {
+export const EditTaskSheet = forwardRef<EditTaskSheetRef, EditTaskSheetProps>(function EditTaskSheet(
+  { onChangeStatus },
+  ref,
+) {
   const sheetRef = useRef<BottomSheetModal>(null);
   // See the hook's own header for why this is needed at all — the library
   // doesn't wire Android's hardware back button to the sheet on its own.
   const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
+
+  // See ScheduleBlockSheet.tsx for the full reasoning. Short version: this
+  // sheet is portalled to the app root, outside every screen's
+  // `<SafeAreaView edges={["top"]}>`, and Android is edge-to-edge, so
+  // nothing between this content and the physical edges of the display is
+  // accounted for unless the sheet accounts for it itself. Both edges
+  // matter here, because the Custom due-date calendar (below) can make this
+  // form tall enough that dynamic sizing clamps it to the full container
+  // height, at which point the Cancel/Save row sits under the navigation
+  // bar without this.
+  const insets = useSafeAreaInsets();
+
   const [task, setTask] = useState<Task | null>(null);
 
+  // Mirrors the rest of this sheet's fields: a separate primitive seeded
+  // from `task` in present(), not read from `task.status` directly, so the
+  // control has a defined value even before present() has ever run.
+  const [status, setStatus] = useState<TaskStatus>("BACKLOG");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [dueDate, setDueDate] = useState<string | undefined>(undefined);
@@ -136,6 +173,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
         // Normalising once here fixes all three.
         const key = toDueDateKey(t.dueDate) ?? undefined;
         setTask(t);
+        setStatus(t.status);
         setTitle(t.title);
         setCategory(t.category ?? "");
         setDueDate(key);
@@ -168,6 +206,30 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
   const handleCancel = useCallback(() => {
     sheetRef.current?.dismiss();
   }, []);
+
+  // Fires immediately on tap, not staged behind "Save changes" — same
+  // immediate-action UX as the board's Move sheet (which calls
+  // `handleMoveToStatus` the instant a status is picked). `onChangeStatus`
+  // (== `handleMoveToStatus`) never rejects — it queues offline or shows its
+  // own toast on failure — so there's no success/failure result to await
+  // here either, matching that sheet's existing limitation.
+  //
+  // Both `status` and `task.status` are updated so a second tap in the same
+  // sheet visit passes `onChangeStatus` a `task` whose `.status` reflects
+  // the change just made, not the value the sheet opened with — that's what
+  // `handleMoveToStatus` reads to decide whether it's crossing the DONE
+  // boundary (`wasDone`), so a stale value there could skip the `restore`
+  // call a DONE -> other transition needs.
+  const handleStatusChange = useCallback(
+    (next: TaskStatus) => {
+      if (!task || next === status) return;
+      const current = task;
+      setStatus(next);
+      setTask({ ...task, status: next });
+      void onChangeStatus(current, next);
+    },
+    [onChangeStatus, status, task],
+  );
 
   const handleSubmit = useCallback(async () => {
     if (!task || !canSubmit) return;
@@ -250,6 +312,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
       // content change, and everything sits inside a BottomSheetScrollView
       // regardless, so nothing is ever hard-clipped.
       enableDynamicSizing
+      topInset={insets.top}
       onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       keyboardBehavior="interactive"
@@ -267,7 +330,7 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
     >
       <BottomSheetScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: spacing.xxl + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.title}>Edit task</Text>
@@ -284,6 +347,11 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
             onBlur={() => setFocusedField(null)}
             accessibilityLabel="Task title"
           />
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Status</Text>
+          <SegmentedControl options={TASK_STATUS_OPTIONS} value={status} onChange={handleStatusChange} />
         </View>
 
         <View style={styles.field}>
@@ -412,7 +480,8 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.sm,
-    paddingBottom: spacing.xxl,
+    // paddingBottom is applied at the call site — it has to add the bottom
+    // safe-area inset, which isn't a static value. See ScheduleBlockSheet.tsx.
     gap: spacing.lg,
   },
   title: {

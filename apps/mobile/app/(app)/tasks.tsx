@@ -10,10 +10,11 @@
 //           src/components/tasks/TaskBoard.tsx.
 //
 // COMPLETION IS A TWO-WAY TOGGLE on both views. It used not to be: the
-// checkbox was `disabled` once a task was DONE, the complete-swipe rendered
-// nothing, and EditTaskSheet has no status field — so the only route back from
-// DONE was switching to Board and using the Move sheet. Both directions are
-// real API operations (POST /complete, POST /restore), and a control whose
+// checkbox was `disabled` once a task was DONE and the complete-swipe
+// rendered nothing — so the only route back from DONE was switching to
+// Board and using the Move sheet (EditTaskSheet's own status control came
+// later still). Both directions are real API operations (POST /complete,
+// POST /restore), and a control whose
 // `accessibilityRole` is "checkbox" promises a two-way toggle, so both the
 // checkbox and the left-swipe now flip whichever way the task's status calls
 // for. See `handleToggleComplete` and components/tasks/task-actions.ts.
@@ -785,7 +786,7 @@ export default function TasksScreen() {
       </Pressable>
 
       <QuickAddSheet ref={quickAddSheetRef} kind="task" />
-      <EditTaskSheet ref={editTaskRef} />
+      <EditTaskSheet ref={editTaskRef} onChangeStatus={handleMoveToStatus} />
 
       {/* `enableDynamicSizing` + a backdrop, matching QuickAddSheet /
           EditTaskSheet. The fixed "40%" snap point this used to carry left a
