@@ -524,27 +524,39 @@ export default function NotesScreen() {
    */
   const handleDrop = useCallback(
     (noteId: string, targetIndex: number, dragOffsetX: number) => {
-      const items = visibleItemsRef.current;
-      const allNotes = notesRef.current ?? [];
-      const clamped = Math.max(0, Math.min(targetIndex, items.length - 1));
-      const over = items[clamped];
-      const active = items.find((item) => item.id === noteId);
+      // `endDrag()` in a finally, because on a successful drag this is the
+      // ONLY thing that clears `activeId` (`onFinalize` only calls
+      // `onCancelDrag` when `!success`). A stuck `activeId` keeps
+      // `dragInProgress` true forever, which leaves the list with
+      // `scrollEnabled={false}` AND every row's `Swipeable enabled={false}` —
+      // i.e. "Notes won't scroll and swipe-to-delete does nothing", with no
+      // error, until the screen is unmounted. The projection helpers below
+      // are pure and index-guarded so no throw is known today; the point is
+      // that the failure mode is far too expensive to leave to that.
+      try {
+        const items = visibleItemsRef.current;
+        const allNotes = notesRef.current ?? [];
+        const clamped = Math.max(0, Math.min(targetIndex, items.length - 1));
+        const over = items[clamped];
+        const active = items.find((item) => item.id === noteId);
 
-      if (over && active) {
-        const projected = getProjection(items, noteId, over.id, dragOffsetX, INDENT_W);
-        const payload = buildReorderPayload(allNotes, noteId, projected);
-        if (payload) {
-          const parentTitle = projected.parentId ? nodeMap.get(projected.parentId)?.title : null;
-          void applyReorder(payload, {
-            movedId: noteId,
-            expandParentId: projected.parentId,
-            announceMessage: parentTitle
-              ? `Moved "${active.title}" under "${parentTitle}"`
-              : `Moved "${active.title}" to the top level`,
-          });
+        if (over && active) {
+          const projected = getProjection(items, noteId, over.id, dragOffsetX, INDENT_W);
+          const payload = buildReorderPayload(allNotes, noteId, projected);
+          if (payload) {
+            const parentTitle = projected.parentId ? nodeMap.get(projected.parentId)?.title : null;
+            void applyReorder(payload, {
+              movedId: noteId,
+              expandParentId: projected.parentId,
+              announceMessage: parentTitle
+                ? `Moved "${active.title}" under "${parentTitle}"`
+                : `Moved "${active.title}" to the top level`,
+            });
+          }
         }
+      } finally {
+        endDrag();
       }
-      endDrag();
     },
     [applyReorder, endDrag, nodeMap],
   );
@@ -1338,8 +1350,17 @@ const NoteRow = memo(function NoteRow({
         <Pressable
           style={[styles.swipeAction, styles.subpageAction]}
           onPress={() => {
-            swipeableRef.current?.close();
+            // Action first, then a guarded close(): the tap is FOR the action, so
+            // nothing about dismissing the row may be able to swallow it. Matches
+            // the Notes delete action, which is the one place this ordering was
+            // already fixed.
             onNewSubpage(item);
+            try {
+              swipeableRef.current?.close();
+            } catch {
+              // Cosmetic only — the row stays visually open, but the
+              // action above has already been dispatched.
+            }
           }}
           accessibilityRole="button"
           accessibilityLabel={`New subpage inside "${item.title}"`}
@@ -1350,8 +1371,17 @@ const NoteRow = memo(function NoteRow({
         <Pressable
           style={[styles.swipeAction, styles.favoriteAction]}
           onPress={() => {
-            swipeableRef.current?.close();
+            // Action first, then a guarded close(): the tap is FOR the action, so
+            // nothing about dismissing the row may be able to swallow it. Matches
+            // the Notes delete action, which is the one place this ordering was
+            // already fixed.
             onToggleFavorite(item);
+            try {
+              swipeableRef.current?.close();
+            } catch {
+              // Cosmetic only — the row stays visually open, but the
+              // action above has already been dispatched.
+            }
           }}
           accessibilityRole="button"
           accessibilityLabel={

@@ -88,6 +88,7 @@ import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCaptu
 import { apiClient } from "@/lib/api-client";
 import { coachChatQuery } from "@/lib/coach-chat-query";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
+import { canStartNewChat as canStartNewChatFn } from "@/lib/new-chat-availability";
 import { htmlToPlainText } from "@/lib/note-content";
 import { coachQueries, journalQueries, scheduleQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -465,15 +466,41 @@ export default function CoachScreen() {
   const [newChatError, setNewChatError] = useState<string | null>(null);
 
   /**
+   * One predicate for BOTH the "+" button's visibility and its handler — see
+   * src/lib/new-chat-availability.ts for the four states in which those two
+   * used to disagree, leaving a fully-styled, accessibility-labelled button
+   * that did nothing at all when pressed.
+   *
+   * `persistedMessages`, deliberately NOT `allMessages`: "New chat" archives
+   * the persisted turns and then issues the destructive server-side clear.
+   * Mid-way through the first send the screen shows an optimistic bubble and
+   * a streaming reply, but there is nothing persisted for either half of that
+   * to act on, and the server writes the USER row at the start of the stream
+   * and the ASSISTANT row at the end — so a clear issued between those two
+   * would be raced by the reply landing back in the "new" conversation. For
+   * every message after the first this is true throughout the stream, so the
+   * button does not flicker in normal use; it is only absent before the very
+   * first reply has been persisted, which is exactly when it has no work.
+   */
+  const canStartNewChat = useMemo(
+    () => canStartNewChatFn({ messageCount: persistedMessages.length, isReadOnly }),
+    [persistedMessages.length, isReadOnly],
+  );
+
+  /**
    * "New chat": unavoidably destructive server-side (one conversation per
    * user+scopeKey, no thread ids to spin a fresh one up under — see the
    * module header). The confirm copy says so plainly.
    */
   const handleNewChat = useCallback(() => {
-    if (isReadOnly || persistedMessages.length === 0) return;
+    // Same predicate the header render below uses — see `canStartNewChat`.
+    // Kept as a defensive guard even though the button is now hidden when it
+    // is false, because this also fires from a press that was already in
+    // flight when the last message went away.
+    if (!canStartNewChat) return;
     setNewChatError(null);
     setNewChatConfirmVisible(true);
-  }, [isReadOnly, persistedMessages.length]);
+  }, [canStartNewChat]);
 
   const cancelNewChat = useCallback(() => {
     if (newChatBusy) return;
@@ -492,28 +519,47 @@ export default function CoachScreen() {
     setNewChatBusy(true);
     setNewChatError(null);
     void (async () => {
-      const snapshot: ConversationTurnSnapshot[] = persistedMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-      await archiveConversation(scopeKey, snapshot);
+      // EVERYTHING is inside try/finally, and `setNewChatBusy(false)` lives
+      // in the finally, because a stuck `newChatBusy` is unrecoverable
+      // without force-quitting the app: ConfirmDialog neuters
+      // `onRequestClose` (Android hardware back), drops the backdrop's
+      // `onPress`, and disables Cancel while `busy`, and Button treats
+      // `loading` as disabled — so every single exit from the dialog is
+      // closed. That is a worse failure than whatever caused it.
       try {
-        await apiClient.coach.clearChatHistory(scopeKey);
+        const snapshot: ConversationTurnSnapshot[] = persistedMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        // Matches voice.tsx: never archive an empty conversation. Reachable
+        // if the thread is refetched away (cleared on another device) while
+        // this dialog is open — without the guard that writes a blank entry
+        // into Previous chats.
+        if (snapshot.length > 0) {
+          await archiveConversation(scopeKey, snapshot);
+        }
+        try {
+          await apiClient.coach.clearChatHistory(scopeKey);
+        } catch {
+          // The server still has the old conversation — leave the screen
+          // as-is rather than pretending the clear happened. The snapshot
+          // just taken is harmless: it'll sit in Previous chats as an extra
+          // copy if the user retries and succeeds. Distinct from the outer
+          // catch only in that this one is expected; both leave the dialog
+          // open with an inline error, which is what it is for.
+          setNewChatError("Couldn't start a new chat. Please try again.");
+          return;
+        }
+        setOptimisticUser(null);
+        setError(null);
+        await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+        void markLiveConversationReset(scopeKey);
+        setNewChatConfirmVisible(false);
       } catch {
-        // The server still has the old conversation — leave the screen
-        // as-is rather than pretending the clear happened. The snapshot
-        // just taken is harmless: it'll sit in Previous chats as an extra
-        // copy if the user retries and succeeds.
-        setNewChatBusy(false);
         setNewChatError("Couldn't start a new chat. Please try again.");
-        return;
+      } finally {
+        setNewChatBusy(false);
       }
-      setOptimisticUser(null);
-      setError(null);
-      await queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
-      void markLiveConversationReset(scopeKey);
-      setNewChatBusy(false);
-      setNewChatConfirmVisible(false);
     })();
   }, [newChatBusy, persistedMessages, scopeKey]);
 
@@ -799,10 +845,12 @@ export default function CoachScreen() {
           >
             <Icon name="inbox" size={20} color={colors.foreground} />
           </Pressable>
-          {/* Hidden while viewing a past week read-only — there's nothing on
-              this screen to clear, and "New chat" always targets the
-              CURRENT week's live conversation, not whatever's on screen. */}
-          {!isReadOnly ? (
+          {/* Gated on the SAME `canStartNewChat` the handler checks, never on
+              a looser condition — see src/lib/new-chat-availability.ts. Hidden
+              (voice.tsx's precedent) rather than disabled: a dimmed "+" on an
+              empty conversation invites the same "why doesn't this work"
+              question a dead one does. */}
+          {canStartNewChat ? (
             <Pressable
               onPress={handleNewChat}
               accessibilityRole="button"

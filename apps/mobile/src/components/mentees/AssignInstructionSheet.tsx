@@ -45,7 +45,16 @@ export interface AssignInstructionSheetProps {
 export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstructionSheetProps>(
   function AssignInstructionSheet({ mentee }, ref) {
     const sheetRef = useRef<BottomSheetModal>(null);
-    useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal, []);
+    // No dependency array on purpose. @gorhom/bottom-sheet's own
+    // `useImperativeHandle` inside BottomSheetModal has no deps either, so it
+    // hands back a BRAND NEW handle object on every render, and its `present`
+    // closes over the sheet's internal `mount` state. Freezing this forwarder
+    // with `[]` pinned the first-render handle — a `present` that believes the
+    // sheet is permanently unmounted — and the only reason that has not shown
+    // up as a sheet that refuses to open is that dismissing resets `mount` to
+    // false and accidentally re-syncs the stale closure. Re-reading the child
+    // ref every render costs nothing and does not rely on that accident.
+    useImperativeHandle(ref, () => sheetRef.current as BottomSheetModal);
     const { handleSheetPositionChange } = useBottomSheetBackHandler(sheetRef);
 
     const [title, setTitle] = useState("");

@@ -17,11 +17,36 @@
 // persisted. AsyncStorage is stubbed the same way schedule-reminders-store.test.ts
 // and timer-store.test.ts stub it; `./api-client` is mocked because the module
 // imports it at load time.
+//
+// The last describe covers a separate defect in the same module: the write
+// paths did not honour the header's "none of it throws on a storage failure"
+// promise, which is what let a full disk strand the "New chat" dialog in a
+// state with no working way out. See that block's own comment.
 
-import { backfillFromServer, listConversations, recordConversationActivity } from "./coach-history-store";
+import {
+  archiveConversation,
+  backfillFromServer,
+  listConversations,
+  markLiveConversationReset,
+  recordConversationActivity,
+} from "./coach-history-store";
 import { apiClient } from "./api-client";
 
 const mockStore = new Map<string, string>();
+
+/**
+ * Makes `setItem` reject, the way AsyncStorage really does on Android when its
+ * SQLite file is full ("database or disk is full") or the payload pushes past
+ * `AsyncStorage_db_size_in_MB`. `healthyWrites` lets a test land the first N
+ * writes and fail the rest, which is how the half-written case is reached
+ * (`archiveConversation` writes the payload and then the index).
+ * `mock`-prefixed so jest.mock's hoisting allows the factory to close over it.
+ */
+const mockWriteFailure: { current: Error | null; healthyWrites: number } = {
+  current: null,
+  healthyWrites: 0,
+};
+let mockWriteCount = 0;
 
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
@@ -31,6 +56,10 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
     // separated by awaits.
     getItem: jest.fn(async (key: string) => mockStore.get(key) ?? null),
     setItem: jest.fn(async (key: string, value: string) => {
+      mockWriteCount += 1;
+      if (mockWriteFailure.current && mockWriteCount > mockWriteFailure.healthyWrites) {
+        throw mockWriteFailure.current;
+      }
       mockStore.set(key, value);
     }),
     removeItem: jest.fn(async (key: string) => {
@@ -111,6 +140,9 @@ async function flush() {
 
 beforeEach(() => {
   mockStore.clear();
+  mockWriteFailure.current = null;
+  mockWriteFailure.healthyWrites = 0;
+  mockWriteCount = 0;
   jest.clearAllMocks();
 });
 
@@ -180,6 +212,74 @@ describe("backfillFromServer", () => {
     });
 
     await backfillFromServer(["2026-W30", "2026-W31"]);
+
+    const scopeKeys = (await listConversations()).map((entry) => entry.scopeKey);
+    expect(scopeKeys).toEqual(["2026-W31"]);
+  });
+});
+
+// The module header promises that "none of it throws on a storage failure".
+// That was true of the read paths and false of every write path, and the write
+// half is the one that mattered: `archiveConversation` is awaited by "New
+// chat"'s confirm dialog on both the Coach and Voice screens, INSIDE a
+// `newChatBusy` flag. A rejection escaping it skipped the reset, and a stuck
+// `newChatBusy` makes ConfirmDialog completely unescapable — it neuters
+// `onRequestClose` (Android hardware back), drops the backdrop's `onPress`,
+// disables Cancel, and Button treats `loading` as disabled, so Confirm is
+// dead too. The only way out of the app at that point is force-quitting it.
+//
+// Every assertion below is `.resolves`, never `.rejects`: the contract is that
+// a full disk costs the user a history entry, never the app.
+describe("write paths survive a storage failure", () => {
+  const turns = [
+    { role: "USER" as const, content: "How did this week go?" },
+    { role: "ASSISTANT" as const, content: "You hit four of five sessions." },
+  ];
+
+  it("archiveConversation resolves when the archive payload cannot be written", async () => {
+    mockWriteFailure.current = new Error("database or disk is full");
+
+    await expect(archiveConversation("2026-W33", turns)).resolves.toEqual(expect.any(String));
+  });
+
+  it("archiveConversation resolves when only the index write fails", async () => {
+    // The payload lands, the index update does not — the half-written case,
+    // which the caller must also survive.
+    mockWriteFailure.current = new Error("database or disk is full");
+    mockWriteFailure.healthyWrites = 1;
+
+    await expect(archiveConversation("2026-W33", turns)).resolves.toEqual(expect.any(String));
+  });
+
+  it("recordConversationActivity resolves when the index cannot be written", async () => {
+    mockWriteFailure.current = new Error("database or disk is full");
+
+    await expect(recordConversationActivity("2026-W33", "Message sent")).resolves.toBeUndefined();
+  });
+
+  it("markLiveConversationReset resolves when the index cannot be written", async () => {
+    // Called immediately after the server-side clear succeeds. A rejection
+    // here aborted the rest of confirmNewChat just as effectively.
+    mockWriteFailure.current = new Error("database or disk is full");
+
+    await expect(markLiveConversationReset("2026-W33")).resolves.toBeUndefined();
+  });
+
+  it("still returns a usable id, so a failed archive is invisible to the caller", async () => {
+    mockWriteFailure.current = new Error("database or disk is full");
+
+    const id = await archiveConversation("2026-W33", turns);
+
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+  });
+
+  it("leaves the list readable rather than half-broken after a failed write", async () => {
+    await recordConversationActivity("2026-W31", "Recorded while storage was healthy");
+    mockWriteFailure.current = new Error("database or disk is full");
+
+    await archiveConversation("2026-W33", turns);
+    mockWriteFailure.current = null;
 
     const scopeKeys = (await listConversations()).map((entry) => entry.scopeKey);
     expect(scopeKeys).toEqual(["2026-W31"]);

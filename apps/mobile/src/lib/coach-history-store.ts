@@ -26,9 +26,15 @@
 // to keep in sync here.
 //
 // Every export is a plain async function operating directly on AsyncStorage;
-// none of it throws on a storage failure (a corrupt or missing key reads
+// none of it throws on a storage failure. That means BOTH directions, and the
+// write half is load-bearing, not politeness: a corrupt or missing key reads
 // back as "no data" rather than crashing a screen that just wanted to show a
-// history list).
+// history list, AND a failed write (AsyncStorage is SQLite-backed on Android;
+// `setItem` rejects on a full disk) resolves rather than rejecting. The write
+// paths used to break that promise, and `archiveConversation`'s caller is
+// "New chat"'s confirm dialog — a rejection there escaped the dialog's busy
+// reset and left a modal with no working way out at all. If you add a write
+// here, guard it.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -70,8 +76,24 @@ async function readIndex(): Promise<ConversationIndexEntry[]> {
   }
 }
 
-async function writeIndex(entries: ConversationIndexEntry[]): Promise<void> {
-  await AsyncStorage.setItem(INDEX_KEY, JSON.stringify(entries));
+/**
+ * Returns whether the write landed. Swallowing the failure is what the header
+ * promises and what every caller needs: these are all "make the history list
+ * a bit more accurate" writes on paths whose real job is something else
+ * (sending a message, starting a new chat), and none of them can do anything
+ * useful with a rejection. A rejection propagating out of here is not
+ * theoretical — AsyncStorage is SQLite-backed on Android and `setItem` rejects
+ * on a full disk or past the configured DB size — and `archiveConversation`'s
+ * caller in coach.tsx/voice.tsx is a busy-flagged confirm dialog that is
+ * completely unescapable if its reset is skipped.
+ */
+async function writeIndex(entries: ConversationIndexEntry[]): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(INDEX_KEY, JSON.stringify(entries));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -112,7 +134,17 @@ export async function archiveConversation(
   const { title, preview } = summariseTurnsForArchive(turns);
 
   const payload: ArchivedConversationPayload = { id, scopeKey, turns: [...turns], archivedAt: now };
-  await AsyncStorage.setItem(archiveKey(id), JSON.stringify(payload));
+  try {
+    await AsyncStorage.setItem(archiveKey(id), JSON.stringify(payload));
+  } catch {
+    // Honours the module header's never-throws contract, which this call
+    // silently broke. The caller is "New chat"'s confirm dialog: it awaits
+    // this, and until this file was fixed a rejection here escaped the
+    // dialog's busy-flag reset entirely, leaving a modal whose back button,
+    // backdrop, Cancel and Confirm are ALL inert — force-quit the only way
+    // out. Losing the archive is bad; losing the app is worse.
+    return id;
+  }
 
   const entry: ConversationIndexEntry = {
     id,

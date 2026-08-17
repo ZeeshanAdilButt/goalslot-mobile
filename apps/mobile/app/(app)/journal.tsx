@@ -1265,8 +1265,17 @@ const RecentEntryRow = memo(function RecentEntryRow({
       <Pressable
         style={[styles.swipeAction, styles.deleteAction]}
         onPress={() => {
-          swipeableRef.current?.close();
+          // Action first, then a guarded close(): the tap is FOR the action, so
+          // nothing about dismissing the row may be able to swallow it. Matches
+          // the Notes delete action, which is the one place this ordering was
+          // already fixed.
           onDelete(entry);
+          try {
+            swipeableRef.current?.close();
+          } catch {
+            // Cosmetic only — the row stays visually open, but the
+            // action above has already been dispatched.
+          }
         }}
         accessibilityRole="button"
         accessibilityLabel={`Delete journal entry for ${dateLabel}`}

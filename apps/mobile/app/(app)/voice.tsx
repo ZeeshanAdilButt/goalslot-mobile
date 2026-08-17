@@ -76,6 +76,7 @@ import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCaptu
 import { apiClient } from "@/lib/api-client";
 import { archiveConversation, markLiveConversationReset, recordConversationActivity } from "@/lib/coach-history-store";
 import { hapticWarning } from "@/lib/haptics";
+import { canStartNewChat as canStartNewChatFn } from "@/lib/new-chat-availability";
 import { appendNoteParagraph } from "@/lib/note-content";
 import { outbox, queueOfflineEdit } from "@/lib/offline";
 import { isPlanLimitError } from "@/lib/plan-limit";
@@ -1152,14 +1153,17 @@ export default function VoiceScreen() {
    * under). The confirm copy says so plainly rather than implying anything
    * is being "saved" in a way the assistant can still use.
    */
+  const canStartNewChat = canStartNewChatFn({ messageCount: history.length });
+
   const handleNewChat = useCallback(() => {
-    if (history.length === 0) {
-      // Nothing to lose — skip the confirm and the archive both.
-      return;
-    }
+    // Nothing to lose — skip the confirm and the archive both. Shares the
+    // predicate with the chip's own render gate below (see
+    // src/lib/new-chat-availability.ts); this screen already had them in
+    // agreement, coach.tsx did not, and the helper is what keeps both honest.
+    if (!canStartNewChat) return;
     setNewChatError(null);
     setNewChatConfirmVisible(true);
-  }, [history.length]);
+  }, [canStartNewChat]);
 
   const cancelNewChat = useCallback(() => {
     if (newChatBusy) return;
@@ -1179,29 +1183,39 @@ export default function VoiceScreen() {
     setNewChatBusy(true);
     setNewChatError(null);
     void (async () => {
-      const snapshot = turnsToArchiveSnapshot(history);
-      if (snapshot.length > 0) {
-        await archiveConversation(scopeKey, snapshot);
-      }
+      // try/finally around the whole body, with the busy reset in the
+      // finally — see coach.tsx's identical block. A stuck `newChatBusy`
+      // leaves ConfirmDialog with no way out at all (back, backdrop, Cancel
+      // and Confirm are all inert while busy), so nothing in here may be
+      // able to skip that reset. `archiveConversation` is the specific
+      // reason: it writes to AsyncStorage, which can reject on a full disk.
       try {
-        await apiClient.coach.clearChatHistory(scopeKey);
+        const snapshot = turnsToArchiveSnapshot(history);
+        if (snapshot.length > 0) {
+          await archiveConversation(scopeKey, snapshot);
+        }
+        try {
+          await apiClient.coach.clearChatHistory(scopeKey);
+        } catch {
+          // The server still has the old conversation — leave the screen
+          // exactly as it was rather than pretending the clear happened. The
+          // snapshot just taken is harmless either way: it'll sit in Previous
+          // chats as an extra copy if the user retries and succeeds later.
+          setNewChatError("Couldn't start a new chat. Please try again.");
+          return;
+        }
+        setHistory([]);
+        setDismissedProposals(new Map());
+        setAppliedNotices(new Map());
+        setProposalNotice(null);
+        void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
+        void markLiveConversationReset(scopeKey);
+        setNewChatConfirmVisible(false);
       } catch {
-        // The server still has the old conversation — leave the screen
-        // exactly as it was rather than pretending the clear happened. The
-        // snapshot just taken is harmless either way: it'll sit in Previous
-        // chats as an extra copy if the user retries and succeeds later.
-        setNewChatBusy(false);
         setNewChatError("Couldn't start a new chat. Please try again.");
-        return;
+      } finally {
+        setNewChatBusy(false);
       }
-      setHistory([]);
-      setDismissedProposals(new Map());
-      setAppliedNotices(new Map());
-      setProposalNotice(null);
-      void queryClient.invalidateQueries({ queryKey: coachQueries.coachQueries.chat(scopeKey) });
-      void markLiveConversationReset(scopeKey);
-      setNewChatBusy(false);
-      setNewChatConfirmVisible(false);
     })();
   }, [history, newChatBusy, scopeKey]);
 
@@ -1783,9 +1797,10 @@ export default function VoiceScreen() {
             <Text style={styles.dockChipLabel}>Previous chats</Text>
           </PressableScale>
 
-          {/* Only offered once there's something on screen worth clearing —
-              see handleNewChat, which also no-ops on an empty thread. */}
-          {hasAnswer ? (
+          {/* Only offered once there's something worth clearing, gated on the
+              SAME predicate handleNewChat checks — see
+              src/lib/new-chat-availability.ts. */}
+          {canStartNewChat ? (
             <PressableScale
               onPress={handleNewChat}
               accessibilityRole="button"

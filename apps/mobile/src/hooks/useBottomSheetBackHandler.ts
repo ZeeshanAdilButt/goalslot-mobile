@@ -23,7 +23,7 @@
 // `close()`) so the sheet unmounts the same way tapping the backdrop or
 // Cancel does, and returns `true` to stop the event from propagating any
 // further — the difference between "hide the popup" and "leave the app".
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { BackHandler, type NativeEventSubscription } from "react-native";
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
 
@@ -55,6 +55,23 @@ export function useBottomSheetBackHandler(sheetRef: React.RefObject<BottomSheetM
       }
     },
     [sheetRef],
+  );
+
+  // The ONLY other place the subscription is removed is a later
+  // `onChange(index < 0)`, which never arrives if the host component unmounts
+  // while its sheet is still open. A leaked listener here is not a quiet leak:
+  // it unconditionally returns `true`, so it swallows every subsequent Android
+  // back press APP-WIDE while `sheetRef.current?.dismiss()` optional-chains
+  // away to nothing on the now-null ref — the back button simply stops working
+  // everywhere, with no error and nothing on screen to explain it. Nine
+  // components share this hook, so the cleanup belongs here rather than in
+  // each of them.
+  useEffect(
+    () => () => {
+      backHandlerSubscriptionRef.current?.remove();
+      backHandlerSubscriptionRef.current = null;
+    },
+    [],
   );
 
   return { handleSheetPositionChange };
