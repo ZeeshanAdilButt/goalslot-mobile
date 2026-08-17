@@ -30,6 +30,7 @@ import type { NotificationListResponse } from "@goalslot/shared";
 import { Button, EmptyState, ErrorState, Skeleton } from "@/components";
 import { HAMBURGER_CLEARANCE, ScreenHeader } from "@/components/lists";
 import { NotificationRow, type NotificationRowItem } from "@/components/notifications";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
@@ -38,6 +39,7 @@ import {
   canMarkAllRead,
   markAllNotificationsReadInPages,
   markNotificationReadInPages,
+  removeNotificationFromPages,
 } from "@/lib/notification-read-cache";
 import { runNotificationTap } from "@/lib/notification-tap";
 import { notificationQueries } from "@/lib/queries";
@@ -141,6 +143,55 @@ export default function NotificationsScreen() {
     markAllReadMutation.mutate();
   }, [markAllReadMutation]);
 
+  // The notification the delete confirmation is asking about. Held as the
+  // whole row, not just an id, so the dialog still has a title to render
+  // while it's busy/erroring — same construction as tasks.tsx's `pendingDelete`.
+  const [pendingDelete, setPendingDelete] = useState<NotificationRowItem | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const requestDelete = useCallback((notification: NotificationRowItem) => {
+    setDeleteError(null);
+    setPendingDelete(notification);
+  }, []);
+
+  const cancelDelete = useCallback(() => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  }, [deleteBusy]);
+
+  const confirmDelete = useCallback(async () => {
+    const target = pendingDelete;
+    if (!target || deleteBusy) return;
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+
+    try {
+      await apiClient.notifications.delete(target.id);
+      // Same "patch the cache, don't invalidate" reasoning as markRead above:
+      // an invalidate on this infinite query would re-fetch every page the
+      // user has already scrolled through. Only the deleted row changes.
+      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(
+        notificationQueries.notificationQueries.list(BELL_SCOPE),
+        (existing) => removeNotificationFromPages(existing, target.id).pages,
+      );
+      // Decrement the badge only if the deleted row was actually unread —
+      // deleting an already-read row must not touch the unread count.
+      if (!target.readAt) {
+        queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(BELL_SCOPE), (count) =>
+          typeof count === "number" ? Math.max(0, count - 1) : count,
+        );
+      }
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(getErrorMessage(err, "Couldn't delete that notification. Please try again."));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [deleteBusy, pendingDelete]);
+
   const handlePress = useCallback(
     (item: NotificationRowItem) => {
       if (!item.readAt) {
@@ -188,8 +239,10 @@ export default function NotificationsScreen() {
   }, [notificationsQuery]);
 
   const renderItem = useCallback(
-    ({ item }: { item: NotificationRowItem }) => <NotificationRow notification={item} onPress={handlePress} />,
-    [handlePress],
+    ({ item }: { item: NotificationRowItem }) => (
+      <NotificationRow notification={item} onPress={handlePress} onDelete={requestDelete} />
+    ),
+    [handlePress, requestDelete],
   );
 
   let body: React.ReactNode;
@@ -258,6 +311,19 @@ export default function NotificationsScreen() {
         }
       />
       <View style={styles.body}>{body}</View>
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete this notification?"
+        description={pendingDelete?.title}
+        icon="trash"
+        confirmLabel="Delete"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={cancelDelete}
+      />
     </SafeAreaView>
   );
 }

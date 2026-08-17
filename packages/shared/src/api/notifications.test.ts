@@ -59,4 +59,14 @@ describe('createNotificationsApi', () => {
     // controller and read as if it were doing something.
     expect(mock.history.patch[0]?.data).toBeUndefined()
   })
+
+  it('deletes one notification by id', async () => {
+    mock.onDelete('/notifications/n1').reply(204)
+
+    const notifications = createNotificationsApi(api)
+    await notifications.delete('n1')
+
+    expect(mock.history.delete).toHaveLength(1)
+    expect(mock.history.delete[0]?.url).toBe('/notifications/n1')
+  })
 })

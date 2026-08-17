@@ -60,6 +60,36 @@ export function markNotificationReadInPages(
 }
 
 /**
+ * One row removed — used by the swipe-to-delete action. Filters rather than
+ * maps, unlike everything else in this file: a delete changes which rows
+ * exist, not a field on an existing row.
+ *
+ * Deliberately returns whether the removed row was unread, alongside the new
+ * pages: the caller needs that to decide whether to decrement the separate
+ * `unreadCount` cache entry (see markNotificationReadInPages's onSuccess in
+ * notifications.tsx for why that count lives under its own key rather than
+ * being derived from these pages).
+ */
+export function removeNotificationFromPages(
+  existing: NotificationPages | undefined,
+  id: string,
+): { pages: NotificationPages | undefined; removedWasUnread: boolean } {
+  if (!existing) return { pages: existing, removedWasUnread: false };
+
+  let removedWasUnread = false;
+  const pages = existing.pages.map((page) => {
+    const items = page.items.filter((item) => {
+      if (item.id !== id) return true;
+      removedWasUnread = !item.readAt;
+      return false;
+    });
+    return items.length === page.items.length ? page : { ...page, items };
+  });
+
+  return { pages: { ...existing, pages }, removedWasUnread };
+}
+
+/**
  * Every loaded row read — used by "Mark all read".
  *
  * Only the pages currently in cache are touched, and that is correct rather

@@ -2,6 +2,7 @@ import {
   canMarkAllRead,
   markAllNotificationsReadInPages,
   markNotificationReadInPages,
+  removeNotificationFromPages,
   type NotificationPages,
 } from "./notification-read-cache";
 
@@ -97,6 +98,55 @@ describe("markNotificationReadInPages", () => {
   it("is a no-op for an id that isn't loaded", () => {
     const input = pages([notification("a", null)]);
     expect(markNotificationReadInPages(input, "missing", READ_AT)?.pages[0]?.items[0]?.readAt).toBeNull();
+  });
+});
+
+describe("removeNotificationFromPages", () => {
+  it("removes only the row that was swiped, on whichever page it is on", () => {
+    const { pages: result } = removeNotificationFromPages(
+      pages([notification("a", null)], [notification("b", null), notification("c", null)]),
+      "b",
+    );
+
+    expect(result?.pages[0]?.items.map((item) => item.id)).toEqual(["a"]);
+    expect(result?.pages[1]?.items.map((item) => item.id)).toEqual(["c"]);
+  });
+
+  it("reports the removed row was unread", () => {
+    const { removedWasUnread } = removeNotificationFromPages(pages([notification("a", null)]), "a");
+    expect(removedWasUnread).toBe(true);
+  });
+
+  it("reports the removed row was already read", () => {
+    const { removedWasUnread } = removeNotificationFromPages(pages([notification("a", EARLIER)]), "a");
+    expect(removedWasUnread).toBe(false);
+  });
+
+  it("is a no-op for an id that isn't loaded", () => {
+    const input = pages([notification("a", null)]);
+    const { pages: result, removedWasUnread } = removeNotificationFromPages(input, "missing");
+
+    expect(result?.pages[0]?.items).toHaveLength(1);
+    expect(removedWasUnread).toBe(false);
+  });
+
+  it("is a no-op on an empty cache", () => {
+    const { pages: result, removedWasUnread } = removeNotificationFromPages(undefined, "a");
+    expect(result).toBeUndefined();
+    expect(removedWasUnread).toBe(false);
+  });
+
+  it("carries pageParams through untouched", () => {
+    const input = pages([notification("a", null)], [notification("b", null)]);
+    expect(removeNotificationFromPages(input, "a").pages?.pageParams).toEqual(input.pageParams);
+  });
+
+  it("does not mutate the cached value in place", () => {
+    const input = pages([notification("a", null), notification("b", null)]);
+    const { pages: result } = removeNotificationFromPages(input, "a");
+
+    expect(input.pages[0]?.items).toHaveLength(2);
+    expect(result).not.toBe(input);
   });
 });
 

@@ -9,16 +9,31 @@
 // a dot, a heavier/darker title, and a brand-tinted icon — a single small
 // dot fails at a glance, in sunlight, and for anyone who can't pick out a
 // 10px circle from the surrounding text weight.
+//
+// SWIPE-TO-DELETE uses the legacy `Swipeable` from react-native-gesture-handler
+// (NOT `ReanimatedSwipeable`) — the same choice tasks.tsx/journal.tsx/
+// SessionHistory.tsx make and notes.tsx's own header comment explicitly
+// argues for: legacy `Swipeable` parks its inactive action wrapper off-screen
+// at `translateX: -10000` rather than fading it in place, so it never hits
+// the Android hit-test-through-a-faded-sibling bug that made
+// `ReanimatedSwipeable` + a gesture-handler Pressable necessary on Notes. A
+// flat, non-reorderable list like this one has no reason to pull in
+// ReanimatedSwipeable's extra machinery. Action fires BEFORE the guarded
+// `close()` — same ordering fix already established on every other row here —
+// so nothing about dismissing the row can swallow the tap.
 
-import { memo } from "react";
+import { memo, useCallback, useRef } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Swipeable } from "react-native-gesture-handler";
 
 import type { AppNotification } from "@goalslot/shared";
 
 import { formatConversationTimestamp } from "@/components/messaging";
-import type { IconName } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { IconBadge } from "@/components/ui/IconBadge";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+
+const SWIPE_ACTION_WIDTH = 92;
 
 // Re-exported under a row-specific name rather than importing `AppNotification`
 // at every call site — this is the API-client shape verbatim (including
@@ -29,6 +44,8 @@ export type NotificationRowItem = AppNotification;
 export interface NotificationRowProps {
   notification: NotificationRowItem;
   onPress: (notification: NotificationRowItem) => void;
+  /** Opens the confirmation; the screen owns the dialog and the mutation — same split as tasks.tsx's `onDelete`. */
+  onDelete: (notification: NotificationRowItem) => void;
 }
 
 /**
@@ -53,7 +70,8 @@ function iconForType(type: string): IconName {
   return TYPE_ICON[type] ?? "bell";
 }
 
-function NotificationRowComponent({ notification, onPress }: NotificationRowProps) {
+function NotificationRowComponent({ notification, onPress, onDelete }: NotificationRowProps) {
+  const swipeableRef = useRef<Swipeable>(null);
   const unread = !notification.readAt;
   const time = formatConversationTimestamp(notification.createdAt);
   const preview = (notification.body ?? "").replace(/\s+/g, " ").trim();
@@ -67,35 +85,63 @@ function NotificationRowComponent({ notification, onPress }: NotificationRowProp
     .filter(Boolean)
     .join(" ");
 
+  const renderRightActions = useCallback(
+    () => (
+      <Pressable
+        style={styles.deleteAction}
+        onPress={() => {
+          // Action first, then a guarded close(): the tap is FOR the action,
+          // so nothing about dismissing the row may be able to swallow it —
+          // same ordering as tasks.tsx/journal.tsx's own swipe actions.
+          onDelete(notification);
+          try {
+            swipeableRef.current?.close();
+          } catch {
+            // Cosmetic only — the row stays visually open, but the
+            // action above has already been dispatched.
+          }
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete "${notification.title}"`}
+      >
+        <Icon name="trash" size={18} color={colors.destructiveForeground} />
+        <Text style={styles.deleteActionText}>Delete</Text>
+      </Pressable>
+    ),
+    [notification, onDelete],
+  );
+
   return (
-    <Pressable
-      onPress={() => onPress(notification)}
-      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-    >
-      <IconBadge name={iconForType(notification.type)} tone={unread ? "brand" : "neutral"} size="md" />
+    <Swipeable ref={swipeableRef} renderRightActions={renderRightActions}>
+      <Pressable
+        onPress={() => onPress(notification)}
+        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+      >
+        <IconBadge name={iconForType(notification.type)} tone={unread ? "brand" : "neutral"} size="md" />
 
-      <View style={styles.body}>
-        <View style={styles.topLine}>
-          <Text style={[styles.title, unread && styles.titleUnread]} numberOfLines={1}>
-            {notification.title}
-          </Text>
-          {time ? <Text style={[styles.time, unread && styles.timeUnread]}>{time}</Text> : null}
-        </View>
-
-        {preview ? (
-          <View style={styles.bottomLine}>
-            <Text style={[styles.preview, unread && styles.previewUnread]} numberOfLines={2}>
-              {preview}
+        <View style={styles.body}>
+          <View style={styles.topLine}>
+            <Text style={[styles.title, unread && styles.titleUnread]} numberOfLines={1}>
+              {notification.title}
             </Text>
-            {unread ? <View style={styles.unreadDot} /> : null}
+            {time ? <Text style={[styles.time, unread && styles.timeUnread]}>{time}</Text> : null}
           </View>
-        ) : unread ? (
-          <View style={styles.unreadDot} />
-        ) : null}
-      </View>
-    </Pressable>
+
+          {preview ? (
+            <View style={styles.bottomLine}>
+              <Text style={[styles.preview, unread && styles.previewUnread]} numberOfLines={2}>
+                {preview}
+              </Text>
+              {unread ? <View style={styles.unreadDot} /> : null}
+            </View>
+          ) : unread ? (
+            <View style={styles.unreadDot} />
+          ) : null}
+        </View>
+      </Pressable>
+    </Swipeable>
   );
 }
 
@@ -161,5 +207,20 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
     backgroundColor: colors.primaryPressed,
     marginTop: spacing.xxs,
+  },
+  // --- Swipe action ---
+  // No rowWrap/marginBottom here unlike tasks.tsx: this list uses
+  // ItemSeparatorComponent (a hairline) between rows, not per-card gaps, so
+  // the action panel fills the row's full bleed rather than an inset card.
+  deleteAction: {
+    width: SWIPE_ACTION_WIDTH,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    backgroundColor: colors.destructive,
+  },
+  deleteActionText: {
+    ...typography.label,
+    color: colors.destructiveForeground,
   },
 });

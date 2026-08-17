@@ -1839,6 +1839,7 @@ declare function createNotificationsApi(api: AxiosInstance): {
      * clear message notifications the user never saw.
      */
     markAllRead: (scope: NotificationScope) => Promise<axios.AxiosResponse<MarkAllNotificationsReadResponse, any, {}, any>>;
+    delete: (id: string) => Promise<axios.AxiosResponse<void, any, {}, any>>;
 };
 type NotificationsApi = ReturnType<typeof createNotificationsApi>;
 
@@ -2250,6 +2251,7 @@ declare function createApiClient(config: ApiClientConfig): {
         list: (params?: NotificationListParams) => Promise<axios.AxiosResponse<NotificationListResponse, any, {}, any>>;
         markRead: (id: string) => Promise<axios.AxiosResponse<AppNotification, any, {}, any>>;
         markAllRead: (scope: NotificationScope) => Promise<axios.AxiosResponse<MarkAllNotificationsReadResponse, any, {}, any>>;
+        delete: (id: string) => Promise<axios.AxiosResponse<void, any, {}, any>>;
     };
     coachSettings: {
         getByokKey: () => Promise<axios.AxiosResponse<CoachByokState, any, {}, any>>;

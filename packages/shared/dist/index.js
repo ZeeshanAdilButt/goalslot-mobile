@@ -1357,7 +1357,11 @@ function createNotificationsApi(api) {
      */
     markAllRead: (scope) => api.patch("/notifications/read-all", void 0, {
       params: { scope }
-    })
+    }),
+    // 404 if the id doesn't exist, 403 if it isn't the caller's own — same
+    // ownership check as markRead, mirrored server-side
+    // (notifications.service.ts's `delete`). 204/no body on success.
+    delete: (id) => api.delete(`/notifications/${id}`)
   };
 }
 

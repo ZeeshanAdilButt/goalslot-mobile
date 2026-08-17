@@ -108,6 +108,10 @@ export function createNotificationsApi(api: AxiosInstance) {
       api.patch<MarkAllNotificationsReadResponse>('/notifications/read-all', undefined, {
         params: { scope },
       }),
+    // 404 if the id doesn't exist, 403 if it isn't the caller's own — same
+    // ownership check as markRead, mirrored server-side
+    // (notifications.service.ts's `delete`). 204/no body on success.
+    delete: (id: string) => api.delete<void>(`/notifications/${id}`),
   }
 }
 
