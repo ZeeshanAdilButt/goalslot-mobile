@@ -63,6 +63,8 @@ import { checkForUpdateAndReload } from "@/lib/updates";
 import { useCapabilities } from "@/providers/capabilities-provider";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 // The three screens that were cut from the tab bar (see app/(app)/_layout.tsx)
 // but still need a way in. The navigation drawer is the primary route to them
@@ -180,6 +182,7 @@ export default function SettingsScreen() {
   }, []);
 
   useScreenView("settings");
+  useHiddenTabBackHandler(hiddenTabBackDestination("settings"));
 
   // Re-read on every focus rather than once on mount. Granting notifications
   // means leaving for the OS settings app and coming back, and the row has to

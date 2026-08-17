@@ -26,6 +26,7 @@ import { hasResponse, type InstructionAssignedToMe } from "@goalslot/shared";
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { StatusPill } from "@/components/lists";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { Button } from "@/components/ui/Button";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
@@ -41,7 +42,7 @@ function describeCompleteError(err: unknown): string {
 export default function InstructionsScreen() {
   useScreenView("instructions");
   // Today is the only entry point into this hidden tab.
-  useHiddenTabBackHandler("/");
+  useHiddenTabBackHandler(hiddenTabBackDestination("instructions"));
 
   const [completingId, setCompletingId] = useState<string | null>(null);
 

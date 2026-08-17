@@ -48,6 +48,8 @@ import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { messagingQueries } from "@/lib/queries";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, spacing } from "@/theme/tokens";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 /** Shown when a conversation's counterpart isn't in the sharing directory any more. */
 const UNKNOWN_PERSON = "Someone you shared with";
@@ -79,6 +81,7 @@ export default function MessagesScreen() {
   const refetchConversations = conversationsQuery.refetch;
 
   useScreenView("messages");
+  useHiddenTabBackHandler(hiddenTabBackDestination("messages"));
 
   useFocusEffect(
     useCallback(() => {

@@ -17,6 +17,7 @@ import { calculateProgressPercent, formatDuration, getLocalDateString } from "@g
 
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import {
   buildCategoryBreakdown,
   buildDayBuckets,
@@ -121,7 +122,7 @@ export default function ReportsScreen() {
   // global search, which this can't distinguish from here — accepted
   // limitation of a single-destination fix rather than a full
   // navigation-stack rework.
-  useHiddenTabBackHandler("/settings");
+  useHiddenTabBackHandler(hiddenTabBackDestination("reports"));
 
   const ranges = useMemo(() => getPeriodRanges(period, periodAnchor), [period, periodAnchor]);
 

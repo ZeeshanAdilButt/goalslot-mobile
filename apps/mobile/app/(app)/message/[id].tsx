@@ -77,6 +77,8 @@ import { messagingQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 const UNKNOWN_PERSON = "Someone you shared with";
 /** Start paging older history once the user is within this of the top. */
@@ -188,6 +190,18 @@ export default function MessageThreadScreen() {
   const refetchMessages = messagesQuery.refetch;
 
   useScreenView("message-thread");
+
+  // The in-header chevron below already replaces to /messages, but Android's
+  // hardware and gesture back bypass it entirely and fall through to the Tabs
+  // navigator, whose default backBehavior is `firstRoute` — the Today
+  // dashboard. That is the reported "going back from someone's message takes
+  // me to dashboard instead of message listing".
+  //
+  // /messages is right for all five ways in here: the conversation list, a
+  // mentee's profile, the Sharing list, the notification centre, and a remote
+  // push deep link into a cold app. Only the last has no history at all, and
+  // the list is the only sensible "up" from it too.
+  useHiddenTabBackHandler(hiddenTabBackDestination("message/[id]"));
 
   useFocusEffect(
     useCallback(() => {

@@ -64,6 +64,8 @@ import { categoryQueries, goalQueries, labelQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 /** Lower-case name of each tab, for the summary strip and empty copy. */
 const STATUS_WORD: Record<GoalStatus, string> = {
@@ -121,6 +123,7 @@ export default function GoalsScreen() {
   const [todayKey, setTodayKey] = useState(() => getLocalDateString());
 
   useScreenView("goals");
+  useHiddenTabBackHandler(hiddenTabBackDestination("goals"));
 
   useFocusEffect(
     useCallback(() => {

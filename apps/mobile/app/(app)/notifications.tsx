@@ -38,11 +38,14 @@ import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { checkForUpdateAndReload } from "@/lib/updates";
 import { colors, spacing } from "@/theme/tokens";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 
 export default function NotificationsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   useScreenView("notifications");
+  useHiddenTabBackHandler(hiddenTabBackDestination("notifications"));
 
   const notificationsQuery = useInfiniteQuery({
     ...notificationQueries.infiniteList(),

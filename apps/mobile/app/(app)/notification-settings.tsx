@@ -39,13 +39,15 @@
 // on it — same pattern the picker underneath it already uses for the timer.
 
 import { useCallback, useEffect, useState } from "react";
-import { BackHandler, Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 
 import type { NotificationPermissionStatus } from "@goalslot/shared";
 
 import { ScreenHeader } from "@/components/lists";
+import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { JournalReminderTimePicker } from "@/components/journal/JournalReminderTimePicker";
 import { SettingsRow, SettingsSection } from "@/components/settings";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
@@ -97,15 +99,7 @@ export default function NotificationSettingsScreen() {
   // undocumented entry exists from Schedule's reminder-permission prompt,
   // which this can't distinguish from here — accepted limitation of a
   // single-destination fix rather than a full navigation-stack rework.
-  useFocusEffect(
-    useCallback(() => {
-      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-        router.replace("/settings");
-        return true;
-      });
-      return () => subscription.remove();
-    }, []),
-  );
+  useHiddenTabBackHandler(hiddenTabBackDestination("notification-settings"));
 
   // Remote push needs a device token, and a token can only be minted once
   // permission exists — so the moment permission becomes "granted", register

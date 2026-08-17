@@ -61,6 +61,7 @@ import {
   removeJournalEntry,
 } from "@/components/journal/recent-entries";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -259,7 +260,7 @@ export default function JournalScreen() {
   // than Settings (also a valid entry point via its More links) because
   // Today is where journal is actually surfaced now — both the "Jump back
   // in" grid and the prominent JournalPromptCard just under the hero.
-  useHiddenTabBackHandler("/");
+  useHiddenTabBackHandler(hiddenTabBackDestination("journal"));
 
   // --- "Talk about my day" voice capture ------------------------------
   // Deep link contract: `/journal?voice=1` (goalslot://journal?voice=1),

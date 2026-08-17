@@ -28,6 +28,7 @@ import { calculateProgressPercent, formatDuration } from "@goalslot/shared";
 import { EmptyState, QueryErrorState, Skeleton } from "@/components";
 import { StatusPill } from "@/components/lists";
 import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import {
   buildCategoryBreakdown,
   buildDayGoalBreakdown,
@@ -97,7 +98,7 @@ export default function MenteeReportScreen() {
   // Today dashboard instead. Same fix note/[id].tsx and
   // notification-settings.tsx already use for the identical problem. Mentees
   // is the only way to reach this screen.
-  useHiddenTabBackHandler("/mentees");
+  useHiddenTabBackHandler(hiddenTabBackDestination("mentee/[id]"));
 
   const ranges = useMemo(() => getPeriodRanges(period, periodAnchor), [period, periodAnchor]);
 

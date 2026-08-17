@@ -69,6 +69,7 @@ import {
 
 import { QueryErrorState, SkeletonListItem } from "@/components";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -133,7 +134,7 @@ export default function CategoriesScreen() {
   // reachable from the drawer and global search, which this can't distinguish
   // from here) — accepted limitation of a single-destination fix rather than
   // a full navigation-stack rework.
-  useHiddenTabBackHandler("/settings");
+  useHiddenTabBackHandler(hiddenTabBackDestination("categories"));
 
   return (
     // edges={["top"]} — this route renders with `headerShown: false` like

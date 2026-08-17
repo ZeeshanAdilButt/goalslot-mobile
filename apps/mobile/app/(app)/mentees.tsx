@@ -26,6 +26,7 @@ import { ListCard, ScreenHeader } from "@/components/lists";
 import { Avatar } from "@/components/messaging";
 import { AssignInstructionSheet } from "@/components/mentees/AssignInstructionSheet";
 import { HiddenTabBackButton, useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
+import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { Button } from "@/components/ui/Button";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
@@ -58,7 +59,7 @@ export default function MenteesScreen() {
   // already use for the identical problem. The drawer is the only way to
   // reach this screen, so Today (its own default landing tab) is the
   // destination rather than picking one drawer item over another.
-  useHiddenTabBackHandler("/");
+  useHiddenTabBackHandler(hiddenTabBackDestination("mentees"));
 
   const mentees = useMemo(() => menteesQuery.data ?? [], [menteesQuery.data]);
 
