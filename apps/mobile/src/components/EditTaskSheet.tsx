@@ -73,6 +73,7 @@ import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Icon } from "@/components/ui/Icon";
 import { formatDateKey } from "@/components/ui/calendar-math";
+import { toDueDateKey } from "@/components/tasks/due-date";
 
 export interface EditTaskSheetRef {
   present: (task: Task) => void;
@@ -127,13 +128,20 @@ export const EditTaskSheet = forwardRef<EditTaskSheetRef, object>(function EditT
     ref,
     () => ({
       present: (t: Task) => {
+        // `t.dueDate` is a full ISO instant off the API, not the
+        // "YYYY-MM-DD" key every control below expects (see
+        // components/tasks/due-date.ts). Seeding the raw value meant no
+        // preset ever matched, the Custom chip's label rendered
+        // "Invalid Date", and DatePicker highlighted no day at all.
+        // Normalising once here fixes all three.
+        const key = toDueDateKey(t.dueDate) ?? undefined;
         setTask(t);
         setTitle(t.title);
         setCategory(t.category ?? "");
-        setDueDate(t.dueDate);
+        setDueDate(key);
         setEstimatedMinutes(t.estimatedMinutes ? String(t.estimatedMinutes) : "");
         setError(null);
-        setCustomDatePickerOpen(t.dueDate !== undefined && !isPresetDueDate(t.dueDate));
+        setCustomDatePickerOpen(key !== undefined && !isPresetDueDate(key));
         sheetRef.current?.present();
       },
       dismiss: () => sheetRef.current?.dismiss(),

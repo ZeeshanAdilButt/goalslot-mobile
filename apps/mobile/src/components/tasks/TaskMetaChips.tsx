@@ -17,11 +17,15 @@ import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { formatDuration, formatTime12h, type Task } from "@goalslot/shared";
 
 import { MetaChip } from "@/components/lists";
-import { formatDateKey } from "@/components/ui/calendar-math";
 import { spacing } from "@/theme/tokens";
+import { formatDueDate } from "./due-date";
 
-/** Due dates as "Mar 4" — web renders `formatDate(task.dueDate, 'MMM d')`. */
-export const formatDueDate = formatDateKey;
+// `formatDueDate` used to be a bare alias for `formatDateKey` here, which
+// assumed `task.dueDate` was a "YYYY-MM-DD" key. It isn't — the API sends a
+// full ISO instant, and that assumption rendered "DUE INVALID DATE". The real
+// implementation now lives in ./due-date.ts (see its header); it's re-exported
+// so this module's public surface is unchanged for existing importers.
+export { formatDueDate, toDueDateKey } from "./due-date";
 
 export interface TaskMetaChipsProps {
   task: Task;
@@ -45,9 +49,12 @@ export function TaskMetaChips({ task, compact = false, style }: TaskMetaChipsPro
   const goalChip = task.goal ? (
     <MetaChip icon="goals" label={task.goal.title} accentColor={task.goal.color} />
   ) : null;
-  const dueChip = task.dueDate ? (
-    <MetaChip icon="schedule" tone="warning" label={`Due ${formatDueDate(task.dueDate)}`} />
-  ) : null;
+  // Gate on the FORMATTED label, not on `task.dueDate` being truthy: a value
+  // that can't be read as a calendar day has to drop the chip entirely, or
+  // it renders as a rendering failure. That truthiness check is exactly why
+  // the broken chip appeared at all.
+  const dueLabel = formatDueDate(task.dueDate);
+  const dueChip = dueLabel ? <MetaChip icon="schedule" tone="warning" label={`Due ${dueLabel}`} /> : null;
 
   if (compact) {
     if (!pendingChip && !goalChip && !dueChip) return null;
@@ -61,7 +68,7 @@ export function TaskMetaChips({ task, compact = false, style }: TaskMetaChipsPro
   }
 
   const hasMeta =
-    !!task.category || !!task.goal || !!task.scheduleBlock || !!task.dueDate || !!task.estimatedMinutes || !!task.pendingSync;
+    !!task.category || !!task.goal || !!task.scheduleBlock || !!dueLabel || !!task.estimatedMinutes || !!task.pendingSync;
   if (!hasMeta) return null;
 
   return (

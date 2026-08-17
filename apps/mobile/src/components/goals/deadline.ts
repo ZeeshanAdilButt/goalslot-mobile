@@ -29,9 +29,18 @@
 // src/components/ui/calendar-math.ts is: jest can then exercise it without
 // dragging in lucide-react-native's untransformed ESM build.
 
-import { daysInMonth, parseDateKey } from "@/components/ui/calendar-math";
+import { parseDateKey } from "@/components/ui/calendar-math";
 
-const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+/**
+ * The normaliser described above. It used to be defined here, but Task due
+ * dates arrive in exactly the same shape and shipped without it — rendering
+ * the same literal "Invalid Date" in the task chip row. Rather than clone it,
+ * it now lives next to the parser it guards (`ui/calendar-math.ts`, which is
+ * equally free of react-native imports) and both features share one
+ * implementation. `toDeadlineKey` stays as the Goals-facing name so this
+ * module's callers and tests are unaffected.
+ */
+export { toDateKeyFromApi as toDeadlineKey } from "@/components/ui/calendar-math";
 
 /** A deadline within this many days reads as urgent. */
 const SOON_DAYS = 7;
@@ -39,28 +48,6 @@ const SOON_DAYS = 7;
 const MS_PER_DAY = 86_400_000;
 
 export type DeadlineUrgency = "overdue" | "today" | "soon" | "later";
-
-/**
- * Normalises whatever the API hands back — a full ISO instant, or a bare
- * calendar day if that ever changes — into the app's canonical
- * "YYYY-MM-DD" key. Returns null for missing or unparseable values so a
- * malformed record degrades to "no deadline" instead of rendering
- * "Invalid Date".
- */
-export function toDeadlineKey(deadline: string | null | undefined): string | null {
-  if (!deadline) return null;
-  const key = deadline.trim().slice(0, 10);
-  const match = DATE_KEY_PATTERN.exec(key);
-  if (!match) return null;
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (month < 1 || month > 12) return null;
-  if (day < 1 || day > daysInMonth(year, month - 1)) return null;
-
-  return key;
-}
 
 /** Local midnight for a date key — never `new Date(key)`, see the header. */
 function toLocalDate(key: string): Date {

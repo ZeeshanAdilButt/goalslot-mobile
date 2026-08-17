@@ -9,8 +9,19 @@
  *  scheduling/time.ts) already produces everywhere else a local calendar day
  *  is stored (journal entries, goal deadlines, task due dates). */
 export function parseDateKey(key: string): { year: number; month: number; day: number } {
+  // `?? 1` was the original guard here and it does not hold: `??` only catches
+  // null/undefined, so a non-numeric segment (`Number("20T00:00:00.000Z")`)
+  // passes straight through as NaN, `new Date(y, m, NaN)` is an Invalid Date,
+  // and `toLocaleDateString` then renders the literal text "Invalid Date" to
+  // the user. `Number.isFinite` is the check that actually covers it.
+  // Callers holding a value that might not be a bare key should normalise it
+  // with `toDateKeyFromApi` first rather than rely on these fallbacks.
   const [y, m, d] = key.split("-").map(Number);
-  return { year: y ?? 1970, month: (m ?? 1) - 1, day: d ?? 1 };
+  return {
+    year: Number.isFinite(y) ? y : 1970,
+    month: (Number.isFinite(m) ? m : 1) - 1,
+    day: Number.isFinite(d) ? d : 1,
+  };
 }
 
 /** "YYYY-MM-DD" -> "Aug 30". Goes through `parseDateKey` + a local
@@ -34,4 +45,42 @@ export function daysInMonth(year: number, month: number): number {
 
 export function firstWeekdayOfMonth(year: number, month: number): number {
   return new Date(year, month, 1).getDay();
+}
+
+const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Normalises whatever the API hands back for a calendar-day field into the
+ * app's canonical "YYYY-MM-DD" key.
+ *
+ * WHY this is needed at all: every calendar-day column in the API is a Prisma
+ * `DateTime?` built with `new Date(dto.x)`, and nothing reshapes it on the way
+ * out (no serializer interceptor), so what actually arrives over the wire is a
+ * full ISO-8601 instant — "2026-08-20T00:00:00.000Z" — even though the shared
+ * types call it a `string`. Feeding that to `parseDateKey`/`formatDateKey`
+ * yields NaN parts and prints "Invalid Date". Slicing the calendar day off the
+ * front is correct because the instant the server holds was itself built from
+ * a bare calendar date (UTC midnight): the day is in the first ten characters
+ * and nowhere else.
+ *
+ * Returns null for missing or unparseable values, so a malformed record
+ * degrades to "no date" instead of rendering a broken chip.
+ *
+ * Lives here rather than in a feature folder because both `goals/deadline.ts`
+ * (Goal.deadline) and `tasks/due-date.ts` (Task.dueDate) need the identical
+ * guard — Goals got it first, Tasks shipped without it and regressed.
+ */
+export function toDateKeyFromApi(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const key = value.trim().slice(0, 10);
+  const match = DATE_KEY_PATTERN.exec(key);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month - 1)) return null;
+
+  return key;
 }
