@@ -15,6 +15,7 @@ import { SearchOverlay } from "@/components/search/SearchOverlay";
 import type { SearchHref } from "@/components/search/search-index";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
 import { notificationQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
 import { useTimerStore } from "@/lib/timer-store";
 import { syncWidgets } from "@/widgets/widget-sync";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -156,12 +157,24 @@ export default function AppLayout() {
   useMessagingLiveUpdates(status === "authenticated");
 
   // Bell badge — same "authenticated-only, but the hook itself still has to
-  // run every render" rule as the socket above. Polled via react-query's
-  // normal stale-time/refetch-on-mount/reconnect behavior rather than a
-  // dedicated socket event: unlike messaging there's no always-on
-  // notification-center connection to piggyback on, and a notification
-  // center is not a chat window — a few seconds' staleness on the badge
-  // count is an acceptable trade against another persistent connection.
+  // run every render" rule as the socket above.
+  //
+  // Refreshed on app foreground (see the AppState effect below), NOT on a
+  // timer. An earlier version of this comment claimed react-query's own
+  // "stale-time/refetch-on-mount/reconnect behavior" kept the count current;
+  // that was wrong, and the badge was in practice frozen for an entire app
+  // session. This layout mounts exactly once per launch, so refetch-on-mount
+  // fires exactly once, at cold start — a message arriving while the app was
+  // open never moved the number until the app was killed and relaunched.
+  //
+  // A `refetchInterval` would fix it but at the cost of a permanent
+  // background request loop for every install, which is precisely the class
+  // of cost commit 647d860 just removed from this app in two other places.
+  // Foregrounding is the event that actually matters here (that's when a
+  // human can see the badge), it costs nothing while the app is idle or
+  // backgrounded, and it's the same trigger the widget sync below already
+  // uses. The notification center screen also writes its own fresher count
+  // back onto this key when it loads — see notifications.tsx.
   const unreadNotifications = useUnreadNotificationsCount(status === "authenticated");
 
   // Hooks above this point must all run unconditionally on every render —
@@ -273,6 +286,13 @@ export default function AppLayout() {
       (nextState) => {
         if (nextState === "active") {
           void syncWidgets();
+          // Bell badge, same foreground trigger — see the
+          // `useUnreadNotificationsCount` comment above for why this is an
+          // event rather than a poll. Invalidate (not refetch) so it's a
+          // no-op when nothing is observing the key.
+          void queryClient.invalidateQueries({
+            queryKey: notificationQueries.notificationQueries.unreadCount(),
+          });
         }
       },
     );

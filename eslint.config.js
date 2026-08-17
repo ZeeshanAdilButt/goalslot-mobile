@@ -55,5 +55,22 @@ export default tseslint.config(
       // here isn't a stylistic choice, it's the only thing that works.
       "@typescript-eslint/no-require-imports": "off",
     },
+  },
+  {
+    // Repo tooling run directly by Node as ESM (e.g.
+    // apps/mobile/scripts/verify-build-freshness.mjs, the release gate that
+    // checks a built APK actually contains current JS and that the OTA
+    // channel it points at resolves). These never enter the React Native
+    // bundle, so they get Node's globals rather than the RN environment the
+    // rest of the config assumes.
+    files: ["**/scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+        URL: "readonly",
+      },
+    },
   }
 );

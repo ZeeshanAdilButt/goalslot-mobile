@@ -10,7 +10,8 @@
     "build": "expo export --platform android && expo export --platform ios",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "jest"
+    "test": "jest",
+    "verify:build-freshness": "node scripts/verify-build-freshness.mjs"
   },
   "dependencies": {
     "@10play/tentap-editor": "^1.0.1",

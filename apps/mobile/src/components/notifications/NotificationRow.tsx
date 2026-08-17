@@ -44,6 +44,9 @@ const TYPE_ICON: Record<string, IconName> = {
   SHARED_REPORT_UNVIEWED: "reports",
   INSTRUCTION_ASSIGNED: "instructions",
   FEEDBACK_REPLY: "coach",
+  // "A new version is available" — the same glyph the Settings "Live update"
+  // row uses for the manual check, so the two read as the same concept.
+  APP_RELEASE: "refresh",
 };
 
 function iconForType(type: string): IconName {

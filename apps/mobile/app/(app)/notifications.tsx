@@ -12,14 +12,15 @@
 // the first one.
 //
 // Tapping a row marks it read (PATCH /notifications/:id/read, only fired if
-// it was actually unread) and navigates via `resolveNotificationRoute` from
-// src/lib/deep-links.ts — the SAME resolver app/_layout.tsx's push-tap
-// listener uses, not a local copy. `null` (a payload the resolver doesn't
-// recognise) means "no route" here exactly like it does there: the
-// notification is still marked read, the list just doesn't navigate anywhere.
+// it was actually unread) and then runs the tap through `runNotificationTap`
+// (src/lib/notification-tap.ts) — the SAME dispatcher app/_layout.tsx's
+// push-tap listener uses, so tapping a notification in the tray and tapping
+// its row in here always do the same thing. An unrecognised payload means
+// "no action" (the notification is still marked read, nothing else happens),
+// which is how an older build tolerates a type a newer server added.
 
-import { useCallback, useMemo, useState } from "react";
-import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FlatList, Linking, RefreshControl, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, type Href } from "expo-router";
 import { useInfiniteQuery, useMutation, type InfiniteData } from "@tanstack/react-query";
@@ -31,10 +32,11 @@ import { ScreenHeader } from "@/components/lists";
 import { NotificationRow, type NotificationRowItem } from "@/components/notifications";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
-import { resolveNotificationRoute } from "@/lib/deep-links";
 import { getErrorMessage } from "@/lib/get-error-message";
+import { runNotificationTap } from "@/lib/notification-tap";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { checkForUpdateAndReload } from "@/lib/updates";
 import { colors, spacing } from "@/theme/tokens";
 
 export default function NotificationsScreen() {
@@ -55,6 +57,22 @@ export default function NotificationsScreen() {
     () => notificationsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [notificationsQuery.data],
   );
+
+  // Bridges this screen's read back onto the bell badge. Every list response
+  // already carries `unreadCount`, but it lands under the infinite list's key
+  // (`['notifications','list']`) while the badge in the (app) layout reads a
+  // separate `['notifications','unread-count']` key — deliberately separate,
+  // because the two cache different shapes (see the key factory's comment in
+  // packages/shared/src/queries/notifications.ts). Nothing connected them, so
+  // opening the inbox and reading everything left the badge showing whatever
+  // number it had fetched at cold start. The freshest count wins: this screen
+  // just refetched, so its number is newer than the badge's.
+  const freshUnreadCount = notificationsQuery.data?.pages[0]?.unreadCount;
+  useEffect(() => {
+    if (typeof freshUnreadCount === "number") {
+      queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(), freshUnreadCount);
+    }
+  }, [freshUnreadCount]);
 
   const markReadMutation = useMutation({
     mutationFn: (id: string) => apiClient.notifications.markRead(id),
@@ -88,10 +106,28 @@ export default function NotificationsScreen() {
       if (!item.readAt) {
         markReadMutation.mutate(item.id);
       }
-      const route = resolveNotificationRoute(item.data);
-      if (route) {
-        router.push(route as Href);
-      }
+      // Routed through the SAME dispatcher app/_layout.tsx's push-tap
+      // listener uses (src/lib/notification-tap.ts), so an in-app row tap and
+      // a tray tap on the same notification always do the same thing. This
+      // used to call `resolveNotificationRoute`, which is navigation-only and
+      // returns `null` for release notifications — so "a new app update is
+      // available" rows marked themselves read and did nothing.
+      runNotificationTap(item.data, {
+        // Built at runtime from a notification payload, so never one of
+        // expo-router's statically known literal paths — same `as Href`
+        // escape hatch the rest of the app uses for dynamic routes.
+        navigate: (href) => router.push(href as Href),
+        openUrl: (url) => {
+          void Linking.openURL(url).catch((err: unknown) => {
+            notify(getErrorMessage(err, "Couldn't open that link."), "error");
+          });
+        },
+        checkForUpdate: () => {
+          void checkForUpdateAndReload(() => notify("Downloading the latest update…", "success")).catch(
+            (err: unknown) => notify(getErrorMessage(err, "Couldn't check for an update."), "error"),
+          );
+        },
+      });
     },
     [markReadMutation],
   );

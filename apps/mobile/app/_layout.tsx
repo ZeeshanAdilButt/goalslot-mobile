@@ -13,8 +13,8 @@ import { ToastHost } from "@/components/ToastHost";
 import { asyncStoragePersister, queryClient } from "@/lib/query-client";
 import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
-import { resolveNotificationAction } from "@/lib/deep-links";
 import { getErrorMessage } from "@/lib/get-error-message";
+import { runNotificationTap } from "@/lib/notification-tap";
 import { addPushTokenChangeListener } from "@/lib/notifications";
 import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
 import { showToast } from "@/lib/toast-store";
@@ -87,9 +87,10 @@ function AppGate() {
   // NotificationCapability implementation is scheduling notifications
   // (noop or real); it only depends on expo-notifications' response
   // shape. See src/lib/deep-links.ts for the expected `data` payload
-  // shape and the single `resolveNotificationAction` every notification
-  // type routes through (in-app navigation is only one of its outcomes —
-  // see the "open-url"/"check-for-update" cases below).
+  // shape, and src/lib/notification-tap.ts for the single dispatcher every
+  // notification tap routes through — shared with the in-app notification
+  // center so the two can't drift (in-app navigation is only one of its
+  // outcomes; "open-url"/"check-for-update" are the others).
   const lastNotificationResponse = Notifications.useLastNotificationResponse();
   useEffect(() => {
     // Gated on `status`: while it's 'loading' this component renders
@@ -101,33 +102,25 @@ function AppGate() {
     if (status === "loading" || !lastNotificationResponse) {
       return;
     }
-    const action = resolveNotificationAction(lastNotificationResponse.notification.request.content.data);
-    if (!action) {
-      return;
-    }
-    switch (action.kind) {
-      case "navigate":
-        // Built at runtime from a notification payload (see ROUTES.* in
-        // deep-links.ts), so it can never be one of expo-router's statically
-        // known literal paths — same `as Href` escape hatch index.tsx already
-        // uses for its own dynamically-referenced routes.
-        router.push(action.href as Href);
-        break;
-      case "open-url":
-        void Linking.openURL(action.url);
-        break;
-      case "check-for-update":
-        // A release notification with no URL signals a JS-only OTA update —
-        // check-fetch-reload right now rather than sending the user to
-        // Settings to do it manually. Silent on "up to date"/"unavailable"
-        // (nothing actionable for the user in either case from a background
-        // tap); a real failure still surfaces, same as the manual Settings
-        // row (app/(app)/settings.tsx) reusing this same helper.
+    runNotificationTap(lastNotificationResponse.notification.request.content.data, {
+      // Built at runtime from a notification payload (see ROUTES.* in
+      // deep-links.ts), so it can never be one of expo-router's statically
+      // known literal paths — same `as Href` escape hatch index.tsx already
+      // uses for its own dynamically-referenced routes.
+      navigate: (href) => router.push(href as Href),
+      openUrl: (url) => void Linking.openURL(url),
+      // A release notification with no URL signals a JS-only OTA update —
+      // check-fetch-reload right now rather than sending the user to
+      // Settings to do it manually. Silent on "up to date"/"unavailable"
+      // (nothing actionable for the user in either case from a background
+      // tap); a real failure still surfaces, same as the manual Settings
+      // row (app/(app)/settings.tsx) reusing this same helper.
+      checkForUpdate: () => {
         void checkForUpdateAndReload(() => showToast("Downloading the latest update…", "success")).catch(
           (err: unknown) => showToast(getErrorMessage(err, "Couldn't check for an update."), "error"),
         );
-        break;
-    }
+      },
+    });
   }, [status, lastNotificationResponse]);
 
   if (status === "loading" || isRestoring) {
