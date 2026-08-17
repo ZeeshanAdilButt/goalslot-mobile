@@ -63,7 +63,12 @@ import { DictationPanel } from "@/components/voice/DictationPanel";
 import { useDictationLoop } from "@/hooks/useDictationLoop";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
-import { appendNoteParagraph, decodeNoteEntities, normalizeContent } from "@/lib/note-content";
+import {
+  appendNoteParagraph,
+  decodeNoteEntities,
+  hasUnsupportedMobileMarkup,
+  normalizeContent,
+} from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -173,6 +178,26 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   const { note, readOnly } = detail;
   const initialContent = normalizeContent(note.content);
 
+  /**
+   * This page was authored on the web using formatting the mobile editor's
+   * schema has no node for (a table, a divider, a code block, an alignment or
+   * an indent) — see `hasUnsupportedMobileMarkup` for the verified list and why
+   * the mobile schema can't be extended from here.
+   *
+   * Loading it into the webview produces a lossy document, and this screen's
+   * autosave would then PUT that back over the good copy. So the page is shown,
+   * but every content write path is switched off: the editor is not editable,
+   * `saveContent` and `flushPending` refuse, and dictation (a read-modify-write
+   * over the same lossy `getHTML()`) is not offered. Renaming still works — the
+   * title is a separate scalar column and loses nothing.
+   *
+   * Computed synchronously from `initialContent`, before `useEditorBridge` is
+   * constructed below, deliberately: derived from the editor's readiness
+   * instead, there would be a window between mount and "ready" in which the
+   * document is already lossy and the guards are not yet armed.
+   */
+  const formatLocked = hasUnsupportedMobileMarkup(initialContent);
+
   const [title, setTitle] = useState(note.title);
   // "failed": a genuine rejection, retries on the next edit/flush.
   // "queued": no server response at all — routed to the offline outbox
@@ -216,7 +241,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     initialContent: initialContent || undefined,
     autofocus: false,
     avoidIosKeyboard: true,
-    editable: !readOnly,
+    editable: !readOnly && !formatLocked,
     // The editor is a WebView, so it does NOT inherit this screen's React
     // Native padding — without this its text renders flush against the
     // device's left edge ("collapsed into my left border"). The gutter has
@@ -336,7 +361,13 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
 
   const saveContent = useCallback(
     async (html: string) => {
-      if (readOnly || html === lastSavedContentRef.current) return;
+      // `formatLocked` is checked HERE rather than only at the call sites
+      // because this is the single choke point every content write goes
+      // through — the debounced `useEditorContent` effect, `flushPending` on
+      // blur/back/unmount, and dictation's read-modify-write all end up here.
+      // Guarding any one of those alone would leave the others able to
+      // overwrite the page with the webview's lossy re-serialization.
+      if (readOnly || formatLocked || html === lastSavedContentRef.current) return;
       try {
         await apiClient.notes.update(note.id, { content: html });
         lastSavedContentRef.current = html;
@@ -354,7 +385,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         }
       }
     },
-    [note.id, patchCaches, readOnly],
+    [formatLocked, note.id, patchCaches, readOnly],
   );
 
   // --- Dictation ------------------------------------------------------
@@ -479,7 +510,11 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
    *  still alive, so getHTML() can capture keystrokes newer than the last
    *  debounced emission. */
   const flushPending = useCallback(async () => {
-    if (readOnly) return;
+    // `saveContent` would refuse a format-locked page anyway; returning early
+    // also skips the `getHTML()` bridge round-trip, which on this path is
+    // pure cost — its promise is resolve-only and never settles if the webview
+    // has already gone away.
+    if (readOnly || formatLocked) return;
     if (titleTimerRef.current) {
       clearTimeout(titleTimerRef.current);
       titleTimerRef.current = null;
@@ -498,7 +533,7 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     } catch {
       // Webview already torn down — the last debounced emission was saved.
     }
-  }, [editor, readOnly, saveContent, saveTitle]);
+  }, [editor, formatLocked, readOnly, saveContent, saveTitle]);
 
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
@@ -528,10 +563,13 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   const beginDictation = dictation.begin;
   useFocusEffect(
     useCallback(() => {
-      if (voiceParam !== "1" || consumedVoiceParamRef.current || readOnly) return;
+      // `formatLocked` too: dictating appends by reading the whole document
+      // back out of the webview and writing it again, so on a lossy page it
+      // would be the very write this guard exists to prevent.
+      if (voiceParam !== "1" || consumedVoiceParamRef.current || readOnly || formatLocked) return;
       consumedVoiceParamRef.current = true;
       beginDictation();
-    }, [beginDictation, readOnly, voiceParam]),
+    }, [beginDictation, formatLocked, readOnly, voiceParam]),
   );
 
   // Android hardware/gesture back bypasses the in-header BackButton entirely
@@ -655,6 +693,23 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         accessibilityLabel="Page title"
       />
 
+      {/* Placed above the save banners and the document, so it is the first
+          thing read after the title — it explains why the page below refuses
+          to take a keystroke. A banner rather than a dialog on purpose: this
+          is a standing property of the page, not an event to acknowledge, and
+          this app does not use native alerts. `!readOnly` because a shared
+          read-only page already shows the "Read-only" badge, and two competing
+          explanations for one un-editable document is worse than one. */}
+      {formatLocked && !readOnly ? (
+        <View style={styles.formatLockedBanner}>
+          <Text style={styles.formatLockedText}>
+            This page uses formatting the mobile editor can&apos;t edit yet — a table, divider, code
+            block, alignment or indent. It&apos;s shown here as-is; open it on the web to make changes.
+            You can still rename it.
+          </Text>
+        </View>
+      ) : null}
+
       {saveState === "failed" ? (
         <View style={styles.saveFailedBanner}>
           <Text style={styles.saveFailedText}>Couldn't save — changes will retry on your next edit.</Text>
@@ -672,8 +727,10 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
           slot sidesteps the whole iOS-floating-toolbar vs Android-flex-sibling
           split the bottom of this screen has to deal with. Hidden on a
           read-only (shared) page and while the editor-failed fallback is
-          showing, since there is nothing writable to dictate into. */}
-      {!readOnly && !showFallback ? (
+          showing, since there is nothing writable to dictate into — and on a
+          format-locked page for the same reason, since an appended sentence
+          could not be saved. */}
+      {!readOnly && !formatLocked && !showFallback ? (
         <DictationPanel
           mode={dictation.mode}
           voiceState={dictation.voiceState}
@@ -715,7 +772,14 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
               exclusivelyUseCustomOnMessage={false}
             />
           </View>
-          {!readOnly ? (
+          {/* Hidden on a format-locked page as well as a read-only one.
+              `editable: false` stops the *user* typing, but TipTap commands
+              dispatched programmatically — which is exactly what these toolbar
+              buttons do over the bridge — still mutate the document. Those
+              edits could never be saved (see `saveContent`), so leaving the
+              bar there would only offer buttons that appear to work and then
+              silently discard what they did. */}
+          {!readOnly && !formatLocked ? (
             Platform.OS === "ios" ? (
               <KeyboardAvoidingView
                 behavior="padding"
@@ -841,6 +905,26 @@ const styles = StyleSheet.create({
     fontSize: typography.size.xs,
     fontWeight: typography.weight.medium,
     lineHeight: 16,
+    color: colors.warningForeground,
+  },
+  // Same warning treatment as the offline-queue banner above — this is an
+  // informational limitation, not a failure — but with `lineHeight` set for
+  // a genuine multi-line paragraph rather than the one-liners those are.
+  formatLockedBanner: {
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.chip,
+    backgroundColor: colors.warningMuted,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.warning,
+  },
+  formatLockedText: {
+    fontSize: typography.size.xs,
+    fontWeight: typography.weight.medium,
+    lineHeight: 18,
     color: colors.warningForeground,
   },
   // Exists only to carry the capture-phase touch handler that stops dictation

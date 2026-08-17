@@ -5,6 +5,7 @@ import {
   appendNoteParagraph,
   decodeNoteEntities,
   escapeNoteHtml,
+  hasUnsupportedMobileMarkup,
   htmlToPlainText,
   normalizeContent,
   trimTrailingEmptyParagraph,
@@ -162,5 +163,142 @@ describe("appendNoteParagraph", () => {
     const result = appendNoteParagraph("<p>Existing</p>", "<b>urgent</b> call back");
     expect(result).toBe("<p>Existing</p><p>&lt;b&gt;urgent&lt;/b&gt; call back</p>");
     expect(result).not.toContain("<b>urgent</b>");
+  });
+});
+
+describe("hasUnsupportedMobileMarkup", () => {
+  // The bug this guards: a note authored in the web editor and then opened on
+  // the phone was being silently destroyed. The mobile editor is a webview
+  // whose TipTap schema is fixed at package build time and is a strict subset
+  // of web's; ProseMirror drops content it has no schema entry for, and this
+  // screen's autosave then writes the stripped document back to the server.
+  // One tap into the body was enough. Every fixture below is real HTML the web
+  // editor emits, and every expectation is what a schema reconstruction of the
+  // shipped @10play/tentap-editor bundle actually did to it.
+
+  describe("markup the mobile schema has no node for", () => {
+    it("locks a table, which mobile flattens into loose paragraphs", () => {
+      // -> <p>Day</p><p>Task</p><p>Mon</p><p>Ship</p>: every cell boundary,
+      // every row and the header all gone, unrecoverably.
+      expect(
+        hasUnsupportedMobileMarkup(
+          '<table class="editor-table"><tbody><tr><th><p>Day</p></th><th><p>Task</p></th></tr>' +
+            "<tr><td><p>Mon</p></td><td><p>Ship</p></td></tr></tbody></table>",
+        ),
+      ).toBe(true);
+    });
+
+    it("locks a horizontal rule, which mobile deletes outright", () => {
+      expect(hasUnsupportedMobileMarkup("<p>above</p><hr><p>below</p>")).toBe(true);
+      expect(hasUnsupportedMobileMarkup("<p>above</p><hr /><p>below</p>")).toBe(true);
+    });
+
+    it("locks a code block, which mobile collapses to an inline code span", () => {
+      // -> <p><code>const a = 1;<br>const b = 2;</code></p>. The block, and the
+      // language the syntax highlighting keys off, are both lost.
+      expect(
+        hasUnsupportedMobileMarkup(
+          '<pre class="code-block"><code class="language-javascript">const a = 1;</code></pre>',
+        ),
+      ).toBe(true);
+    });
+
+    it("locks a paragraph with an alignment, which mobile drops", () => {
+      expect(hasUnsupportedMobileMarkup('<p style="text-align: center">centered</p>')).toBe(true);
+      expect(hasUnsupportedMobileMarkup('<h2 style="text-align: right">right</h2>')).toBe(true);
+    });
+
+    it("locks an indented block, which mobile flattens", () => {
+      expect(hasUnsupportedMobileMarkup('<p data-indent="2">indented</p>')).toBe(true);
+    });
+
+    it("locks a page as soon as ONE unsupported block appears anywhere in it", () => {
+      // The realistic shape: a long, mostly-plain page with a single table
+      // buried in the middle. Position must not matter.
+      expect(
+        hasUnsupportedMobileMarkup(
+          "<h1>Plan</h1><p>Lots of ordinary prose.</p>".repeat(20) +
+            "<table><tbody><tr><td><p>x</p></td></tr></tbody></table>" +
+            "<p>More ordinary prose.</p>".repeat(20),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe("markup that survives the round-trip untouched", () => {
+    // These are the false positives that matter. Locking one of these would
+    // make a perfectly editable page read-only on the phone for no reason —
+    // and since the web editor wraps EVERY block, over-matching here would
+    // lock essentially the entire notebook.
+
+    it("does not lock web's div.gs-block wrappers", () => {
+      // Mobile strips the wrapper, but web's parseHTML has a bare-`<p>` rule
+      // that re-absorbs it, so this is churn in the stored shape, not loss.
+      expect(
+        hasUnsupportedMobileMarkup(
+          '<div class="gs-block gs-block-h1"><h1>Weekly Plan</h1></div>' +
+            '<div class="gs-block gs-block-p"><p>Intro paragraph.</p></div>',
+        ),
+      ).toBe(false);
+    });
+
+    it("does not lock a resized image", () => {
+      // Deliberate, and the one place both investigations of this bug were
+      // wrong: the shipped bundle's image node declares `width` and `height`
+      // in addAttributes, exactly as web's ResizableImage does, so the size
+      // round-trips. Verified against the minified bundle, not assumed.
+      expect(
+        hasUnsupportedMobileMarkup('<img src="data:image/png;base64,iVBORw0KGgo=" width="320" height="200">'),
+      ).toBe(false);
+    });
+
+    it("does not lock a coloured highlight", () => {
+      // The bundle configures Highlight with multicolor: true.
+      expect(
+        hasUnsupportedMobileMarkup(
+          '<p><mark data-color="#ffcc00" style="background-color: #ffcc00">hl</mark></p>',
+        ),
+      ).toBe(false);
+    });
+
+    it("does not lock task lists, including checked state", () => {
+      expect(
+        hasUnsupportedMobileMarkup(
+          '<ul data-type="taskList"><li data-type="taskItem" data-checked="true"><p>done</p></li></ul>',
+        ),
+      ).toBe(false);
+    });
+
+    it("does not lock headings, inline marks, links or blockquotes", () => {
+      expect(
+        hasUnsupportedMobileMarkup(
+          "<h1>Title</h1><h3>Sub</h3><p><strong>b</strong><em>i</em><s>s</s><u>u</u><code>c</code></p>" +
+            '<p><a href="https://example.com" class="editor-link">link</a></p>' +
+            "<blockquote><p>quote</p></blockquote><ul><li><p>a</p></li></ul><ol><li><p>b</p></li></ol>",
+        ),
+      ).toBe(false);
+    });
+
+    it("does not lock a style attribute that merely contains no alignment", () => {
+      expect(hasUnsupportedMobileMarkup('<p style="color: red">red</p>')).toBe(false);
+    });
+
+    it("does not lock a page that only mentions the words in its prose", () => {
+      // The regexes match tags, not text — a note ABOUT tables is still just
+      // paragraphs, and must stay editable on the phone.
+      expect(
+        hasUnsupportedMobileMarkup("<p>Remember to add a table and a divider to this on the laptop.</p>"),
+      ).toBe(false);
+    });
+  });
+
+  describe("empty documents", () => {
+    it("never locks an empty page", () => {
+      expect(hasUnsupportedMobileMarkup("")).toBe(false);
+      expect(hasUnsupportedMobileMarkup("   ")).toBe(false);
+      // The API's default for a brand-new row.
+      expect(hasUnsupportedMobileMarkup("[]")).toBe(false);
+      expect(hasUnsupportedMobileMarkup("<p></p>")).toBe(false);
+    });
   });
 });

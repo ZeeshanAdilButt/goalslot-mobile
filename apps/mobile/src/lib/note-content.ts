@@ -75,6 +75,78 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+/**
+ * Markup the web editor can author that the mobile editor's schema has no node
+ * for. A note containing any of it must not be written back from this device.
+ *
+ * WHY THIS EXISTS. Both platforms run TipTap v3 and both store the same thing —
+ * raw HTML in `Note.content` — so this is not a two-engines problem. But the
+ * two schemas are not the same. Mobile's editor is @10play/tentap-editor, a
+ * TipTap instance inside a webview whose extension set is fixed at package
+ * build time: `simpleWebEditor/build/editorHtml.js` statically imports
+ * `TenTapStartKit` and only *filters* it (`Tiptap.tsx`), and `useTenTap` builds
+ * the editor from those bridges alone — there is no StarterKit in there. So the
+ * mobile document model is exactly CoreBridge (document/paragraph/text) plus
+ * the twenty bridges in `TenTapStartKit`, and nothing this app passes as
+ * `bridgeExtensions` can add a node the prebuilt bundle doesn't already carry.
+ *
+ * Web (`goal-slot-web/src/components/tiptap-editor/tiptap-editor.tsx`) has five
+ * things that set is missing: StarterKit's HorizontalRule, CodeBlockLowlight,
+ * Table/TableRow/TableCell/TableHeader, TextAlign, and the local
+ * IndentExtension's `data-indent` global attribute.
+ *
+ * ProseMirror silently discards content it has no schema entry for, so opening
+ * such a note here yields a lossy document — and the editor screen's autosave
+ * then PUTs that document straight back over the good one. It takes a single
+ * tap into the body (a bare selection change is enough to emit a state update),
+ * or a blur-time flush, to destroy a table a user built on the web. There is no
+ * warning and no undo, so the only safe answer until the mobile editor's schema
+ * catches up is to refuse to save at all.
+ *
+ * VERIFIED, not assumed. Reconstructing the shipped bundle's exact schema
+ * against TipTap 3.29.2 and round-tripping web-authored HTML through it:
+ *   - `<table>`      -> flattened into loose paragraphs, all structure gone
+ *   - `<hr>`         -> deleted outright
+ *   - `<pre><code>`  -> one paragraph with an inline `<code>` mark, language lost
+ *   - `text-align`   -> dropped
+ *   - `data-indent`  -> dropped
+ * Everything else web can author survives intact: headings, bold/italic/strike/
+ * underline/inline-code, links, blockquotes, bullet/ordered/task lists with
+ * their checked state, and highlight *with* its colour.
+ *
+ * Deliberately NOT on this list, despite looking like it belongs: an image's
+ * `width`/`height`. The bundle's image node declares both attributes (its
+ * `addAttributes` is `{src, alt, title, width, height}`, same as web's
+ * ResizableImage), so a resized image round-trips unchanged. Listing it would
+ * lock notes that lose nothing.
+ *
+ * The `div.gs-block` wrappers web emits around every paragraph and heading are
+ * also deliberately absent. Mobile has no parse rule for them and strips them,
+ * but web's second parse rule (`{ tag: 'p' }`) re-absorbs the bare tags, so
+ * that is churn, not loss — and treating it as loss would lock every single
+ * web-authored note, since web puts that wrapper on everything.
+ *
+ * When the mobile editor gains a custom webview bundle whose schema is a
+ * superset of web's, delete this together with its call sites — the whole guard
+ * is a stopgap, and a locked page is still a worse experience than an editable
+ * one.
+ */
+const UNSUPPORTED_MOBILE_MARKUP: readonly RegExp[] = [
+  /<table[\s/>]/i, // Table / TableRow / TableCell / TableHeader
+  /<hr[\s/>]/i, // HorizontalRule
+  /<pre[\s/>]/i, // CodeBlockLowlight
+  /style="[^"]*text-align/i, // TextAlign
+  /\sdata-indent="/i, // IndentExtension
+];
+
+/** True when `html` contains formatting this device's editor would silently
+ *  drop on save. Callers must treat a `true` as "show, but never write back". */
+export function hasUnsupportedMobileMarkup(html: string): boolean {
+  const content = normalizeContent(html);
+  if (content === "") return false;
+  return UNSUPPORTED_MOBILE_MARKUP.some((pattern) => pattern.test(content));
+}
+
 /** One or more empty paragraphs at the very end of a document — `<p></p>`,
  *  `<p><br></p>`, `<p>&nbsp;</p>`, or any run of those, with or without
  *  attributes on the tag (TipTap emits `style="text-align:..."` on a
