@@ -15,8 +15,8 @@ import { offlineSync } from "@/lib/offline";
 import { initSentry } from "@/lib/sentry";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { runNotificationTap, shouldHandleNotificationTap } from "@/lib/notification-tap";
-import { addPushTokenChangeListener } from "@/lib/notifications";
-import { createPushRegistrationPort, syncPushRegistration } from "@/lib/push-registration";
+import { addPushTokenChangeListener, ensureNotifyChannel } from "@/lib/notifications";
+import { createPushRegistrationPort, runPushStartup, syncPushRegistration } from "@/lib/push-registration";
 import { showToast } from "@/lib/toast-store";
 import { checkForUpdateAndReload } from "@/lib/updates";
 import { CapabilitiesProvider } from "@/providers/capabilities-provider";
@@ -64,12 +64,25 @@ function AppGate() {
   // signed in. It never prompts for permission (it registers only if
   // permission is already granted) and never throws, so it cannot delay or
   // break app start.
+  //
+  // `runPushStartup` also ensures the Android notify channel exists here,
+  // rather than waiting for the first local "notify"-tier schedule reminder
+  // (its other, lazy call site in src/lib/notifications.ts): every
+  // server-sent push (message, instruction assigned, shared-report-unviewed,
+  // app-release — see goal-slot-api's ANDROID_NOTIFY_CHANNEL_ID) targets
+  // this exact Android channel id, and a push referencing a channel id the
+  // OS has never had `createNotificationChannel` called for is silently
+  // dropped by FCM on delivery, with no error surfaced anywhere. A fresh
+  // install (or any install where the user has only ever used the
+  // "Alarm"/"Off" tiers for their own schedule blocks) would otherwise
+  // never have this channel created and would never receive a single server
+  // push. See runPushStartup's doc comment for the rest.
   const userId = user?.id;
   useEffect(() => {
     if (status !== "authenticated" || !userId) return;
 
     const port = createPushRegistrationPort();
-    void syncPushRegistration(userId, port);
+    void runPushStartup(userId, port, ensureNotifyChannel);
 
     // A push service can roll a token while the app is running, silently
     // invalidating the old one. Re-syncing on that event is what keeps the

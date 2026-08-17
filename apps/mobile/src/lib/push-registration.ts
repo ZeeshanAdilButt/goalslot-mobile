@@ -216,6 +216,43 @@ export async function syncPushRegistration(
 }
 
 /**
+ * App-start entry point: brings the Android notify channel and the push
+ * token registration up together. `ensureNotifyChannel` is injected (rather
+ * than importing notifications.ts's export directly) for the same reason
+ * `PushRegistrationPort` is injected below — so this ordering/call-both
+ * contract is assertable with a fake, without loading expo-notifications or
+ * mounting app/_layout.tsx, which this repo's test suite never does (see
+ * push-registration.test.ts).
+ *
+ * `ensureNotifyChannel` runs first and its failure is swallowed rather than
+ * left to reject this whole call: every server-sent push (message,
+ * instruction assigned, shared-report-unviewed, app-release) is stamped
+ * with this exact Android channel id (see goal-slot-api's
+ * ANDROID_NOTIFY_CHANNEL_ID), and FCM silently drops any notification
+ * referencing a channel id Android has never had `createNotificationChannel`
+ * called for — so a fresh install, or any install where the user has only
+ * ever used the "Alarm"/"Off" tiers for their own schedule blocks, would
+ * otherwise never have this channel created and would never receive a
+ * single server push. Previously this channel was only ever created lazily,
+ * the first time a local "notify"-tier schedule reminder scheduled — which
+ * left exactly that gap. A channel-creation hiccup must not, in turn, ever
+ * block token registration - the two are independent capabilities.
+ */
+export async function runPushStartup(
+  userId: string,
+  port: PushRegistrationPort,
+  ensureNotifyChannel: () => Promise<void>,
+): Promise<PushRegistrationResult> {
+  try {
+    await ensureNotifyChannel();
+  } catch (error) {
+    console.warn("[push] could not ensure the Android notify channel", error);
+  }
+
+  return syncPushRegistration(userId, port);
+}
+
+/**
  * Withdraws this device's subscription. Called on sign-out, BEFORE the auth
  * tokens are cleared — the DELETE is an authenticated request, so the order
  * matters: run it after the tokens are gone and it 401s, leaving the row in

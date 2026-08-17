@@ -104,7 +104,19 @@ async function ensureAlarmChannel(): Promise<void> {
  * doc comment. This is the tier that stays audible without being the loud,
  * DND-piercing alarm.
  */
-async function ensureNotifyChannel(): Promise<void> {
+/**
+ * Exported (unlike `ensureAlarmChannel`) so app startup can create this
+ * channel eagerly instead of only lazily the first time a local "notify"
+ * tier reminder schedules. Server-sent push (see goal-slot-api's
+ * notification-policy.ts ANDROID_NOTIFY_CHANNEL_ID) always targets this
+ * exact channel id, and FCM silently drops any notification referencing a
+ * channel id Android hasn't seen `createNotificationChannel` for yet — so an
+ * install that has never set a schedule block to the "Notify" tier locally
+ * would otherwise never receive a single server push (message, instruction
+ * assigned, shared-report-unviewed, app-release) with no error on either
+ * side. See app/_layout.tsx's call site.
+ */
+export async function ensureNotifyChannel(): Promise<void> {
   if (Platform.OS !== "android") return;
   notifyChannelReady ??= Notifications.setNotificationChannelAsync(NOTIFY_CHANNEL_ID, {
     name: "Schedule notifications",

@@ -14,6 +14,7 @@
 
 import {
   getEasProjectId,
+  runPushStartup,
   syncPushRegistration,
   unregisterPushRegistration,
   type PushRegistrationPort,
@@ -367,5 +368,56 @@ describe("unregisterPushRegistration", () => {
     });
 
     await expect(unregisterPushRegistration(fake.port)).resolves.toBeUndefined();
+  });
+});
+
+describe("runPushStartup", () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  // THE regression: app/_layout.tsx used to call syncPushRegistration alone
+  // on the auth-start effect, and the only other call site for the Android
+  // notify channel was `scheduleNotification`'s lazy, "notify"-tier-only
+  // path in notifications.ts (see its own tests). A user who never set a
+  // schedule block to the "Notify" tier therefore never had
+  // `goalslot-schedule-notify-v1` created on-device, and every server push
+  // (message, instruction assigned, shared-report-unviewed, app-release —
+  // all stamped with that exact channel id by goal-slot-api's
+  // notification-policy.ts) was silently dropped by FCM with no error on
+  // either side. This asserts the channel is brought up as part of app
+  // startup itself, independent of any local schedule-reminder tier choice.
+  it("ensures the Android notify channel before/alongside registering the push token", async () => {
+    const fake = createFakePort();
+    const ensureNotifyChannel = jest.fn(async () => {});
+
+    const result = await runPushStartup("user-1", fake.port, ensureNotifyChannel);
+
+    expect(ensureNotifyChannel).toHaveBeenCalledTimes(1);
+    expect(result).toBe("registered");
+    expect(fake.calls.register).toEqual(["ExponentPushToken[aaa]"]);
+  });
+
+  it("still registers the push token when ensuring the notify channel fails", async () => {
+    // Channel creation and token registration are independent device
+    // capabilities - a hiccup in one (e.g. a native module error) must never
+    // silently swallow the other, the same "never throws" contract every
+    // other function in this file already holds itself to.
+    const fake = createFakePort();
+    const ensureNotifyChannel = jest.fn(async () => {
+      throw new Error("native module unavailable");
+    });
+
+    const result = await runPushStartup("user-1", fake.port, ensureNotifyChannel);
+
+    expect(result).toBe("registered");
+    expect(fake.calls.register).toEqual(["ExponentPushToken[aaa]"]);
+    expect(warn).toHaveBeenCalled();
   });
 });
