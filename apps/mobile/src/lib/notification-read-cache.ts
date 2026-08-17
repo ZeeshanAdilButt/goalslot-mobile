@@ -1,0 +1,88 @@
+// Pure cache transforms for "this notification is now read", extracted out of
+// app/(app)/notifications.tsx so they can be tested without a screen, a
+// QueryClient or a network (see notification-read-cache.test.ts).
+//
+// WHY THE CACHE IS PATCHED RATHER THAN INVALIDATED. An invalidate on an
+// infinite query re-fetches EVERY page the user has already scrolled through,
+// in order. For a mark-all-read that is the exact opposite of the point: the
+// whole reason the endpoint is one `updateMany` is that the user cannot
+// afford per-row cost, and following it with N page refetches hands that cost
+// straight back on the read side. `readAt` is the only field that changed, so
+// only that changes here — no request, no scroll jitter.
+//
+// THE UNREAD COUNT IS NOT DERIVED FROM THESE PAGES. It is read from the
+// server's own response (`unreadCount`, which mark-all-read defines as 0 by
+// construction — it just cleared every unread row in that scope). Counting
+// unread rows across the loaded pages would be wrong in the ordinary case: a
+// user with 60 unread notifications has 20 of them in the cache, so the badge
+// would drop to 40 the moment they marked the visible page read. The pages
+// are a window; the count is a total.
+
+import type { AppNotification, NotificationListResponse } from "@goalslot/shared";
+
+/**
+ * The `InfiniteData` shape react-query stores for the notification list.
+ * Written structurally rather than imported as `InfiniteData<...>` so this
+ * module stays free of react-query types and testable as plain data.
+ */
+export interface NotificationPages {
+  pages: NotificationListResponse[];
+  pageParams: unknown[];
+}
+
+function withReadAt(item: AppNotification, readAtIso: string): AppNotification {
+  // An already-read row keeps its ORIGINAL timestamp. Overwriting it would
+  // re-date a notification the user read last week to "just now", which is
+  // visible: NotificationRow renders a relative time.
+  return item.readAt ? item : { ...item, readAt: readAtIso };
+}
+
+function mapItems(
+  existing: NotificationPages | undefined,
+  map: (item: AppNotification) => AppNotification,
+): NotificationPages | undefined {
+  if (!existing) return existing;
+  return {
+    ...existing,
+    // `pageParams` is carried through untouched: it holds the cursors
+    // react-query replays on a refetch, and rewriting it would break paging.
+    pages: existing.pages.map((page) => ({ ...page, items: page.items.map(map) })),
+  };
+}
+
+/** One row read — used by a row tap. */
+export function markNotificationReadInPages(
+  existing: NotificationPages | undefined,
+  id: string,
+  readAtIso: string,
+): NotificationPages | undefined {
+  return mapItems(existing, (item) => (item.id === id ? withReadAt(item, readAtIso) : item));
+}
+
+/**
+ * Every loaded row read — used by "Mark all read".
+ *
+ * Only the pages currently in cache are touched, and that is correct rather
+ * than a shortfall: the server cleared the whole scope in one statement, and
+ * any page fetched after this comes back from the server already read.
+ */
+export function markAllNotificationsReadInPages(
+  existing: NotificationPages | undefined,
+  readAtIso: string,
+): NotificationPages | undefined {
+  return mapItems(existing, (item) => withReadAt(item, readAtIso));
+}
+
+/**
+ * Whether "Mark all read" has anything to do — drives whether the control is
+ * rendered at all.
+ *
+ * Deliberately keyed on the SERVER's unread total for the scope, not on
+ * whatever happens to be loaded: a user whose first page is entirely read but
+ * who has older unread rows still needs the button. `undefined` (the count
+ * hasn't loaded yet) is not "zero" — it is "don't offer an action we can't
+ * yet justify".
+ */
+export function canMarkAllRead(unreadCount: number | undefined): boolean {
+  return typeof unreadCount === "number" && unreadCount > 0;
+}

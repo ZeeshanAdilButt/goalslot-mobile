@@ -76,6 +76,18 @@ export interface NotificationListResponse {
   scope?: NotificationScope
 }
 
+/**
+ * `unreadCount` is always 0 — the call just cleared every unread row in that
+ * scope, so it is 0 by construction and the server spends no extra query
+ * proving it. Read the badge straight off this; do not follow up with a list
+ * request.
+ */
+export interface MarkAllNotificationsReadResponse {
+  updated: number
+  scope: NotificationScope
+  unreadCount: number
+}
+
 export function createNotificationsApi(api: AxiosInstance) {
   return {
     list: (params?: NotificationListParams) =>
@@ -83,6 +95,19 @@ export function createNotificationsApi(api: AxiosInstance) {
     // 404 if the id doesn't exist, 403 if it isn't the caller's own — both
     // surface as a normal thrown AxiosError, same as every other client here.
     markRead: (id: string) => api.patch<AppNotification>(`/notifications/${id}/read`),
+    /**
+     * Clears every unread notification in `scope` in ONE server-side
+     * `updateMany` — never a loop of per-row PATCHes. A user with a hundred
+     * unread rows must cost one statement, not a hundred round trips.
+     *
+     * `scope` MUST match the scope of the list the user is looking at. Marking
+     * 'all' read from a bell that only ever showed 'general' would silently
+     * clear message notifications the user never saw.
+     */
+    markAllRead: (scope: NotificationScope) =>
+      api.patch<MarkAllNotificationsReadResponse>('/notifications/read-all', undefined, {
+        params: { scope },
+      }),
   }
 }
 

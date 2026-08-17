@@ -27,13 +27,18 @@ import { useInfiniteQuery, useMutation, type InfiniteData } from "@tanstack/reac
 
 import type { NotificationListResponse } from "@goalslot/shared";
 
-import { EmptyState, ErrorState, Skeleton } from "@/components";
-import { ScreenHeader } from "@/components/lists";
+import { Button, EmptyState, ErrorState, Skeleton } from "@/components";
+import { HAMBURGER_CLEARANCE, ScreenHeader } from "@/components/lists";
 import { NotificationRow, type NotificationRowItem } from "@/components/notifications";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { BELL_SCOPE } from "@/lib/notification-feed";
+import {
+  canMarkAllRead,
+  markAllNotificationsReadInPages,
+  markNotificationReadInPages,
+} from "@/lib/notification-read-cache";
 import { runNotificationTap } from "@/lib/notification-tap";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -71,7 +76,12 @@ export default function NotificationsScreen() {
   // opening the inbox and reading everything left the badge showing whatever
   // number it had fetched at cold start. The freshest count wins: this screen
   // just refetched, so its number is newer than the badge's.
-  const freshUnreadCount = notificationsQuery.data?.pages[0]?.unreadCount;
+  // Also what the "Mark all read" control keys off — the SERVER's total for
+  // this scope, not a count of the rows currently loaded. A user whose first
+  // page happens to be all read but who has older unread rows still needs the
+  // button.
+  const unreadCount = notificationsQuery.data?.pages[0]?.unreadCount;
+  const freshUnreadCount = unreadCount;
   useEffect(() => {
     if (typeof freshUnreadCount === "number") {
       queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(BELL_SCOPE), freshUnreadCount);
@@ -86,16 +96,10 @@ export default function NotificationsScreen() {
       // page the user has already scrolled through, in order, which both
       // wastes requests and can jitter the scroll position. The row's
       // `readAt` is the only thing that changed, so only that changes here.
-      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(notificationQueries.notificationQueries.list(BELL_SCOPE), (existing) => {
-        if (!existing) return existing;
-        return {
-          ...existing,
-          pages: existing.pages.map((page) => ({
-            ...page,
-            items: page.items.map((item) => (item.id === id ? { ...item, readAt: new Date().toISOString() } : item)),
-          })),
-        };
-      });
+      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(
+        notificationQueries.notificationQueries.list(BELL_SCOPE),
+        (existing) => markNotificationReadInPages(existing, id, new Date().toISOString()),
+      );
       queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(BELL_SCOPE), (count) =>
         typeof count === "number" ? Math.max(0, count - 1) : count,
       );
@@ -104,6 +108,38 @@ export default function NotificationsScreen() {
       notify(getErrorMessage(err, "Couldn't mark that notification as read."), "error");
     },
   });
+
+  const markAllReadMutation = useMutation({
+    // ONE request for the whole scope, which the server serves with ONE
+    // `updateMany`. Never a loop of per-row PATCHes: a user with a hundred
+    // unread rows has to cost one statement, not a hundred round trips.
+    //
+    // BELL_SCOPE, the same scope this list is showing. Marking 'all' read
+    // from a list that only ever showed 'general' would silently clear the
+    // message notifications the user was never shown here.
+    mutationFn: () => apiClient.notifications.markAllRead(BELL_SCOPE),
+    onSuccess: (response) => {
+      const readAt = new Date().toISOString();
+      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(
+        notificationQueries.notificationQueries.list(BELL_SCOPE),
+        (existing) => markAllNotificationsReadInPages(existing, readAt),
+      );
+      // Straight off the mutation response — the server defines this as 0 by
+      // construction (it just cleared every unread row in the scope), so
+      // there is nothing to re-read and no follow-up request to pay for.
+      queryClient.setQueryData<number>(
+        notificationQueries.notificationQueries.unreadCount(BELL_SCOPE),
+        response.data.unreadCount,
+      );
+    },
+    onError: (err) => {
+      notify(getErrorMessage(err, "Couldn't mark everything as read."), "error");
+    },
+  });
+
+  const handleMarkAllRead = useCallback(() => {
+    markAllReadMutation.mutate();
+  }, [markAllReadMutation]);
 
   const handlePress = useCallback(
     (item: NotificationRowItem) => {
@@ -202,6 +238,24 @@ export default function NotificationsScreen() {
         // Messages deliberately absent from this list — they belong to the
         // Messages icon now. See src/lib/notification-feed.ts.
         subtitle="Mentors, shared reports, and app updates."
+        // Docked in ScreenHeader's own `action` slot — its own row under the
+        // title, right-aligned — which is where messages.tsx puts "New
+        // message". Rendered only when there is actually something unread, so
+        // the screen doesn't offer an action that would do nothing.
+        action={
+          canMarkAllRead(unreadCount) ? (
+            <Button
+              label="Mark all read"
+              icon="check"
+              variant="secondary"
+              size="sm"
+              onPress={handleMarkAllRead}
+              loading={markAllReadMutation.isPending}
+              disabled={markAllReadMutation.isPending}
+              style={styles.headerAction}
+            />
+          ) : undefined
+        }
       />
       <View style={styles.body}>{body}</View>
     </SafeAreaView>
@@ -240,6 +294,18 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: spacing.xxl,
+  },
+  // Hugs the right edge like messages.tsx's "New message", but keeps the
+  // floating column's gutter clear as well. ScreenHeader reserves
+  // HAMBURGER_CLEARANCE on the TITLE block only — its `action` row has no
+  // right gutter, and the (app) layout's three stacked 40pt buttons (menu,
+  // search, bell) plus their hitSlop reach roughly 152pt down the right edge,
+  // which is the band this row sits in. Reserving it here is the same fix
+  // that column's own comment records for the Messages screen, where its dead
+  // zone ate the top slice of a header action button.
+  headerAction: {
+    alignSelf: "flex-end",
+    marginRight: HAMBURGER_CLEARANCE - spacing.xl,
   },
   separator: {
     height: StyleSheet.hairlineWidth,

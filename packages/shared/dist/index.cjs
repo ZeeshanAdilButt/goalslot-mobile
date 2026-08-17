@@ -1543,7 +1543,19 @@ function createNotificationsApi(api) {
     list: (params) => api.get("/notifications", { params }),
     // 404 if the id doesn't exist, 403 if it isn't the caller's own — both
     // surface as a normal thrown AxiosError, same as every other client here.
-    markRead: (id) => api.patch(`/notifications/${id}/read`)
+    markRead: (id) => api.patch(`/notifications/${id}/read`),
+    /**
+     * Clears every unread notification in `scope` in ONE server-side
+     * `updateMany` — never a loop of per-row PATCHes. A user with a hundred
+     * unread rows must cost one statement, not a hundred round trips.
+     *
+     * `scope` MUST match the scope of the list the user is looking at. Marking
+     * 'all' read from a bell that only ever showed 'general' would silently
+     * clear message notifications the user never saw.
+     */
+    markAllRead: (scope) => api.patch("/notifications/read-all", void 0, {
+      params: { scope }
+    })
   };
 }
 

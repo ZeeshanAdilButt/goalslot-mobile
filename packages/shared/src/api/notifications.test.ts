@@ -31,4 +31,32 @@ describe('createNotificationsApi', () => {
     const notifications = createNotificationsApi(api)
     expect((await notifications.markRead('n1')).data.readAt).toBe('2026-08-17T09:00:00.000Z')
   })
+
+  it('marks everything read in ONE request, scoped', async () => {
+    mock.onPatch('/notifications/read-all').reply(200, { updated: 12, scope: 'general', unreadCount: 0 })
+
+    const notifications = createNotificationsApi(api)
+    const response = await notifications.markAllRead('general')
+
+    // One request for twelve rows. A loop of per-row PATCHes is the thing this
+    // endpoint exists to avoid — the user cannot afford it.
+    expect(mock.history.patch).toHaveLength(1)
+    expect(mock.history.patch[0]?.url).toBe('/notifications/read-all')
+    expect(mock.history.patch[0]?.params).toEqual({ scope: 'general' })
+    expect(response.data.updated).toBe(12)
+    // Always 0 by construction — the badge is set straight off this, with no
+    // follow-up read.
+    expect(response.data.unreadCount).toBe(0)
+  })
+
+  it('does not send a body with mark-all-read', async () => {
+    mock.onPatch('/notifications/read-all').reply(200, { updated: 0, scope: 'all', unreadCount: 0 })
+
+    const notifications = createNotificationsApi(api)
+    await notifications.markAllRead('all')
+
+    // The scope is a query param; a body here would be silently ignored by the
+    // controller and read as if it were doing something.
+    expect(mock.history.patch[0]?.data).toBeUndefined()
+  })
 })
