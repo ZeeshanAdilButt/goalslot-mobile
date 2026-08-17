@@ -1381,6 +1381,16 @@ export default function TimerScreen() {
           // invalidating: same data, no second round trip.
           const confirmed = toActiveTimerSession(res.data);
           if (confirmed) queryClient.setQueryData(timerSessionQueries.active().queryKey, confirmed);
+          // The optimistic write above flips `effectiveStatus` on the press,
+          // before this POST resolves — so the effect at the bottom of this
+          // file that calls syncWidgets() off `effectiveStatus` has ALREADY
+          // fired once (with the pre-POST state) and won't fire again, since
+          // the value doesn't change a second time here. Without this, the
+          // widget's own independent GET (fetchServerSession in
+          // widget-data.ts) can race the 3-round-trip server pause and win,
+          // latching the widget on "running" until the next foreground/store
+          // change/30-min refresh. Re-sync explicitly once the real state is known.
+          void syncWidgets();
         })
         .catch((err) => {
           console.error(err);
@@ -1414,6 +1424,8 @@ export default function TimerScreen() {
         .then((res) => {
           const confirmed = toActiveTimerSession(res.data);
           if (confirmed) queryClient.setQueryData(timerSessionQueries.active().queryKey, confirmed);
+          // Same widget re-sync as handlePause, same reason — see its comment.
+          void syncWidgets();
         })
         .catch((err) => {
           console.error(err);
