@@ -6,7 +6,9 @@
 // real DSN to build. Swap PLACEHOLDER_DSN for the real one (and flip
 // `organization`/`project` into the `@sentry/react-native` entry in
 // app.json's `plugins`) once a human sets up the real Sentry project.
-import * as Sentry from "@sentry/react-native";
+// Type-only, so it is fully erased at build time and pulls nothing in at
+// runtime. The real module is loaded below, *after* the DSN guard.
+import type * as SentryModule from "@sentry/react-native";
 
 const PLACEHOLDER_DSN = "YOUR_SENTRY_DSN_HERE";
 
@@ -22,6 +24,16 @@ export function initSentry(): void {
     );
     return;
   }
+
+  // Required lazily, below the guard. `initSentry()` runs at module load in
+  // app/_layout.tsx, before the first render, and with the placeholder DSN it
+  // does nothing at all — but a top-level `import` still made every cold start
+  // evaluate the whole @sentry/react-native module graph for zero benefit.
+  // (Metro does not tree-shake, so this does not shrink the bundle; it moves
+  // the module's *evaluation* off the startup path.) Once a real DSN is set
+  // this loads exactly as before, just a few lines later.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Sentry = require("@sentry/react-native") as typeof SentryModule;
 
   Sentry.init({
     dsn: SENTRY_DSN,

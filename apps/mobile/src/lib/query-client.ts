@@ -35,6 +35,21 @@ export const queryClient = new QueryClient({
 // interface from the shared package's own `OfflineStorage` seam (see
 // src/lib/async-storage-adapter.ts), which the offline outbox uses instead;
 // don't conflate the two.
+// The persister's own default is `throttleTime: 1000`, i.e. up to once a
+// second it dehydrates the ENTIRE query cache, JSON.stringify's it on the JS
+// thread and writes the whole blob to AsyncStorage. For a heavy account that
+// snapshot is on the order of a megabyte, and the note editor's 1 s debounced
+// autosave patches the cache on exactly that cadence — so typing in a note
+// paid a full-cache serialize per second. Five seconds cuts that ~5x.
+//
+// Safe: the only thing at risk is up to 5 s of a cache *snapshot*, which the
+// server re-supplies on the next fetch. Queued offline edits are a separate
+// storage seam entirely — the outbox writes under its own key via
+// src/lib/async-storage-adapter.ts (see packages/shared/src/offline/outbox.ts),
+// and is not touched by this. No user edit can be lost here.
+const CACHE_PERSIST_THROTTLE_MS = 5000;
+
 export const asyncStoragePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
+  throttleTime: CACHE_PERSIST_THROTTLE_MS,
 });
