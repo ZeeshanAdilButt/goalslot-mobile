@@ -3,9 +3,19 @@ import { shouldShowFloatingMessagesButton } from "./floating-messages";
 const ENABLED = true;
 
 describe("shouldShowFloatingMessagesButton", () => {
-  it("shows on the ordinary tab screens", () => {
-    for (const pathname of ["/", "/schedule", "/tasks", "/timer", "/voice", "/goals", "/journal", "/notes"]) {
+  it("shows on the ordinary tab screens that have no competing FAB", () => {
+    for (const pathname of ["/timer", "/voice", "/journal", "/notes"]) {
       expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(true);
+    }
+  });
+
+  it("hides on every screen with its own bottom-right create FAB in the identical corner", () => {
+    // Today, Goals, Tasks and Schedule each pin their own primary "create"
+    // FAB at right:spacing.xl / bottom:spacing.xxl — the exact corner this
+    // button docks in. Reported by the user as "the messages icon is hiding
+    // the plus button."
+    for (const pathname of ["/", "/goals", "/tasks", "/schedule"]) {
+      expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(false);
     }
   });
 
