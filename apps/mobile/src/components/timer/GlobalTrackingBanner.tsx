@@ -66,6 +66,25 @@ const TICK_MS = 1000;
 const SERVER_SESSION_POLL_MS = 60_000;
 
 /**
+ * The cadence used instead while the server says nothing is running.
+ *
+ * The 60s above is the right number for the case it was chosen for — a live
+ * session, which really can be stopped or paused from another device while
+ * the user is looking at some other tab here. But for most users most of the
+ * time there is no session at all, and in that state the poll can only ever
+ * discover "a session just started somewhere else". The AppState listener
+ * below already invalidates on every foreground, which is overwhelmingly how
+ * that discovery actually happens ("I picked my phone back up"), so the
+ * minute cadence was re-asking a question with a known answer ~1,400 times a
+ * day per installed app for nothing.
+ *
+ * Five minutes idle keeps a genuine cross-device start visible without the
+ * user doing anything, and the instant a session does appear the query flips
+ * back to the 60s cadence on its own.
+ */
+const IDLE_SERVER_SESSION_POLL_MS = 300_000;
+
+/**
  * Placeholder for a session tracked without a task or goal attached.
  * Deliberately the same string useTimerNotification.ts's describeSession()
  * falls back to ("Focus session") and timer.tsx's UNRESOLVED_TARGET_LABEL —
@@ -116,7 +135,15 @@ export function GlobalTrackingBanner({
 
   const serverSessionQuery = useQuery({
     ...timerSessionQueries.active(),
-    refetchInterval: SERVER_SESSION_POLL_MS,
+    // Same "is there anything worth watching?" test the render below applies,
+    // so the fast cadence is spent only on sessions the banner would actually
+    // show. See IDLE_SERVER_SESSION_POLL_MS.
+    refetchInterval: (query) => {
+      const session = query.state.data ?? null;
+      return session && !isDormantServerSession(session)
+        ? SERVER_SESSION_POLL_MS
+        : IDLE_SERVER_SESSION_POLL_MS;
+    },
   });
   // A dormant row (paused, no time, nothing attached) is excluded so the
   // banner never advertises a session the user has no way to recognise —

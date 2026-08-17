@@ -2290,9 +2290,20 @@ function createCategoryQueries(categoriesApi) {
     list: () => (0, import_react_query9.queryOptions)({
       queryKey: categoryQueries.listKey(),
       queryFn: fetchCategories,
-      // Refetch on every mount + window focus so newly seeded categories
-      // show up without a hard reload.
-      staleTime: 0,
+      // Previously `staleTime: 0`, so that a backend backfill of newly
+      // seeded categories appeared without a hard reload. That backfill has
+      // long since shipped, and on mobile the setting was much more
+      // expensive than it looks: six screens read this list (Goals,
+      // Reports, Categories, the schedule block sheet, the goal sheet,
+      // quick-add), they are tabs rather than pushed screens, and with
+      // `staleTime: 0` every single visit to any of them refetched the
+      // user's ~8 unchanging categories.
+      //
+      // Five minutes keeps the "shows up on its own" property while letting
+      // one fetch serve a whole session's worth of tab switching. The
+      // user's own edits are unaffected: category mutations invalidate this
+      // key, which refetches regardless of staleTime.
+      staleTime: 5 * 60 * 1e3,
       refetchOnWindowFocus: true,
       refetchOnMount: true
     }),
