@@ -70,6 +70,7 @@ import { useReduceMotion } from "@/hooks/useReduceMotion";
 import { useScreenView } from "@/hooks/useScreenView";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { useThreadScroll } from "@/hooks/useThreadScroll";
+import { messageThreadConversationQuery, messageThreadMessagesQuery } from "@/lib/message-thread-query";
 import { messagingClient } from "@/lib/messaging-client";
 import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { subscribeToIncomingMessages } from "@/lib/messaging-live";
@@ -132,8 +133,15 @@ export default function MessageThreadScreen() {
     loadingOlderRef.current = false;
   }, [conversationId]);
 
+  // Both go through src/lib/message-thread-query.ts rather than
+  // `messagingQueries` directly: this screen is a hidden tab that stays
+  // mounted for the whole session, so the global `keepPreviousData` default
+  // made switching conversations paint the PREVIOUS thread (and the previous
+  // person's name) with `isPending` false. See that file's header — it is the
+  // same bug 543b4e5 fixed for Coach, and it is what "opening a notification
+  // doesn't take me to the right message" actually looked like.
   const conversationQuery = useQuery({
-    ...messagingQueries.conversation(conversationId),
+    ...messageThreadConversationQuery(conversationId),
     // Gated on config as well as the id: an unconfigured build must show the
     // "not available" state below, not a request that rejects with
     // 'not-configured' and reads as a server failure.
@@ -141,11 +149,8 @@ export default function MessageThreadScreen() {
   });
 
   const messagesQuery = useQuery({
-    ...messagingQueries.messages(conversationId),
+    ...messageThreadMessagesQuery(conversationId),
     enabled: messagingEnabled && conversationId.length > 0,
-    // Live pushes patch this cache directly, but the socket is closed while
-    // the app is backgrounded — so returning to a thread must re-read.
-    refetchOnMount: "always",
   });
 
   const contactsQuery = useQuery({ ...messagingQueries.contacts(), enabled: messagingEnabled });
