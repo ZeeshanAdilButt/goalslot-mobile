@@ -27,22 +27,53 @@ export interface AppNotification {
   createdAt: string
 }
 
+/**
+ * Which slice of the notification history a call is about.
+ *
+ *   'all'     — everything, including MESSAGE_RECEIVED.
+ *   'general' — everything EXCEPT MESSAGE_RECEIVED.
+ *
+ * 'general' exists for the bell. A message arriving is already surfaced twice
+ * on its own terms — as an unread conversation on the Messages icon (drawer
+ * row + floating button, both derived from `countUnreadConversations`) and as
+ * the push itself — so repeating it a third time in the bell feed both
+ * double-counts and buries the notifications that have nowhere else to live
+ * (a mentor's instruction, a shared report going stale, a release).
+ *
+ * The scope applies to `unreadCount` as much as to `items`, server-side. That
+ * is the whole reason this is a server parameter rather than a `.filter()` on
+ * the client: filtering here would leave the badge counting rows the list no
+ * longer shows, and a cursor page could come back visibly empty while
+ * `hasMore` was still true.
+ *
+ * An older server that predates this parameter ignores it and answers as
+ * 'all' — the query is read off `@Query('scope')`, not a whitelisted DTO, so
+ * an unknown value degrades to today's behaviour rather than a 400.
+ */
+export type NotificationScope = 'all' | 'general'
+
 export interface NotificationListParams {
   cursor?: string
   limit?: number
+  scope?: NotificationScope
 }
 
 /**
- * `unreadCount` is a snapshot of the FULL unread total (not just this page)
- * as of this request — every page carries it, which is what lets a screen
- * or a bell badge read it off whichever page it last fetched without a
- * separate "just the count" endpoint.
+ * `unreadCount` is a snapshot of the FULL unread total for the requested
+ * SCOPE (not just this page) as of this request — every page carries it,
+ * which is what lets a screen or a bell badge read it off whichever page it
+ * last fetched without a separate "just the count" endpoint.
+ *
+ * `scope` echoes back what the server actually applied. Optional because a
+ * server older than the scope parameter doesn't send it; absent means "this
+ * server didn't scope anything", i.e. treat it as 'all'.
  */
 export interface NotificationListResponse {
   items: AppNotification[]
   nextCursor: string | null
   hasMore: boolean
   unreadCount: number
+  scope?: NotificationScope
 }
 
 export function createNotificationsApi(api: AxiosInstance) {

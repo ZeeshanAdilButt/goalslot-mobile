@@ -14,6 +14,7 @@ import { GlobalTrackingBanner } from "@/components/timer/GlobalTrackingBanner";
 import { SearchOverlay } from "@/components/search/SearchOverlay";
 import type { SearchHref } from "@/components/search/search-index";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
+import { BELL_SCOPE } from "@/lib/notification-feed";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useTimerStore } from "@/lib/timer-store";
@@ -105,7 +106,11 @@ function renderVoiceTabButton(props: ComponentProps<typeof VoiceTabButton>) {
  * happens at all).
  */
 function useUnreadNotificationsCount(enabled: boolean): number {
-  const unreadQuery = useQuery({ ...notificationQueries.unreadCount(), enabled });
+  // BELL_SCOPE, not 'all': message notifications are counted by the Messages
+  // icon (unread conversations), never here. See src/lib/notification-feed.ts
+  // for why counting them in both places would leave this badge stuck on a
+  // message the user had already read.
+  const unreadQuery = useQuery({ ...notificationQueries.unreadCount(BELL_SCOPE), enabled });
   return unreadQuery.data ?? 0;
 }
 
@@ -291,7 +296,7 @@ export default function AppLayout() {
           // event rather than a poll. Invalidate (not refetch) so it's a
           // no-op when nothing is observing the key.
           void queryClient.invalidateQueries({
-            queryKey: notificationQueries.notificationQueries.unreadCount(),
+            queryKey: notificationQueries.notificationQueries.unreadCount(BELL_SCOPE),
           });
         }
       },

@@ -2534,7 +2534,7 @@ var DEFAULT_PAGE_SIZE2 = 20;
 function createNotificationQueries(api) {
   const notificationQueries = {
     all: ["notifications"],
-    list: () => [...notificationQueries.all, "list"],
+    list: (scope) => [...notificationQueries.all, "list", scope],
     // Deliberately a DIFFERENT key from `list()` above, not a read off it:
     // `list()` backs a `useInfiniteQuery` and caches an `InfiniteData` page
     // structure, not a flat `NotificationListResponse` — pointing a plain
@@ -2542,22 +2542,26 @@ function createNotificationQueries(api) {
     // that shape or fight it for cache ownership. `limit: 1` keeps this a
     // cheap poll (a bell badge only needs the count every response already
     // carries, not the page of items).
-    unreadCount: () => [...notificationQueries.all, "unread-count"]
+    //
+    // Scoped for the same reason the list is: the badge and the list a user
+    // opens from it must count the same rows, or the bell says "3" over an
+    // empty screen.
+    unreadCount: (scope) => [...notificationQueries.all, "unread-count", scope]
   };
-  const fetchPage = async (cursor) => (await api.list({ cursor, limit: DEFAULT_PAGE_SIZE2 })).data;
+  const fetchPage = async (scope, cursor) => (await api.list({ cursor, limit: DEFAULT_PAGE_SIZE2, scope })).data;
   return {
     notificationQueries,
     /** The notification-center screen's list — paged with `fetchNextPage`. */
-    infiniteList: () => (0, import_react_query15.infiniteQueryOptions)({
-      queryKey: notificationQueries.list(),
-      queryFn: ({ pageParam }) => fetchPage(pageParam),
+    infiniteList: (scope) => (0, import_react_query15.infiniteQueryOptions)({
+      queryKey: notificationQueries.list(scope),
+      queryFn: ({ pageParam }) => fetchPage(scope, pageParam),
       initialPageParam: void 0,
       getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor ?? void 0 : void 0
     }),
     /** Bell-icon badge count — see `unreadCount()`'s key comment above for why this isn't read off `infiniteList()`. */
-    unreadCount: () => (0, import_react_query15.queryOptions)({
-      queryKey: notificationQueries.unreadCount(),
-      queryFn: async () => (await api.list({ limit: 1 })).data.unreadCount
+    unreadCount: (scope) => (0, import_react_query15.queryOptions)({
+      queryKey: notificationQueries.unreadCount(scope),
+      queryFn: async () => (await api.list({ limit: 1, scope })).data.unreadCount
     })
   };
 }

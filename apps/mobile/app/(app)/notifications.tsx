@@ -33,6 +33,7 @@ import { NotificationRow, type NotificationRowItem } from "@/components/notifica
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
+import { BELL_SCOPE } from "@/lib/notification-feed";
 import { runNotificationTap } from "@/lib/notification-tap";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -48,7 +49,7 @@ export default function NotificationsScreen() {
   useHiddenTabBackHandler(hiddenTabBackDestination("notifications"));
 
   const notificationsQuery = useInfiniteQuery({
-    ...notificationQueries.infiniteList(),
+    ...notificationQueries.infiniteList(BELL_SCOPE),
     // Same reasoning as Messages: this screen is reached fresh every time
     // (it's pushed, not a tab that stays mounted), but the cache may hold a
     // stale first page from the bell badge's own `unreadCount()` read or an
@@ -73,7 +74,7 @@ export default function NotificationsScreen() {
   const freshUnreadCount = notificationsQuery.data?.pages[0]?.unreadCount;
   useEffect(() => {
     if (typeof freshUnreadCount === "number") {
-      queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(), freshUnreadCount);
+      queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(BELL_SCOPE), freshUnreadCount);
     }
   }, [freshUnreadCount]);
 
@@ -85,7 +86,7 @@ export default function NotificationsScreen() {
       // page the user has already scrolled through, in order, which both
       // wastes requests and can jitter the scroll position. The row's
       // `readAt` is the only thing that changed, so only that changes here.
-      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(notificationQueries.notificationQueries.list(), (existing) => {
+      queryClient.setQueryData<InfiniteData<NotificationListResponse>>(notificationQueries.notificationQueries.list(BELL_SCOPE), (existing) => {
         if (!existing) return existing;
         return {
           ...existing,
@@ -95,7 +96,7 @@ export default function NotificationsScreen() {
           })),
         };
       });
-      queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(), (count) =>
+      queryClient.setQueryData<number>(notificationQueries.notificationQueries.unreadCount(BELL_SCOPE), (count) =>
         typeof count === "number" ? Math.max(0, count - 1) : count,
       );
     },
@@ -172,7 +173,7 @@ export default function NotificationsScreen() {
         emphasis="hero"
         iconName="bell"
         message="No notifications yet"
-        description="Messages, shared-report nudges, and things a mentor assigns you will show up here."
+        description="Shared-report nudges, things a mentor assigns you, and app updates show up here. New messages live under the Messages icon."
       />
     );
   } else {
@@ -195,7 +196,13 @@ export default function NotificationsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <ScreenHeader title="Notifications" eyebrow="Stay in the loop" subtitle="Messages, mentors, and shared reports." />
+      <ScreenHeader
+        title="Notifications"
+        eyebrow="Stay in the loop"
+        // Messages deliberately absent from this list — they belong to the
+        // Messages icon now. See src/lib/notification-feed.ts.
+        subtitle="Mentors, shared reports, and app updates."
+      />
       <View style={styles.body}>{body}</View>
     </SafeAreaView>
   );
