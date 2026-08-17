@@ -75,13 +75,39 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+/** One or more empty paragraphs at the very end of a document — `<p></p>`,
+ *  `<p><br></p>`, `<p>&nbsp;</p>`, or any run of those, with or without
+ *  attributes on the tag (TipTap emits `style="text-align:..."` on a
+ *  paragraph whose alignment was set). */
+const TRAILING_EMPTY_PARAGRAPHS = /(?:<p(?:\s[^>]*)?>(?:\s|<br\s*\/?>|&nbsp;)*<\/p>\s*)+$/i;
+
+/** Drops the empty paragraph(s) a TipTap document ends with, so appending
+ *  onto it doesn't leave a visible blank line wedged in front of the new text.
+ *
+ *  This is NOT a new-page-only concern, which is the easy thing to assume: a
+ *  brand-new page really does serialize as `<p></p>` (the API defaults
+ *  `content` to `""`, TipTap's empty doc is one empty paragraph, and
+ *  `getHTML()` reports it as `<p></p>`), but so does every document where the
+ *  user pressed Enter before starting to speak, and TipTap re-pads a trailing
+ *  paragraph after edits. Without this, blank lines accumulate BETWEEN
+ *  dictated sentences over a long dictation, not just above the first one. */
+export function trimTrailingEmptyParagraph(html: string): string {
+  return html.replace(TRAILING_EMPTY_PARAGRAPHS, "");
+}
+
 /** Appends one spoken sentence onto an existing note's HTML body as its own
- *  paragraph. The one write path (app/(app)/voice.tsx's confirmed
- *  APPEND_NOTE command) that adds to a page's content without the user
- *  having opened the rich-text editor at all — escaped and wrapped in `<p>`
- *  rather than spliced into whatever markup already ends the document, so it
- *  always lands as a new, well-formed block instead of merging into
- *  whatever tag the existing content happened to end with. */
+ *  paragraph. Used by both write paths that add to a page's content from
+ *  speech: app/(app)/voice.tsx's confirmed APPEND_NOTE command (the editor
+ *  isn't even mounted there) and app/(app)/note/[id].tsx's in-editor
+ *  dictation, which reads the live document with `getHTML()` and writes the
+ *  result back with `setContent` — the tentap/TipTap bridge exposes no
+ *  insert-at-cursor command, so whole-document read-modify-write is the only
+ *  supported programmatic insertion.
+ *
+ *  Escaped and wrapped in `<p>` rather than spliced into whatever markup
+ *  already ends the document, so it always lands as a new, well-formed block
+ *  instead of merging into whatever tag the existing content happened to end
+ *  with. */
 export function appendNoteParagraph(existingContent: string, spoken: string): string {
-  return `${normalizeContent(existingContent)}<p>${escapeNoteHtml(spoken)}</p>`;
+  return `${trimTrailingEmptyParagraph(normalizeContent(existingContent))}<p>${escapeNoteHtml(spoken)}</p>`;
 }

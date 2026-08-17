@@ -7,6 +7,7 @@ import {
   escapeNoteHtml,
   htmlToPlainText,
   normalizeContent,
+  trimTrailingEmptyParagraph,
 } from "./note-content";
 
 describe("normalizeContent", () => {
@@ -96,10 +97,58 @@ describe("decodeNoteEntities", () => {
   });
 });
 
+describe("trimTrailingEmptyParagraph", () => {
+  it("drops the empty paragraph a brand-new TipTap document serializes as", () => {
+    expect(trimTrailingEmptyParagraph("<p></p>")).toBe("");
+  });
+
+  it("drops a trailing empty paragraph after real content", () => {
+    expect(trimTrailingEmptyParagraph("<p>a</p><p></p>")).toBe("<p>a</p>");
+  });
+
+  it("drops every shape of empty paragraph TipTap emits", () => {
+    expect(trimTrailingEmptyParagraph("<p>a</p><p><br></p>")).toBe("<p>a</p>");
+    expect(trimTrailingEmptyParagraph("<p>a</p><p><br/></p>")).toBe("<p>a</p>");
+    expect(trimTrailingEmptyParagraph("<p>a</p><p>&nbsp;</p>")).toBe("<p>a</p>");
+    expect(trimTrailingEmptyParagraph(`<p>a</p><p style="text-align: center"></p>`)).toBe("<p>a</p>");
+  });
+
+  it("drops a whole run of trailing empties, not just the last one", () => {
+    expect(trimTrailingEmptyParagraph("<p>a</p><p></p>\n<p><br></p>")).toBe("<p>a</p>");
+  });
+
+  it("leaves an empty paragraph that is NOT at the end alone", () => {
+    // Deliberate spacing in the middle of a document is the user's, not ours
+    // to remove — only the trailing one is an artifact of how TipTap pads.
+    expect(trimTrailingEmptyParagraph("<p>a</p><p></p><p>b</p>")).toBe("<p>a</p><p></p><p>b</p>");
+  });
+
+  it("leaves a document that ends in real content untouched", () => {
+    expect(trimTrailingEmptyParagraph("<p>a</p>")).toBe("<p>a</p>");
+    expect(trimTrailingEmptyParagraph("")).toBe("");
+  });
+});
+
 describe("appendNoteParagraph", () => {
   it("appends the spoken content as its own escaped paragraph", () => {
     expect(appendNoteParagraph("<p>Existing</p>", "milk & eggs")).toBe(
       "<p>Existing</p><p>milk &amp; eggs</p>",
+    );
+  });
+
+  it("does not leave a blank line above the first dictated sentence on a new page", () => {
+    // The exact shape `editor.getHTML()` returns for a page created with
+    // `content: ""` — the empty TipTap document. Without the trailing-empty
+    // trim this produced "<p></p><p>First sentence</p>", i.e. every
+    // voice-first page opening with a blank line.
+    expect(appendNoteParagraph("<p></p>", "First sentence")).toBe("<p>First sentence</p>");
+  });
+
+  it("does not accumulate blank lines between dictated sentences", () => {
+    // Mid-dictation shape: TipTap has padded a trailing empty paragraph onto
+    // the document since the last phrase landed.
+    expect(appendNoteParagraph("<p>First.</p><p><br></p>", "Second.")).toBe(
+      "<p>First.</p><p>Second.</p>",
     );
   });
 
