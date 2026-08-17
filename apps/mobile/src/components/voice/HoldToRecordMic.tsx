@@ -36,29 +36,46 @@
 // existed) — VoiceOver/TalkBack's synthetic "activate" calls it directly,
 // bypassing the native touch stream entirely, so it is unaffected by
 // whichever of the three paths above a real touch would have taken. A real
-// touch never reaches this `onPress` at all: the wrapping Gesture.Pan below
-// claims the touch stream immediately (`minDistance(0)`), the same
+// touch never reaches this `onPress` at all: the wrapping PanResponder below
+// claims the responder on every touch-start via
+// `onStartShouldSetPanResponderCapture` (capture phase runs root-to-leaf,
+// ahead of the inner Pressable's own bubble-phase claim), the same
 // "whichever gesture claims the touch first wins, the other's press handler
 // is never called" arbitration SheetHandle.tsx's header comment describes
-// for the opposite case (its Pan does NOT claim a stationary tap, so its
-// Pressable's onPress fires instead). That is why `onTogglePress` here is
-// safe to give the exact old toggle semantics without it ever double-firing
-// alongside `onHoldStart`/`onCommit`.
+// for the opposite case. That is why `onTogglePress` here is safe to give
+// the exact old toggle semantics without it ever double-firing alongside
+// `onHoldStart`/`onCommit`.
 //
-// Built on react-native-gesture-handler's Gesture.Pan (already the app's one
-// pan-gesture idiom — see AppDrawer.tsx's swipe-to-close) rather than a
-// from-scratch PanResponder.
-
+// PLAIN CORE-RN PanResponder, DELIBERATELY, NOT react-native-gesture-handler.
+// This used to be built on Gesture.Pan with its callbacks running as
+// worklets on the UI thread (`runOnJS` back to JS for each of onHoldStart/
+// onCommit/etc). On a real Android device, opening this exact gesture on the
+// Notes page — the one screen that also hosts the @10play/tentap-editor
+// WebView — crashed the whole app on the very first press: a native
+// `com.facebook.jni.CppException: [Worklets] Tried to synchronously call a
+// Remote Function` thrown from inside react-native-gesture-handler's own
+// worklet event-dispatch path (useAnimatedGesture.ts calling into
+// react-native-worklets' scheduleOnRN), before any JS frame — invisible to
+// try/catch and to ScreenErrorBoundary alike, since neither can intercept an
+// exception thrown on the UI thread with no JS call frame above it.
+// Confirmed on-device (adb logcat) and NOT reproducible the same way for
+// AppDrawer.tsx's own Gesture.Pan + runOnJS usage, which points at
+// something specific to this screen (most likely the co-mounted WebView)
+// rather than a blanket reanimated/gesture-handler incompatibility — so
+// AppDrawer's pan gesture is left as-is; only this component, the one that
+// actually crashed, is rewritten.
+//
+// PanResponder runs its callbacks on the JS thread through React Native's
+// original core responder system — no worklets, no UI-thread dispatch, no
+// JSI call into react-native-worklets at all — so this class of crash has
+// nowhere left to come from. The drag-hint animation still reads a
+// reanimated `useSharedValue` for a smooth `useAnimatedStyle`, which stays
+// completely safe here: writing `sharedValue.value = ...` from a plain JS
+// callback (not a worklet) is standard, supported usage and is how shared
+// values are driven from event handlers throughout this app already.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-  withTiming,
-} from "react-native-reanimated";
+import { PanResponder, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
 import { Icon } from "@/components/ui/Icon";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
@@ -143,10 +160,10 @@ export function HoldToRecordMic({
   const [locked, setLocked] = useState(false);
   const [dragging, setDragging] = useState(false);
 
-  // Refs, not the props themselves, so the gesture object below can be built
-  // once (Gesture.Pan reads live prop values through these on every callback)
-  // instead of being torn down and rebuilt on every parent re-render, which
-  // is what closing over the props directly would require.
+  // Refs, not the props themselves, so the PanResponder below can be built
+  // once (its callbacks read live prop values through these) instead of
+  // being torn down and rebuilt on every parent re-render, which is what
+  // closing over the props directly would require.
   const statusRef = useRef(status);
   statusRef.current = status;
   const holdStartRef = useRef(onHoldStart);
@@ -162,21 +179,15 @@ export function HoldToRecordMic({
   // left to do when the finger lifts.
   const heldRef = useRef(false);
   const pressStartedAtRef = useRef(0);
+  // Plain JS-thread ref, not a reanimated shared value read from a worklet:
+  // every callback that touches this now runs on the JS thread already, so
+  // there is nothing left that needs UI-thread-safe storage.
+  const lockedRef = useRef(false);
 
   const dragY = useSharedValue(0);
-  // Locked is read from the UI thread mid-gesture (to stop tracking drag the
-  // instant it fires) — the JS `locked` state above exists for rendering,
-  // this shared value is what the worklet actually branches on.
-  const lockedSV = useSharedValue(false);
 
-  const callHoldStart = useCallback(() => holdStartRef.current(), []);
   const callCommit = useCallback(() => commitRef.current(), []);
   const callToggle = useCallback(() => toggleRef.current(), []);
-  const markLocked = useCallback(() => {
-    setLocked(true);
-    hapticRecordingLocked();
-  }, []);
-  const markDragging = useCallback((value: boolean) => setDragging(value), []);
 
   // A commit (whichever path triggered it) or the hook settling back to a
   // non-listening status both mean this session is over — reset the lock and
@@ -184,70 +195,88 @@ export function HoldToRecordMic({
   // inheriting a lock from the previous recording.
   useEffect(() => {
     if (status === "listening") return;
-    lockedSV.value = false;
+    lockedRef.current = false;
     setLocked(false);
     setDragging(false);
     dragY.value = withTiming(0, { duration: 150 });
-  }, [status, dragY, lockedSV]);
+  }, [status, dragY]);
 
-  const pan = Gesture.Pan()
-    .minDistance(0)
-    .maxPointers(1)
-    .onBegin(() => {
-      "worklet";
-      const currentStatus = statusRef.current;
-      if (currentStatus === "listening") {
-        // A second real touch while already open — the WhatsApp
-        // second-tap-to-stop / old toggle's second-tap both land here.
-        heldRef.current = false;
-        runOnJS(callCommit)();
-        return;
+  const finalizeGesture = useCallback(() => {
+    if (heldRef.current) {
+      const wasLocked = lockedRef.current;
+      const heldLongEnough = Date.now() - pressStartedAtRef.current >= HOLD_ENGAGE_MS;
+      // Path 1 (quick tap): leave it open, matching the pre-existing
+      // tap-to-toggle behaviour exactly. Path 2's release-to-stop is a
+      // REAL commit here; path 3 (locked) is handled by the badge's own
+      // Stop control instead, so it does nothing on release.
+      if (!wasLocked && heldLongEnough) {
+        commitRef.current();
       }
-      if (!isStartEligible(currentStatus)) {
-        // permission-denied / processing — replicate the exact behaviour
-        // the tap-to-toggle handler already has for these (open Settings,
-        // or a no-op while busy). No drag semantics make sense here.
-        heldRef.current = false;
-        runOnJS(callToggle)();
-        return;
-      }
-      heldRef.current = true;
-      pressStartedAtRef.current = Date.now();
-      lockedSV.value = false;
-      dragY.value = 0;
-      runOnJS(callHoldStart)();
-    })
-    .onUpdate((event) => {
-      "worklet";
-      if (!heldRef.current || lockedSV.value) return;
-      const clamped = Math.max(-DRAG_VISUAL_MAX, Math.min(0, event.translationY));
-      dragY.value = clamped;
-      runOnJS(markDragging)(clamped < -8);
-      if (event.translationY <= -LOCK_DISTANCE) {
-        lockedSV.value = true;
-        dragY.value = withSpring(0, { damping: 16 });
-        runOnJS(markLocked)();
-      }
-    })
-    .onFinalize(() => {
-      "worklet";
-      if (heldRef.current) {
-        const wasLocked = lockedSV.value;
-        const heldLongEnough = Date.now() - pressStartedAtRef.current >= HOLD_ENGAGE_MS;
-        // Path 1 (quick tap): leave it open, matching the pre-existing
-        // tap-to-toggle behaviour exactly. Path 2's release-to-stop is a
-        // REAL commit here; path 3 (locked) is handled by the badge's own
-        // Stop control instead, so it does nothing on release.
-        if (!wasLocked && heldLongEnough) {
-          runOnJS(callCommit)();
+    }
+    heldRef.current = false;
+    if (!lockedRef.current) {
+      dragY.value = withSpring(0, { damping: 16 });
+    }
+    setDragging(false);
+  }, [dragY]);
+
+  // Lazy useState initializer, not useRef(PanResponder.create(...)): a
+  // useRef initial-value expression re-runs on every render (only its first
+  // result is ever kept), which would rebuild the whole PanResponder object
+  // every time for nothing. useState's initializer function form is the one
+  // React hook guaranteed to run exactly once.
+  const [panResponder] = useState(() =>
+    PanResponder.create({
+      // Capture (root-to-leaf) rather than the bubble-phase
+      // onStartShouldSetPanResponder: claiming here runs BEFORE the inner
+      // Pressable gets a chance to claim its own responder, matching the old
+      // Gesture.Pan's `minDistance(0)` "claims the touch stream immediately"
+      // behaviour so a real touch never reaches `onTogglePress`.
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        const currentStatus = statusRef.current;
+        if (currentStatus === "listening") {
+          // A second real touch while already open — the WhatsApp
+          // second-tap-to-stop / old toggle's second-tap both land here.
+          heldRef.current = false;
+          commitRef.current();
+          return;
         }
-      }
-      heldRef.current = false;
-      if (!lockedSV.value) {
-        dragY.value = withSpring(0, { damping: 16 });
-      }
-      runOnJS(markDragging)(false);
-    });
+        if (!isStartEligible(currentStatus)) {
+          // permission-denied / processing — replicate the exact behaviour
+          // the tap-to-toggle handler already has for these (open Settings,
+          // or a no-op while busy). No drag semantics make sense here.
+          heldRef.current = false;
+          toggleRef.current();
+          return;
+        }
+        heldRef.current = true;
+        pressStartedAtRef.current = Date.now();
+        lockedRef.current = false;
+        dragY.value = 0;
+        holdStartRef.current();
+      },
+      onPanResponderMove: (_event, gestureState) => {
+        if (!heldRef.current || lockedRef.current) return;
+        const clamped = Math.max(-DRAG_VISUAL_MAX, Math.min(0, gestureState.dy));
+        dragY.value = clamped;
+        setDragging(clamped < -8);
+        if (gestureState.dy <= -LOCK_DISTANCE) {
+          lockedRef.current = true;
+          dragY.value = withSpring(0, { damping: 16 });
+          setLocked(true);
+          hapticRecordingLocked();
+        }
+      },
+      onPanResponderRelease: finalizeGesture,
+      // A parent (e.g. a ScrollView) stealing the responder mid-gesture is
+      // not a normal release, but the recording this started should not be
+      // left hanging either — same finalize path as a real release.
+      onPanResponderTerminate: finalizeGesture,
+    }),
+  );
 
   const dragStyle = useAnimatedStyle(() => ({
     opacity: reduceMotion ? (dragY.value < -4 ? 1 : 0) : Math.min(1, -dragY.value / LOCK_DISTANCE),
@@ -294,7 +323,7 @@ export function HoldToRecordMic({
         </View>
       ) : null}
 
-      <GestureDetector gesture={pan}>
+      <View {...panResponder.panHandlers} style={styles.touchArea}>
         <Pressable
           onPress={callToggle}
           accessibilityRole="button"
@@ -306,7 +335,7 @@ export function HoldToRecordMic({
         >
           <MicOrb status={status} onPress={() => {}} interactive={false} size={diameter} style={style} />
         </Pressable>
-      </GestureDetector>
+      </View>
     </View>
   );
 }
