@@ -54,6 +54,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   buildDayAnalysisBundle,
   currentCoachWeekScopeKey,
+  describeCoachProposalFailure,
   extractCoachProposals,
   formatDayAnalysisPrompt,
   todayKey,
@@ -163,6 +164,19 @@ interface ChatMessageView {
   createdAt?: string;
 }
 
+/**
+ * The user message an assistant bubble at `index` was answering — what the
+ * "Ask again" affordance on an unpreparable proposal re-sends. Returns a
+ * plain string so ChatBubble's memo still sees a stable prop.
+ */
+function precedingUserContent(messages: readonly ChatMessageView[], index: number): string | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    const candidate = messages[i];
+    if (candidate?.role === "USER") return candidate.content;
+  }
+  return undefined;
+}
+
 // Memoised: `allMessages` is rebuilt every time `streamingReply` changes —
 // i.e. on every SSE chunk while a reply is streaming in — which otherwise
 // re-rendered every bubble already on screen (each one re-running
@@ -173,10 +187,20 @@ interface ChatMessageView {
 const ChatBubble = memo(function ChatBubble({
   message,
   onApply,
+  retryContent,
+  onRetry,
 }: {
   message: ChatMessageView;
   /** Omitted while a reply is still streaming — half a proposal isn't a proposal. */
   onApply?: (actions: CoachProposalAction[]) => Promise<string>;
+  /**
+   * The user message this reply answered, so a reply whose proposal couldn't
+   * be prepared can offer to re-ask it. A plain string (not a closure) so the
+   * memo above still sees a stable prop for every bubble that isn't the one
+   * currently streaming.
+   */
+  retryContent?: string;
+  onRetry?: (content: string) => void;
 }) {
   const isUser = message.role === "USER";
   // Clock-time only ("9:05 AM"), the same helper and treatment
@@ -259,6 +283,11 @@ const ChatBubble = memo(function ChatBubble({
           <Text style={styles.proposalPendingText}>Preparing a proposed change…</Text>
         </View>
       ) : null}
+      {/* The copy names WHICH of the four ways the block failed (see
+          describeCoachProposalFailure). It used to be one sentence —
+          "Something went wrong preparing that change" — standing in for all
+          of them, including a parse error that a bare `catch {}` had already
+          thrown away, which is how a live failure ended up undiagnosable. */}
       {!message.pending && !proposalPending && proposalUnrenderable ? (
         <View
           style={styles.proposalUnrenderable}
@@ -266,8 +295,19 @@ const ChatBubble = memo(function ChatBubble({
           accessibilityLabel="Coach couldn't prepare that change"
         >
           <Text style={styles.proposalUnrenderableText}>
-            Something went wrong preparing that change. Try asking again.
+            {describeCoachProposalFailure(proposalUnrenderable)}
           </Text>
+          {onRetry && retryContent ? (
+            <Pressable
+              onPress={() => onRetry(retryContent)}
+              accessibilityRole="button"
+              accessibilityLabel="Ask again"
+              accessibilityHint="Sends your previous message to the Coach again"
+              style={({ pressed }) => [styles.proposalRetryButton, pressed && styles.proposalRetryPressed]}
+            >
+              <Text style={styles.proposalRetryLabel}>Ask again</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
       {proposals.map((block, idx) => (
@@ -556,6 +596,16 @@ export default function CoachScreen() {
     [isReadOnly, scopeKey],
   );
 
+  /** Stable across renders so ChatBubble's memo isn't defeated by a fresh
+   *  closure on every SSE chunk. */
+  const retrySend = useCallback(
+    (content: string) => {
+      if (streaming) return;
+      void sendCoachMessage(content);
+    },
+    [sendCoachMessage, streaming],
+  );
+
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed || streaming) return;
@@ -713,11 +763,17 @@ export default function CoachScreen() {
         keyboardShouldPersistTaps="handled"
         accessibilityRole="none"
       >
-        {allMessages.map((m) => (
+        {allMessages.map((m, index) => (
           // A still-streaming reply gets no Apply button: `extractCoachProposals`
           // reports a half-arrived block as `pending`, and offering to apply
           // what has landed so far would let the user agree to a fragment.
-          <ChatBubble key={m.id} message={m} onApply={m.pending ? undefined : applyActions} />
+          <ChatBubble
+            key={m.id}
+            message={m}
+            onApply={m.pending ? undefined : applyActions}
+            retryContent={isReadOnly ? undefined : precedingUserContent(allMessages, index)}
+            onRetry={retrySend}
+          />
         ))}
       </ScrollView>
     );
@@ -1076,6 +1132,8 @@ const styles = StyleSheet.create({
   // something happened and no card to show for it.
   proposalUnrenderable: {
     marginTop: spacing.xs,
+    gap: spacing.xs,
+    alignItems: "flex-start",
     borderRadius: radii.md,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.destructive,
@@ -1085,6 +1143,22 @@ const styles = StyleSheet.create({
   },
   proposalUnrenderableText: {
     ...typography.bodySmall,
+    color: colors.destructive,
+  },
+  // Some malformed blocks are genuinely unrecoverable (see escapeStrayQuotes'
+  // KNOWN LIMIT in packages/shared/src/coach/proposals.ts), and re-asking is
+  // what actually works — so it is a control, not advice inside a sentence.
+  proposalRetryButton: {
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+  },
+  proposalRetryPressed: {
+    opacity: 0.7,
+  },
+  proposalRetryLabel: {
+    ...typography.bodySmall,
+    fontWeight: "700",
     color: colors.destructive,
   },
   // The proposal card itself now lives in
