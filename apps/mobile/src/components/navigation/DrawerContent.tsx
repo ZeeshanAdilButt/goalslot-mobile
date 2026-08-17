@@ -65,6 +65,7 @@ export type DrawerHref =
   | "/categories"
   | "/journal"
   | "/notes"
+  | "/library"
   | "/messages"
   | "/mentees"
   | "/library"
@@ -132,6 +133,12 @@ const NAV_GROUPS: DrawerNavGroup[] = [
     label: "Workspace",
     items: [
       { href: "/notes", label: "Notes", icon: "notes" },
+      // Curated schedule/goal/task templates, browse-and-import. Sits next
+      // to Notes as the other "bring in ready-made content" row — nothing
+      // in the app links here otherwise, so without this row the screen
+      // (registered `href: null` in _layout.tsx, like Reports/Categories
+      // below) was unreachable from the UI entirely.
+      { href: "/library", label: "Library", icon: "library" },
       // Messaging is deployed as a separate service and is absent from
       // builds that don't point at one (see src/lib/messaging-config.ts).
       // A nav row to a screen that can only ever say "unavailable" is worse
