@@ -22,6 +22,12 @@
 // screen), and neither (the last save landed). The cache is patched in both
 // the success AND the queued case — not success-only — specifically so a
 // queued edit isn't lost even if the user backs out before the outbox drains.
+//
+// This screen is also where dictation into a page happens (the Notes tree
+// screen's mic just creates a page and deep-links here with `?voice=1`) —
+// see the "Dictation" block below for why appending a spoken sentence means
+// reading the whole document and writing it back, rather than inserting at
+// the cursor.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -53,18 +59,34 @@ import {
 import { type Note, type NoteDetailResponse } from "@goalslot/shared";
 
 import { LoadingState, QueryErrorState } from "@/components";
+import { DictationPanel } from "@/components/voice/DictationPanel";
+import { useDictationLoop } from "@/hooks/useDictationLoop";
 import { colors, radii, shadows, spacing, typography } from "@/theme";
 import { apiClient } from "@/lib/api-client";
-import { decodeNoteEntities, normalizeContent } from "@/lib/note-content";
+import { appendNoteParagraph, decodeNoteEntities, normalizeContent } from "@/lib/note-content";
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { useCapabilities } from "@/providers/capabilities-provider";
 
 const TITLE_DEBOUNCE_MS = 500;
 const CONTENT_DEBOUNCE_MS = 1000;
 /** How long to wait for the webview editor to report ready before falling
  *  back to the plain-text view. */
 const EDITOR_INIT_TIMEOUT_MS = 8000;
+
+/**
+ * Ceiling on one `editor.getHTML()` round-trip during dictation.
+ *
+ * `getHTML` goes over the webview bridge as an async message whose promise is
+ * RESOLVE-ONLY — the library's AsyncMessages.sendAsyncMessage returns
+ * `new Promise(resolve => ...)` with no reject path and no timeout of its own.
+ * If the webview never answers, that promise never settles; useVoiceCapture's
+ * `settle()` awaits the command with no timeout either, so the microphone
+ * would sit in `processing` forever with no way back. This is the only thing
+ * standing between a wedged webview and a permanently stuck mic.
+ */
+const EDITOR_READ_TIMEOUT_MS = 4000;
 
 /** HTML-to-text for the editor-failed fallback view only. Kept separate from
  *  `htmlToPlainText` because this one renders a whole document rather than a
@@ -335,6 +357,105 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     [note.id, patchCaches, readOnly],
   );
 
+  // --- Dictation ------------------------------------------------------
+  //
+  // WHY READ-MODIFY-WRITE, AND NOT INSERT-AT-CURSOR: there is no
+  // insert-at-cursor. @10play/tentap-editor's whole native-side editor API is
+  // getHTML/getJSON/getText/setContent/setSelection/focus/blur/injectJS/
+  // injectCSS/setEditable — `setContent` (a whole-document replace) is the
+  // only write path it exposes, and the web bundle never puts the underlying
+  // TipTap instance on `window`, so `injectJS` cannot reach
+  // `editor.chain().insertContent(...)` either. So: read the document, append
+  // a paragraph, write the whole thing back.
+  //
+  // Three consequences worth knowing before touching this:
+  //  1. `setContent` does NOT focus the editor, which is exactly what makes
+  //     hands-free dictation work here — no keyboard pops up.
+  //  2. It replaces the whole document, so it must never land under a live
+  //     cursor. Touching the editor (or the title) stops dictation first —
+  //     see `stopForTyping` below.
+  //  3. It emits an update, so the existing debounced autosave WOULD
+  //     eventually persist this on its own. We deliberately do not rely on
+  //     that: `saveContent` is called directly and awaited. The debounce is
+  //     ~1s, `cancelVoice()` on blur does not abort an in-flight phrase, and
+  //     a user who dictates a sentence and immediately hits back would lose
+  //     it into a webview nobody reads again. (It would also make persistence
+  //     depend on `emitUpdate` defaulting true in a minified transitive
+  //     TipTap.) `saveContent` early-returns when nothing changed, so the
+  //     debounced emission that follows is a no-op.
+  const { voice } = useCapabilities();
+
+  /** The in-flight dictation write, if any. `flushPending` waits on it so a
+   *  blur-time `getHTML()` cannot capture the document from BEFORE the
+   *  append and then save that stale copy over the freshly dictated text. */
+  const pendingDictationRef = useRef<Promise<void> | null>(null);
+
+  const appendSpokenPhrase = useCallback(
+    (transcript: string): Promise<void> => {
+      const write = (async () => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const html = await Promise.race([
+          editor.getHTML(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("The editor stopped responding, so that sentence wasn't added.")),
+              EDITOR_READ_TIMEOUT_MS,
+            );
+          }),
+        ]).finally(() => {
+          if (timer !== null) clearTimeout(timer);
+        });
+
+        const next = appendNoteParagraph(typeof html === "string" ? html : "", transcript);
+        editor.setContent(next);
+        // Awaited, not fired and forgotten — see consequence 3 above. This
+        // never throws: `saveContent` routes a network failure to the offline
+        // outbox and surfaces the rest as the passive banner.
+        await saveContent(next);
+      })();
+
+      // Kept even after it settles: awaiting an already-settled promise is
+      // free, so there is no need to clear it, and never clearing means
+      // `flushPending` can't observe a half-updated ref.
+      pendingDictationRef.current = write;
+      return write;
+    },
+    [editor, saveContent],
+  );
+
+  const dictation = useDictationLoop({
+    voice,
+    onPhrase: appendSpokenPhrase,
+    label: "Page dictation",
+    // Dictating before the webview bridge reports ready is precisely the
+    // `getHTML()` hang the timeout above exists for — so don't. `begin()`
+    // parks in "priming" until the editor is up, which on an already-loaded
+    // editor is the very next render (priming is never visibly shown).
+    ready: editorReady,
+    readyFailed: initTimedOut && !editorReady,
+  });
+
+  const { stopForTyping } = dictation;
+
+  /**
+   * Tapping into the document means the user wants to type — capture and
+   * manual editing are mutually exclusive, or the whole-document `setContent`
+   * above would land under a live cursor.
+   *
+   * Done from an RN capture-phase responder on the wrapper rather than from
+   * the editor's own focus state: `<RichText>` is a WebView with no `onFocus`
+   * prop, and `useBridgeState(editor).isFocused` only reaches React Native
+   * riding on a StateUpdate message, which the web bundle emits from
+   * onUpdate/onSelectionUpdate/onTransaction — none of which fire when the
+   * caret is already where the tap put it (see the `editorReady` comment
+   * above for the same channel failing on mount). Returning false means we
+   * observe the touch without claiming it, so the WebView still receives it.
+   */
+  const handleEditorTouchCapture = useCallback(() => {
+    stopForTyping();
+    return false;
+  }, [stopForTyping]);
+
   const handleTitleChange = useCallback(
     (text: string) => {
       setTitle(text);
@@ -364,6 +485,13 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
       titleTimerRef.current = null;
       void saveTitle(titleRef.current);
     }
+    // A dictated phrase is a read-modify-write over an async `getHTML()`.
+    // Reading the document again while one is still in flight would capture
+    // the version from BEFORE the append and then save that over the top of
+    // it — losing the sentence the user just spoke. Wait it out first.
+    // (Rejections are already handled by the dictation loop; swallowed here
+    // so a failed append can't also skip the flush.)
+    await pendingDictationRef.current?.catch(() => undefined);
     try {
       const html = await editor.getHTML();
       if (typeof html === "string") await saveContent(html);
@@ -376,12 +504,34 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   flushPendingRef.current = flushPending;
 
   // Blur (navigating back to the tree, or to any other tab) flushes edits.
+  // The microphone is closed on blur too, but that lives inside
+  // `useDictationLoop`'s own focus effect rather than here — worth knowing
+  // that this screen has TWO blur cleanups, because it is a hidden tab that
+  // stays MOUNTED after back-navigation, so unmount cleanup never runs on
+  // leaving and blur is the only thing that does.
   useFocusEffect(
     useCallback(() => {
       return () => {
         void flushPendingRef.current();
       };
     }, []),
+  );
+
+  // Dictation deep link: `/note/<id>?voice=1`, the shape the Notes tree
+  // screen's mic uses ("new page, start talking"). Consumed once per mounted
+  // editor — the `key={note.id}` remount on the wrapper above makes that
+  // per-note automatically — so a later natural re-focus with the param still
+  // sitting in the URL doesn't reopen the microphone on its own. Same
+  // "consume once" guard journal.tsx uses for `/journal?voice=1`.
+  const { voice: voiceParam } = useLocalSearchParams<{ voice?: string }>();
+  const consumedVoiceParamRef = useRef(false);
+  const beginDictation = dictation.begin;
+  useFocusEffect(
+    useCallback(() => {
+      if (voiceParam !== "1" || consumedVoiceParamRef.current || readOnly) return;
+      consumedVoiceParamRef.current = true;
+      beginDictation();
+    }, [beginDictation, readOnly, voiceParam]),
   );
 
   // Android hardware/gesture back bypasses the in-header BackButton entirely
@@ -496,6 +646,9 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         value={title}
         onChangeText={handleTitleChange}
         editable={!readOnly}
+        // Same mutual exclusion as tapping into the document below: the user
+        // has reached for the keyboard, so stop dictating into the page.
+        onFocus={stopForTyping}
         placeholder="Untitled page"
         placeholderTextColor={colors.mutedForeground}
         returnKeyType="done"
@@ -514,6 +667,29 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         </View>
       ) : null}
 
+      {/* Between the title and the document deliberately: `setContent` never
+          focuses the editor, so dictation never raises the keyboard, and this
+          slot sidesteps the whole iOS-floating-toolbar vs Android-flex-sibling
+          split the bottom of this screen has to deal with. Hidden on a
+          read-only (shared) page and while the editor-failed fallback is
+          showing, since there is nothing writable to dictate into. */}
+      {!readOnly && !showFallback ? (
+        <DictationPanel
+          mode={dictation.mode}
+          voiceState={dictation.voiceState}
+          notice={dictation.notice}
+          listeningPlaceholder="Listening — say what goes on this page…"
+          idleLabel="Dictate — add to this page by voice"
+          micAccessibilityLabel="Dictate into this page"
+          micAccessibilityHint="Starts voice dictation; what you say is added as new paragraphs"
+          onBegin={dictation.begin}
+          onStop={dictation.stop}
+          onResume={dictation.resume}
+          onDismiss={dictation.dismiss}
+          onOpenSettings={dictation.openSettings}
+        />
+      ) : null}
+
       {showFallback ? (
         <ScrollView style={styles.fallbackScroll} contentContainerStyle={styles.fallbackContent}>
           <View style={styles.fallbackNotice}>
@@ -526,12 +702,19 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         </ScrollView>
       ) : (
         <>
-          <RichText
-            editor={editor}
-            onLoad={handleWebViewLoad}
-            onMessage={handleEditorMessage}
-            exclusivelyUseCustomOnMessage={false}
-          />
+          {/* Capture-phase responder, returning false: this observes the touch
+              that lands on the document and stops dictation, without claiming
+              the touch, so the WebView still receives it normally. See
+              `handleEditorTouchCapture` for why the editor's own focus state
+              can't be used for this. */}
+          <View style={styles.editorWrap} onStartShouldSetResponderCapture={handleEditorTouchCapture}>
+            <RichText
+              editor={editor}
+              onLoad={handleWebViewLoad}
+              onMessage={handleEditorMessage}
+              exclusivelyUseCustomOnMessage={false}
+            />
+          </View>
           {!readOnly ? (
             Platform.OS === "ios" ? (
               <KeyboardAvoidingView
@@ -659,6 +842,12 @@ const styles = StyleSheet.create({
     fontWeight: typography.weight.medium,
     lineHeight: 16,
     color: colors.warningForeground,
+  },
+  // Exists only to carry the capture-phase touch handler that stops dictation
+  // when the user taps into the document. `flex: 1` so <RichText> (itself
+  // flex: 1) still fills the same space it did before it was wrapped.
+  editorWrap: {
+    flex: 1,
   },
   // iOS: floats over the WebView, positioned by `avoidIosKeyboard` +
   // KeyboardAvoidingView's "padding" behavior.

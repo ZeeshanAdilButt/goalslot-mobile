@@ -564,8 +564,15 @@ export default function NotesScreen() {
    * offline renders the local row instead of an avoidable load error.
    */
   const createNote = useCallback(
-    async (parentId: string | null) => {
+    async (parentId: string | null, options?: { voice?: boolean }) => {
       if (isCreating) return;
+      // The tree screen has no text surface of its own, so its microphone can
+      // only mean "make me a page and start talking". Rather than a second
+      // dictation implementation living here, it creates the page exactly as
+      // "New page" does and hands off to the editor's own dictation via the
+      // `?voice=1` deep link — one implementation, two entry points, the same
+      // shape journal.tsx uses for `/journal?voice=1`.
+      const voiceSuffix = options?.voice ? "?voice=1" : "";
       setIsCreating(true);
       const optimisticId = genId();
       const payload: CreateNoteDto = { id: optimisticId, title: "Untitled page", content: "", parentId };
@@ -617,7 +624,7 @@ export default function NotesScreen() {
         });
         void queryClient.invalidateQueries({ queryKey: noteQueries.noteQueries.all });
         analytics.track({ name: "noteCreated", payload: { noteId: created.id, parentId } });
-        router.push(`/note/${created.id}`);
+        router.push(`/note/${created.id}${voiceSuffix}`);
       } catch (err) {
         const queued = await queueOfflineEdit("note-create", payload, err, optimisticId);
         if (queued) {
@@ -630,7 +637,7 @@ export default function NotesScreen() {
             readOnly: false,
           });
           notify("Queued — will sync when online", "offline");
-          router.push(`/note/${optimisticId}`);
+          router.push(`/note/${optimisticId}${voiceSuffix}`);
         } else {
           queryClient.setQueryData<Note[]>(listKey, (existing) => (existing ?? []).filter((n) => n.id !== optimisticId));
           offlineAwareNotify(err, "Couldn't create page. Please try again.");
@@ -993,26 +1000,49 @@ export default function NotesScreen() {
         title="Notes"
         subtitle="Pages and subpages, nested however you think."
         action={
-          <Pressable
-            style={[styles.newButton, isCreating && styles.newButtonDisabled]}
-            onPress={() => void createNote(null)}
-            disabled={isCreating}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="New page"
-            accessibilityState={{ disabled: isCreating, busy: isCreating }}
-          >
-            {/* Creating a page is a network round-trip before navigation —
-                without this the button just dimmed with no other feedback,
-                so a real (non-local) connection reads as an unresponsive tap
-                for however long the request takes. */}
-            {isCreating ? (
-              <ActivityIndicator size="small" color={colors.primaryForeground} />
-            ) : (
-              <Icon name="add" size={16} color={colors.primaryForeground} />
-            )}
-            <Text style={styles.newButtonText}>{isCreating ? "Creating…" : "New page"}</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            {/* "New page, and start talking." Secondary treatment (outlined,
+                icon-only) next to the primary "New page" — it is the same
+                action with dictation switched on, not a competing one. The
+                dictation itself lives entirely in the editor this navigates
+                to; there is deliberately no second implementation here. */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.voiceNewButton,
+                isCreating && styles.newButtonDisabled,
+                pressed && styles.voiceNewButtonPressed,
+              ]}
+              onPress={() => void createNote(null, { voice: true })}
+              disabled={isCreating}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="New page by voice"
+              accessibilityHint="Creates a page and starts dictating into it"
+              accessibilityState={{ disabled: isCreating, busy: isCreating }}
+            >
+              <Icon name="mic" size={16} color={colors.primaryText} />
+            </Pressable>
+            <Pressable
+              style={[styles.newButton, isCreating && styles.newButtonDisabled]}
+              onPress={() => void createNote(null)}
+              disabled={isCreating}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="New page"
+              accessibilityState={{ disabled: isCreating, busy: isCreating }}
+            >
+              {/* Creating a page is a network round-trip before navigation —
+                  without this the button just dimmed with no other feedback,
+                  so a real (non-local) connection reads as an unresponsive tap
+                  for however long the request takes. */}
+              {isCreating ? (
+                <ActivityIndicator size="small" color={colors.primaryForeground} />
+              ) : (
+                <Icon name="add" size={16} color={colors.primaryForeground} />
+              )}
+              <Text style={styles.newButtonText}>{isCreating ? "Creating…" : "New page"}</Text>
+            </Pressable>
+          </View>
         }
       />
       <View style={styles.listArea}>
@@ -1439,6 +1469,31 @@ const styles = StyleSheet.create({
     // panel — rows are separated by indentation and depth guides, not by
     // gaps, so a card-per-row treatment would fight the hierarchy.
     backgroundColor: colors.card,
+  },
+  // Two actions now share the header's single action slot, so the row (not
+  // each button) is what hugs the right edge.
+  headerActions: {
+    flexDirection: "row",
+    alignSelf: "flex-end",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  // Secondary to "New page": the brand-accented outlined treatment
+  // (primaryMuted/primaryBorder/primaryText) foundation.ts documents, so it
+  // reads as related to the primary action rather than competing with it.
+  voiceNewButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: minTouchTarget - spacing.md,
+    minWidth: minTouchTarget - spacing.md,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.primaryBorder,
+    backgroundColor: colors.primaryMuted,
+  },
+  voiceNewButtonPressed: {
+    opacity: 0.7,
   },
   newButton: {
     flexDirection: "row",
