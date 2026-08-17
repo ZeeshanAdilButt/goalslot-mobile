@@ -35,7 +35,11 @@ import {
   type AccessibilityActionInfo,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+// GHPressable is aliased rather than shadowing the react-native `Pressable`
+// imported above: only the swipe-action buttons need it, and the dozen other
+// `Pressable`s in this file must stay on React Native's. See
+// `renderLeftActions` for why the left action in particular cannot use RN's.
+import { Gesture, GestureDetector, Pressable as GHPressable } from "react-native-gesture-handler";
 import Swipeable, { type SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 import Animated, {
   runOnJS,
@@ -86,6 +90,10 @@ import {
   hapticLight,
   hapticSlotTick,
 } from "@/lib/haptics";
+import {
+  noteRowAccessibilityActions,
+  noteRowActionIntent,
+} from "@/lib/note-row-actions";
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
@@ -879,7 +887,7 @@ export default function NotesScreen() {
 
   const handleAccessibilityAction = useCallback(
     (note: FlatNote, event: AccessibilityActionEvent) => {
-      switch (event.nativeEvent.actionName) {
+      switch (noteRowActionIntent(event.nativeEvent.actionName)) {
         case "moveUp":
           moveWithinSiblings(note, -1);
           break;
@@ -892,15 +900,21 @@ export default function NotesScreen() {
         case "outdent":
           outdentNote(note);
           break;
-        case "expand":
-        case "collapse":
+        case "toggleCollapse":
           toggleCollapse(note);
+          break;
+        case "delete":
+          // Same destination as the swipe-and-tap path: open the confirmation
+          // dialog. TalkBack cannot perform the horizontal swipe that reveals
+          // the Delete strip, so without this there is no way at all to delete
+          // a page with a screen reader on.
+          setPendingDelete(note);
           break;
         default:
           break;
       }
     },
-    [indentNote, moveWithinSiblings, outdentNote, toggleCollapse],
+    [indentNote, moveWithinSiblings, outdentNote, setPendingDelete, toggleCollapse],
   );
 
   // ---------------------------------------------------------------------
@@ -1245,39 +1259,61 @@ const NoteRow = memo(function NoteRow({
     };
   }, [collapsed]);
 
-  const accessibilityActions = useMemo<AccessibilityActionInfo[]>(() => {
-    const actions: AccessibilityActionInfo[] = [
-      { name: "moveUp", label: "Move up" },
-      { name: "moveDown", label: "Move down" },
-      { name: "indent", label: "Make subpage of previous page" },
-      { name: "outdent", label: "Promote page" },
-    ];
-    if (item.childCount > 0) {
-      actions.push(
-        collapsed
-          ? { name: "expand", label: "Expand subpages" }
-          : { name: "collapse", label: "Collapse subpages" },
-      );
-    }
-    return actions;
-  }, [collapsed, item.childCount]);
+  const accessibilityActions = useMemo<AccessibilityActionInfo[]>(
+    () => noteRowAccessibilityActions({ hasChildren: item.childCount > 0, collapsed }),
+    [collapsed, item.childCount],
+  );
 
   // Favourite is a coloured dot now rather than a "★" baked into the title
   // string, so it has to be announced here or it becomes invisible to
   // screen readers.
   const accessibilityLabel = `"${item.title}", level ${item.depth + 1}, page ${siblingInfo?.position ?? 1} of ${siblingInfo?.count ?? 1}${item.isFavorite ? ", favorite" : ""}`;
 
+  // This button MUST stay a gesture-handler Pressable, not React Native's.
+  //
+  // ReanimatedSwipeable renders BOTH action wrappers unconditionally, as
+  // siblings of the row content, in this order (ReanimatedSwipeable.tsx:582-584):
+  //   idx 0  leftActions   (this Delete strip)
+  //   idx 1  rightActions  (Subpage/Pin, painted on top of idx 0)
+  //   idx 2  the row content itself
+  // Both wrappers are `StyleSheet.absoluteFill` (:607-616), so each covers the
+  // WHOLE row no matter how narrow its contents are, and the only thing hiding
+  // the inactive one is `opacity: progress === 0 ? 0 : 1` (:374, :404).
+  //
+  // With the row swiped open to the left, a tap on the red strip walks the
+  // children back-to-front. Content (idx 2) is translated +96px so the point
+  // falls outside it. Next comes rightActions (idx 1) — invisible, but:
+  //   * iOS  RCTViewComponentView.mm:746 bails out of hitTest on `alpha < 0.01`
+  //          and the parent loop moves on to the next subview, so it reaches
+  //          leftActions and finds this button. That is why the iPhone works.
+  //   * Android  TouchTargetHelper.kt has NO alpha/opacity condition anywhere
+  //          in its hit-test path (`alpha` appears zero times in the file). The
+  //          alpha-0 rightActions overlay geometrically contains the point, so
+  //          it is returned as the touch target and leftActions (idx 0) is
+  //          never reached. The event then bubbles up the React tree from a
+  //          SIBLING subtree, so this onPress is never entered at all — hence
+  //          "nothing happens", with no dialog and no error.
+  //
+  // A gesture-handler Pressable is resolved by GestureHandlerOrchestrator
+  // instead, which explicitly reproduces the iOS pass-through: a ViewGroup with
+  // no background that yields no handler is not accepted as a touch target
+  // (:735-744), so the traversal continues to the next sibling (:617-620) and
+  // reaches this button. This is sibling continuation, NOT an alpha check —
+  // the orchestrator's own minimumAlphaForTraversal is 0.
+  //
+  // Note the other swipe screens (tasks.tsx, journal.tsx, SessionHistory.tsx)
+  // use the LEGACY `Swipeable`, which parks the inactive wrapper at
+  // `translateX: -10000` (Swipeable.tsx:322,334) instead of fading it, so their
+  // left actions are reachable with a plain RN Pressable. Don't "helpfully"
+  // convert those, and don't convert this one back.
   const renderLeftActions = useCallback(
     () => (
-      <Pressable
+      <GHPressable
         style={[styles.swipeAction, styles.deleteAction]}
         onPress={() => {
-          // onDelete must fire regardless of what `.close()` does — it
-          // opens the confirmation dialog, so a throw from `.close()`
-          // (seen on Android when the swipeable is still mid-animation)
-          // must never be able to swallow it silently. Ordered first, and
-          // `.close()` itself guarded, rather than trusting two statements
-          // in a row to both always run.
+          // onDelete first, then a guarded close(): the dialog is the whole
+          // point of the tap, so nothing about dismissing the row may be able
+          // to swallow it.
           onDelete(item);
           try {
             swipeableRef.current?.close();
@@ -1291,7 +1327,7 @@ const NoteRow = memo(function NoteRow({
       >
         <Icon name="trash" size={18} color={colors.destructiveForeground} />
         <Text style={styles.swipeActionText}>Delete</Text>
-      </Pressable>
+      </GHPressable>
     ),
     [item, onDelete],
   );
