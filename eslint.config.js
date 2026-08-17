@@ -109,6 +109,23 @@ export default tseslint.config(
           message:
             "This file renders a text input above a scroll container but handles the soft keyboard nowhere. On Android under edge-to-edge the window does NOT resize for the keyboard, so rows laid out below the keyboard line cannot be scrolled to at all — that is the 'search hides the lower options under keyboard' bug. Fix it with one of: useKeyboardInset() added to the list's contentContainerStyle paddingBottom (see src/hooks/useKeyboardInset.ts for when to prefer this), a KeyboardAvoidingView if something has to be pushed up and stay visible, or KeyboardSheet/BottomSheetScrollView inside a bottom sheet. If this scroll container genuinely can never be covered by an input, disable this line with a comment saying why.",
         },
+        {
+          // A chat thread screen is a hidden tab, so it NEVER UNMOUNTS —
+          // opening a second conversation reuses the same component and the
+          // same native scroll view. Without a reset key, useThreadScroll
+          // carries the previous conversation's pin state (and the list keeps
+          // its literal offset), so the new thread opens part-way up its
+          // history showing a "Jump to latest" pill. That is the reported
+          // "opening a new message many times takes me to an older state".
+          //
+          // Narrow and exact rather than heuristic: it only fires on calls to
+          // this one hook, so it has no false positives, and it fails the
+          // moment a second thread-like screen is written against it.
+          selector:
+            "CallExpression[callee.name='useThreadScroll'] > ObjectExpression:not(:has(Property[key.name='resetKey']))",
+          message:
+            "useThreadScroll needs a `resetKey` (the conversation id). Thread screens are hidden tabs that never unmount, so without it the pin state and the native scroll offset carry over from the previously-opened conversation — the new thread then opens mid-history with a spurious 'Jump to latest' pill.",
+        },
       ],
     },
   },

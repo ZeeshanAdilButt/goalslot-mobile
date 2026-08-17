@@ -46,6 +46,7 @@ import {
   contactsByUserId,
   DEFAULT_PAGE_SIZE,
   findCounterpart,
+  lastReadAtFor,
   mergeOlderMessages,
   applyReadReceipt,
   oldestMessageTimestamp,
@@ -79,6 +80,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
 import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
+import { resolveThreadAnchor } from "@/lib/thread-anchor";
 
 const UNKNOWN_PERSON = "Someone you shared with";
 /** Start paging older history once the user is within this of the top. */
@@ -165,8 +167,75 @@ export default function MessageThreadScreen() {
     currentUserId,
   );
 
-  const { listRef, onScroll, onContentSizeChange, scrollToBottom, isPinned, keyboardVisible } =
-    useThreadScroll({ reduceMotion });
+  // --- Where this visit should land ---------------------------------------
+  //
+  // `markRead()` below fires from a focus effect and echoes a fresh
+  // `lastReadAt` into the conversations-list cache within a few hundred ms of
+  // arriving, so by the time the list has rendered there is no unread
+  // boundary left to read. The boundary therefore has to be SNAPSHOTTED for
+  // the visit, during render, before any of that runs — and held for as long
+  // as the user stays on this conversation.
+  const lastReadSnapshotRef = useRef<{ conversationId: string; lastReadAt: number } | null>(null);
+
+  if (conversationId && lastReadSnapshotRef.current?.conversationId !== conversationId) {
+    // Prefer the conversations-list cache: it is warm whenever the user
+    // arrived from /messages, and it is the same value that decided whether
+    // the row showed an unread dot — so the thread cannot contradict the list
+    // it was opened from. `conversationQuery` is the fallback for entry paths
+    // that skip the list entirely, notably a push deep link into a cold app.
+    const cachedList = queryClient.getQueryData<MessagingConversation[]>(
+      messagingQueries.messagingQueries.conversations(),
+    );
+    const conversation =
+      cachedList?.find((candidate) => candidate.id === conversationId) ?? conversationQuery.data;
+    if (conversation) {
+      lastReadSnapshotRef.current = {
+        conversationId,
+        lastReadAt: lastReadAtFor(conversation, currentUserId),
+      };
+    }
+    // If nothing is cached yet (cold deep link, conversation still loading)
+    // the snapshot stays empty and this visit is treated as fully read, which
+    // lands on the newest message. That is the safe default: the failure the
+    // user reported is being parked in old history they had already read.
+  }
+
+  const snapshot =
+    lastReadSnapshotRef.current?.conversationId === conversationId ? lastReadSnapshotRef.current : null;
+
+  const anchor = useMemo(
+    () =>
+      resolveThreadAnchor({
+        messages,
+        lastReadAt: snapshot?.lastReadAt ?? Number.POSITIVE_INFINITY,
+        currentUserId,
+      }),
+    [currentUserId, messages, snapshot?.lastReadAt],
+  );
+
+  // The anchor is an index into `messages`; the list renders `rows`, which
+  // also carries day separators, so it has to be mapped across by id.
+  const initialIndex = useMemo(() => {
+    if (!anchor.firstUnreadId) return null;
+    const index = rows.findIndex((row) => row.kind === "message" && row.id === anchor.firstUnreadId);
+    return index === -1 ? null : index;
+  }, [anchor.firstUnreadId, rows]);
+
+  const {
+    listRef,
+    onScroll,
+    onContentSizeChange,
+    onScrollBeginDrag,
+    hasSettled,
+    scrollToBottom,
+    isPinned,
+    keyboardVisible,
+  } = useThreadScroll({
+    reduceMotion,
+    // Re-arms pin state per conversation — this screen never unmounts.
+    resetKey: conversationId,
+    initialIndex,
+  });
 
   // --- Mark as read -------------------------------------------------------
 
@@ -277,11 +346,18 @@ export default function MessageThreadScreen() {
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       onScroll(event);
+      // `hasSettled` is what stops a thread paging in history it was never
+      // asked for. The opening scroll used to start from y≈0 and cross this
+      // threshold on its own, so every thread open fetched 50 older messages;
+      // `maintainVisibleContentPosition` then held the view against that
+      // prepended block, which is what parked the user mid-history under a
+      // "Jump to latest" pill on a thread they had fully read.
+      if (!hasSettled) return;
       if (event.nativeEvent.contentOffset.y < LOAD_OLDER_THRESHOLD_PX) {
         void loadOlder();
       }
     },
-    [loadOlder, onScroll],
+    [hasSettled, loadOlder, onScroll],
   );
 
   // --- Send ---------------------------------------------------------------
@@ -393,6 +469,11 @@ export default function MessageThreadScreen() {
   } else {
     body = (
       <FlatList
+        // Remount per conversation. Switching to an already-cached thread
+        // renders no skeleton in between, so without this React reuses the
+        // same native scroll view and it keeps the PREVIOUS conversation's
+        // offset. coach.tsx carries the same key for the same reason.
+        key={conversationId}
         ref={listRef as React.RefObject<FlatList<ThreadRow>>}
         data={rows}
         keyExtractor={(row) => row.id}
@@ -401,6 +482,14 @@ export default function MessageThreadScreen() {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         onContentSizeChange={onContentSizeChange}
+        // A real drag ends the landing phase immediately — the user always
+        // wins a fight over the scroll offset.
+        onScrollBeginDrag={onScrollBeginDrag}
+        // Landing on an unread message can address a row FlatList has not
+        // measured yet. Falling back to the end is better than throwing.
+        onScrollToIndexFailed={() => {
+          listRef.current?.scrollToEnd({ animated: false });
+        }}
         // Prepending older history must not move what the user is reading.
         // `minIndexForVisible: 1` anchors on the first item BELOW the top
         // edge, which is the item they're actually looking at.
@@ -449,7 +538,11 @@ export default function MessageThreadScreen() {
       >
         <View style={styles.body}>{body}</View>
 
-        {!isPinned && rows.length > 0 ? (
+        {/* `hasSettled` matters as much as `isPinned` here: during the
+            opening scroll the offset is meaningless, and showing the pill
+            against it is exactly what the user reported — a "Jump to latest"
+            prompt on a conversation where everything had been read. */}
+        {hasSettled && !isPinned && rows.length > 0 ? (
           <Pressable
             onPress={() => scrollToBottom(true)}
             style={styles.jumpToLatest}
