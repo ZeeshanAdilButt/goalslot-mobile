@@ -12,6 +12,10 @@
 //   5. `activeSessionElapsedMs` / `describeStartConflict` — what to tell the
 //      user about a session that is already running somewhere else when they
 //      press Start (the 409 path).
+//   6. `resolveRetargetedSessionName` / `resolveRefiledEntryName` — which
+//      `taskName` a mid-session retarget must PATCH so the saved entry isn't
+//      named after the goal the user just moved away from, and how an entry
+//      already saved that way gets repaired when it is re-filed.
 
 import {
   formatDuration,
@@ -32,6 +36,90 @@ export function cleanLabel(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** What a mid-session retarget knows about the session it is re-pointing. */
+export interface RetargetedSessionNameInput {
+  /** The session's current denormalised `taskName`, cleanLabel'd. */
+  sessionName: string | null;
+  /** Title of the task attached RIGHT NOW (before this retarget), cleanLabel'd. */
+  currentTaskTitle: string | null;
+  /** Title of the goal attached RIGHT NOW (before this retarget), cleanLabel'd. */
+  currentGoalTitle: string | null;
+  /** The name the new target implies: the new goal's title, or null for "just track time". */
+  nextName: string | null;
+}
+
+/**
+ * The `taskName` a mid-session retarget should PATCH onto /timer/session.
+ *
+ * A session's denormalised name is what a server-side stop writes into the
+ * TimeEntry (see the API's ActiveTimerService#stop, which reads
+ * `session.taskName` verbatim because mobile stops with an empty DTO). Most
+ * names are AUTO-DERIVED: handleStart sends
+ * `selectedTask?.title ?? selectedGoal?.title`, so a session started against
+ * a goal and no task is named after that goal. Some are CHOSEN — a Coach
+ * session named "gym", which has no task or goal behind it at all. Only the
+ * auto-derived ones may follow a retarget; a chosen one has to survive it,
+ * which is what `undefined` ("leave it alone", see the API's
+ * UpdateTimerSessionDto) is for.
+ *
+ * Auto-derived is decided by comparison against what is attached RIGHT NOW: a
+ * name equal to the OUTGOING task's or goal's title was written by this app,
+ * not typed by the user. Without that comparison the old goal's title rode
+ * along onto an entry filed under the new goal — the reported bug, where 46
+ * minutes of "LeafCompute" work saved permanently named "OloStep", which is
+ * what the history row, the web reports' non-task grouping, the screen-reader
+ * string and the delete confirmation all read from.
+ *
+ * `nextName` is null for "Just track time": the server then falls back to its
+ * own DEFAULT_TASK_NAME, matching what the local stop path would have written.
+ */
+export function resolveRetargetedSessionName(
+  input: RetargetedSessionNameInput,
+): string | null | undefined {
+  const { sessionName, currentTaskTitle, currentGoalTitle, nextName } = input;
+  const autoDerived =
+    sessionName === null || sessionName === currentTaskTitle || sessionName === currentGoalTitle;
+  return autoDerived ? nextName : undefined;
+}
+
+/** What re-filing an already-logged entry under a goal knows about that entry. */
+export interface RefiledEntryNameInput {
+  /** The entry's task id — a real task's name is never auto-derived, so this vetoes. */
+  entryTaskId: string | null;
+  /** The entry's stored `taskName`, cleanLabel'd. */
+  entryTaskName: string | null;
+  /** Every goal title the user has, cleanLabel'd. Empty while the list is loading. */
+  goalTitles: (string | null)[];
+  /** Title of the goal being filed under, cleanLabel'd. */
+  nextGoalTitle: string | null;
+}
+
+/**
+ * The repair half of `resolveRetargetedSessionName`: the `taskName` to send
+ * when the user re-files an EXISTING entry under a goal, or `undefined` to
+ * leave the name alone.
+ *
+ * Entries already saved with a stale auto-derived name (the bug this file's
+ * sibling fixes) can't be corrected on mobile otherwise — the row can be
+ * moved to the right goal or deleted, but its name is stuck, and that name is
+ * what the web reports group by. Tapping the row and picking the right goal
+ * now renames it too.
+ *
+ * The signature of an auto-derived name is that it is *literally the title of
+ * one of the user's own goals* — that is the only thing handleStart and a
+ * retarget ever write. A name the user or the Coach chose ("gym") matches no
+ * goal and is left alone, and an entry with a real task behind it is never
+ * touched at all. Fails safe in both directions: an unloaded goal list is
+ * empty, and a goal with no usable title yields no rename.
+ */
+export function resolveRefiledEntryName(input: RefiledEntryNameInput): string | undefined {
+  const { entryTaskId, entryTaskName, goalTitles, nextGoalTitle } = input;
+  if (entryTaskId !== null) return undefined;
+  if (entryTaskName === null || nextGoalTitle === null) return undefined;
+  if (entryTaskName === nextGoalTitle) return undefined;
+  return goalTitles.includes(entryTaskName) ? nextGoalTitle : undefined;
 }
 
 /**

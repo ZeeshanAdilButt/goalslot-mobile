@@ -16,6 +16,8 @@ import {
   isLiveStoreIdleForAutoSelect,
   readStartConflict,
   resolveEffectiveTimer,
+  resolveRefiledEntryName,
+  resolveRetargetedSessionName,
   resolveScheduledTarget,
   type AutoSelectGuardInput,
   type LocalTimerSnapshot,
@@ -520,5 +522,192 @@ describe("describeStartConflict", () => {
     expect(describeStartConflict(goalOnly, AT)).toContain('"Fitness"');
     const nameOnly = dormantSession({ taskName: "gym" });
     expect(describeStartConflict(nameOnly, AT)).toContain('"gym"');
+  });
+});
+
+describe("resolveRetargetedSessionName", () => {
+  // THE REPORTED BUG. handleStart names a session after its goal when no task
+  // is attached, so a session started on "OloStep" carries taskName
+  // "OloStep". Changing the goal mid-run to "LeafCompute" used to PATCH the
+  // goal alone, and mobile stops with an empty DTO — so the API copied the
+  // stale name straight into the TimeEntry, and 46 minutes of LeafCompute
+  // work saved permanently labelled "OloStep".
+  it("renames a goal-derived name when the goal changes mid-session", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "OloStep",
+        currentTaskTitle: null,
+        currentGoalTitle: "OloStep",
+        nextName: "LeafCompute",
+      }),
+    ).toBe("LeafCompute");
+  });
+
+  // The case commit 908d2f1 exists to protect: a Coach session named "gym"
+  // must keep that name when a goal is attached or swapped under it.
+  // `undefined` is the API's "leave this field alone".
+  it("keeps a deliberately chosen name when the goal changes", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "gym",
+        currentTaskTitle: null,
+        currentGoalTitle: "Fitness",
+        nextName: "Health",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps a chosen name on a session that has no goal attached yet", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "gym",
+        currentTaskTitle: null,
+        currentGoalTitle: null,
+        nextName: "Fitness",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("replaces the title of a task being detached", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "Write the deck",
+        currentTaskTitle: "Write the deck",
+        currentGoalTitle: "Work",
+        nextName: "LeafCompute",
+      }),
+    ).toBe("LeafCompute");
+  });
+
+  it("names an unnamed session after the target it just got", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: null,
+        currentTaskTitle: null,
+        currentGoalTitle: null,
+        nextName: "LeafCompute",
+      }),
+    ).toBe("LeafCompute");
+  });
+
+  // handlePickNone ("Just track time"): an explicit de-attribution that used
+  // to leave the session named after the goal it had just removed.
+  it("clears a derived name when everything is detached", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "OloStep",
+        currentTaskTitle: null,
+        currentGoalTitle: "OloStep",
+        nextName: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps a chosen name even when everything is detached", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "gym",
+        currentTaskTitle: null,
+        currentGoalTitle: "Fitness",
+        nextName: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  // handleClearTask ("No task"): keeps the goal, so the derived name follows
+  // the goal that is still attached rather than the task that just left.
+  it("falls back to the remaining goal's title when only the task is dropped", () => {
+    expect(
+      resolveRetargetedSessionName({
+        sessionName: "Write the deck",
+        currentTaskTitle: "Write the deck",
+        currentGoalTitle: "Work",
+        nextName: "Work",
+      }),
+    ).toBe("Work");
+  });
+});
+
+describe("resolveRefiledEntryName", () => {
+  const GOALS = ["OloStep", "LeafCompute", "Better bonding"];
+
+  // The repair for rows this bug already corrupted: an entry saved named
+  // "OloStep" but filed under LeafCompute. Re-filing it from the history row
+  // renames it, which is the only way to correct one on mobile.
+  it("renames an entry whose name is another goal's title", () => {
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: "OloStep",
+        goalTitles: GOALS,
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBe("LeafCompute");
+  });
+
+  it("leaves a name the user chose alone", () => {
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: "gym",
+        goalTitles: GOALS,
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("never touches an entry that has a real task behind it", () => {
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: "task-1",
+        entryTaskName: "OloStep",
+        goalTitles: GOALS,
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("sends nothing when the name already matches the goal being filed under", () => {
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: "LeafCompute",
+        goalTitles: GOALS,
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("fails safe while the goal list is still loading", () => {
+    // An empty list must never be read as "this name matches no goal, so the
+    // user chose it" in the renaming direction — it just means we can't tell.
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: "OloStep",
+        goalTitles: [],
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("sends nothing when either title is unusable", () => {
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: null,
+        goalTitles: GOALS,
+        nextGoalTitle: "LeafCompute",
+      }),
+    ).toBeUndefined();
+    // Never PATCH an empty taskName: updateTimeEntrySchema requires min(1).
+    expect(
+      resolveRefiledEntryName({
+        entryTaskId: null,
+        entryTaskName: "OloStep",
+        goalTitles: GOALS,
+        nextGoalTitle: null,
+      }),
+    ).toBeUndefined();
   });
 });

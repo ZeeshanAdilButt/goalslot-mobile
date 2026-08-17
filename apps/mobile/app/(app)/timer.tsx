@@ -82,6 +82,8 @@ import {
   NOTIFICATION_DORMANT_TOLERANCE_MS,
   readStartConflict,
   resolveEffectiveTimer,
+  resolveRefiledEntryName,
+  resolveRetargetedSessionName,
   resolveScheduledTarget,
 } from "@/lib/timer-attribution";
 import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store";
@@ -788,7 +790,7 @@ export default function TimerScreen() {
   const attachToEntry = useCallback(
     async (
       entry: TimeEntry,
-      patch: { taskId?: string; taskTitle?: string; goalId?: string },
+      patch: { taskId?: string; taskTitle?: string; goalId?: string; taskName?: string },
     ) => {
       setAttachingEntryId(entry.id);
       try {
@@ -910,7 +912,20 @@ export default function TimerScreen() {
       const target = pickerTarget;
       userSelectedRef.current = true;
       if (target?.kind === "entry") {
-        void attachToEntry(target.entry, { goalId: goal.id });
+        // Re-filing an already-saved entry. If its name is only the title of
+        // whatever goal it used to carry, it moves with the goal — that is
+        // the sole in-app repair for rows already written with a stale name
+        // (see resolveRefiledEntryName); a chosen name is left alone.
+        const renamed = resolveRefiledEntryName({
+          entryTaskId: target.entry.taskId ?? null,
+          entryTaskName: cleanLabel(target.entry.taskName),
+          goalTitles: goalsQuery.data?.map((g) => cleanLabel(g.title)) ?? [],
+          nextGoalTitle: cleanLabel(goal.title),
+        });
+        void attachToEntry(target.entry, {
+          goalId: goal.id,
+          ...(renamed === undefined ? {} : { taskName: renamed }),
+        });
         return;
       }
       // A task only makes sense under its own goal, so switching goals drops
@@ -929,17 +944,19 @@ export default function TimerScreen() {
             goalId: goal.id,
             taskId: keptTask?.id ?? null,
             // The session's denormalised name is what a server-side stop
-            // writes into the TimeEntry, so a name left over from a task
+            // writes into the TimeEntry, so a name left over from the target
             // we're detaching would file this session under something it is
-            // no longer tracking. `undefined` means "leave it alone" (see
-            // ActiveTimerAttributionInput), which is what protects a name the
-            // user actually chose — a Coach session named "gym" keeps that
-            // name when a goal is added to it.
+            // no longer tracking. The decision (and why a name the user
+            // actually chose is left alone instead) lives in
+            // resolveRetargetedSessionName, which has the regression test.
             taskName: keptTask
               ? keptTask.title
-              : effectiveTaskId !== null || sessionName === null
-                ? goal.title
-                : undefined,
+              : resolveRetargetedSessionName({
+                  sessionName,
+                  currentTaskTitle: taskTitle,
+                  currentGoalTitle: goalTitle,
+                  nextName: goal.title,
+                }),
           },
           "Couldn't attach that goal. Your timer is still running.",
           () => handlePickGoal(goal),
@@ -956,7 +973,21 @@ export default function TimerScreen() {
       // `onClose` — immediately if the goal has no tasks to narrow to,
       // otherwise once the user picks one of them or backs out.
     },
-    [activeTask, attachToEntry, effectiveTaskId, hasServerSession, patchServerSession, pickerTarget, retarget, sessionName],
+    // `goalTitle`/`taskTitle` are load-bearing here, not lint hygiene: they
+    // are compared against `sessionName`, and a callback not recreated when
+    // they change would compare two values captured in different renders.
+    [
+      activeTask,
+      attachToEntry,
+      goalTitle,
+      goalsQuery.data,
+      hasServerSession,
+      patchServerSession,
+      pickerTarget,
+      retarget,
+      sessionName,
+      taskTitle,
+    ],
   );
 
   /** "Just track time" — clears both slots, pre-start or mid-run. */
@@ -967,7 +998,20 @@ export default function TimerScreen() {
     setSelectedGoal(null);
     if (hasServerSession) {
       void patchServerSession(
-        { taskId: null, goalId: null },
+        {
+          taskId: null,
+          goalId: null,
+          // Detaching everything has to drop an auto-derived name too, or an
+          // explicit "just track time" still saves the entry named after the
+          // goal the user just removed. `null` lets the server fall back to
+          // its own DEFAULT_TASK_NAME; a name the user chose is left alone.
+          taskName: resolveRetargetedSessionName({
+            sessionName,
+            currentTaskTitle: taskTitle,
+            currentGoalTitle: goalTitle,
+            nextName: null,
+          }),
+        },
         "Couldn't clear that attribution. Your timer is still running.",
         () => handlePickNone(),
         () => retarget(undefined, undefined),
@@ -975,7 +1019,7 @@ export default function TimerScreen() {
       return;
     }
     retarget(undefined, undefined);
-  }, [hasServerSession, patchServerSession, retarget]);
+  }, [goalTitle, hasServerSession, patchServerSession, retarget, sessionName, taskTitle]);
 
   /**
    * "No task" — drops the task and keeps the goal. The other half of making
@@ -994,9 +1038,16 @@ export default function TimerScreen() {
       void patchServerSession(
         {
           taskId: null,
-          // Same reasoning as handlePickGoal: the leftover name would file
-          // this session under the task it no longer has.
-          taskName: goalTitle ?? null,
+          // Same reasoning as handlePickGoal, through the same helper: the
+          // leftover name would file this session under the task it no longer
+          // has — but a name the user chose has to survive this too, which
+          // the unconditional `goalTitle ?? null` this replaced did not do.
+          taskName: resolveRetargetedSessionName({
+            sessionName,
+            currentTaskTitle: taskTitle,
+            currentGoalTitle: goalTitle,
+            nextName: goalTitle,
+          }),
         },
         "Couldn't clear that task. Your timer is still running.",
         () => handleClearTask(),
@@ -1005,7 +1056,16 @@ export default function TimerScreen() {
       return;
     }
     applyLocally();
-  }, [goalTitle, hasServerSession, patchServerSession, retarget, selectedGoal, selectedTask]);
+  }, [
+    goalTitle,
+    hasServerSession,
+    patchServerSession,
+    retarget,
+    selectedGoal,
+    selectedTask,
+    sessionName,
+    taskTitle,
+  ]);
 
   /**
    * The bare `POST /timer/session`. Separated from the error handling around
