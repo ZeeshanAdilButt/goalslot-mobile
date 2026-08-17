@@ -29,6 +29,63 @@
 import { resolveNotificationAction, type NotificationTapAction } from "./deep-links";
 
 /**
+ * Everything `shouldHandleNotificationTap` needs to decide whether a pending
+ * notification response may be dispatched yet.
+ *
+ * `responseId` is the tapped notification's
+ * `notification.request.identifier`; `handledId` is the id this app has
+ * already acted on (tracked in a ref by the caller).
+ */
+export type NotificationTapGate = {
+  status: "loading" | "authenticated" | "unauthenticated";
+  isRestoring: boolean;
+  responseId: string | null;
+  handledId: string | null;
+};
+
+/**
+ * Whether a pending notification tap should be dispatched right now.
+ *
+ * Extracted from app/_layout.tsx's effect so the ordering rules below are
+ * directly unit-testable (see notification-tap.test.ts) instead of only
+ * reachable by rendering the whole navigation tree.
+ *
+ * Two bugs live in the conditions this encodes, both verified against a
+ * react-test-renderer probe of this repo's own expo-router:
+ *
+ *  1. `status === "unauthenticated"` must NOT dispatch. The old guard was
+ *     `status === "loading"` only, so a cold-start tap while signed out
+ *     pushed `/message/<id>` straight into (app)/_layout's
+ *     `<Redirect href="/login"/>`. The target was swallowed and nothing
+ *     remembered it, so after signing in the user landed on Today with the
+ *     conversation they tapped simply gone. Holding the tap until
+ *     `authenticated` is what lets it survive the login detour.
+ *
+ *  2. The same response must fire at most once. Nothing marked a response
+ *     consumed, and the effect's deps include `status` — so any later auth
+ *     transition (session refresh, sign out and back in) re-ran it against
+ *     the SAME stale `lastNotificationResponse` and yanked the user into an
+ *     old conversation out of nowhere.
+ *
+ * `isRestoring` is included because it is half of the render gate below the
+ * effect: `<Slot/>` is only mounted once BOTH conditions clear, and this
+ * predicate deliberately mirrors that gate exactly so the two cannot drift.
+ * (Note: a push issued while `<Slot/>` is unmounted is not actually lost —
+ * expo-router defers nested navigation and replays it when the child
+ * navigator mounts. Matching the gate is about keeping one readable
+ * invariant, not about rescuing a dropped action.)
+ */
+export function shouldHandleNotificationTap(gate: NotificationTapGate): boolean {
+  if (gate.responseId === null) {
+    return false;
+  }
+  if (gate.responseId === gate.handledId) {
+    return false;
+  }
+  return gate.status === "authenticated" && !gate.isRestoring;
+}
+
+/**
  * The side effects a tap can produce. Injected rather than imported so the
  * dispatch logic can be tested without a navigator, a Linking module or an
  * OTA update server.
