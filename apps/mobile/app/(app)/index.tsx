@@ -65,6 +65,8 @@ import { FocusNowCard } from "@/components/today/FocusNowCard";
 import { GoalProgressRow } from "@/components/today/GoalProgressRow";
 import { JournalPromptCard, type JournalPromptState } from "@/components/today/JournalPromptCard";
 import { PressableScale } from "@/components/today/PressableScale";
+import { QUICK_ACCESS_ITEMS, type QuickAccessItem } from "@/components/today/quick-access";
+import { QuickAccessRail } from "@/components/today/QuickAccessRail";
 import { QuickActionCard } from "@/components/today/QuickActionCard";
 import { SectionEmpty } from "@/components/today/SectionEmpty";
 import { StatCard } from "@/components/today/StatCard";
@@ -126,6 +128,12 @@ const ROUTES = {
   reports: "/reports" as Href,
   settings: "/settings" as Href,
   instructions: "/instructions" as Href,
+  // "Sharing" everywhere in the UI (_layout.tsx's Tabs.Screen title,
+  // DrawerContent, search-index.ts) — the route keeps its older `mentees`
+  // filename. This is the screen that lists the people who've shared their
+  // data with you, and each row on it opens that person's reports.
+  mentees: "/mentees" as Href,
+  coach: "/coach" as Href,
 };
 
 // Most preview rows a mentee sees before "+N more" takes over. Small on
@@ -405,6 +413,12 @@ export default function TodayScreen() {
   const goGoals = useCallback(() => go(ROUTES.goals), [go]);
   const goJournal = useCallback(() => go(ROUTES.journal), [go]);
   const goInstructions = useCallback(() => go(ROUTES.instructions), [go]);
+  const goMentees = useCallback(() => go(ROUTES.mentees), [go]);
+  const goCoach = useCallback(() => go(ROUTES.coach), [go]);
+
+  // The rail hands back the whole item rather than a bound handler, so one
+  // stable callback covers all four destinations.
+  const onQuickAccess = useCallback((item: QuickAccessItem) => go(item.href), [go]);
 
   // The FAB's menu mixes three sheet-openers with one navigation, so the pick
   // handler has to fork. Deliberately NOT folded into `openQuickAdd`, which
@@ -520,6 +534,33 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
+        {/* Quick-access rail: Notes, Reports, Shared, Coach. The four
+            destinations with no above-the-fold entry point — Notes and
+            Reports only had tiles in "Jump back in", which is the LAST child
+            of this ScrollView (below the hero, this journal card, the stat
+            grid and three list sections), and Sharing/Coach had no Today
+            entry at all, only the drawer.
+
+            Position matters twice over:
+              - It has to sit below y≈144. The floating button column in
+                app/(app)/_layout.tsx is absolutely positioned top-right and
+                stacks three 40pt buttons downward (menu, search, bell), so
+                its lowest live Pressable ends ~144pt under the safe-area
+                top. A row of tap targets placed level with that would put
+                its rightmost item under the bell — exactly the tap-eating
+                bug already documented in _layout.tsx's own comments. After
+                the hero + journal cards the rail starts well past 300pt.
+              - It stays above the stat grid, so it's still on the first
+                screen without scrolling.
+
+            It's under the journal card rather than between the hero and it
+            on purpose: the note above says the journal card reads as a
+            companion to the hero, and splitting that pair would cost more
+            than the ~90pt the rail gains by moving up. */}
+        <Stagger index={3} reduceMotion={reduceMotion}>
+          <QuickAccessRail items={QUICK_ACCESS_ITEMS} onSelect={onQuickAccess} />
+        </Stagger>
+
         {/* Mentor-assigned instructions, above the fold and above the stat
             grid — the goal is that a mentee sees what's been asked of them
             the moment the app opens, not buried behind "View all" on a
@@ -532,7 +573,7 @@ export default function TodayScreen() {
             sections going wrong, and doesn't merit another error banner
             above the fold. */}
         {pendingInstructions.length > 0 ? (
-          <Stagger index={3} reduceMotion={reduceMotion}>
+          <Stagger index={4} reduceMotion={reduceMotion}>
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <View
@@ -599,7 +640,7 @@ export default function TodayScreen() {
             dashboard-stats.tsx is the same four measures (today's focus
             time, a longer-window total, active goals, task throughput) in a
             single row of four. */}
-        <Stagger index={4} reduceMotion={reduceMotion}>
+        <Stagger index={5} reduceMotion={reduceMotion}>
           <View style={styles.statGrid}>
             <View style={styles.statRow}>
               {/* Each value collapses to UNKNOWN_STAT when its query failed
@@ -649,7 +690,7 @@ export default function TodayScreen() {
           </View>
         </Stagger>
 
-        <Stagger index={5} reduceMotion={reduceMotion}>
+        <Stagger index={6} reduceMotion={reduceMotion}>
           <Section
             title="Today's schedule"
             count={todaysBlocks.length}
@@ -692,7 +733,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={6} reduceMotion={reduceMotion}>
+        <Stagger index={7} reduceMotion={reduceMotion}>
           <Section title="Due today" count={dueTodayTasks.length} onViewAll={goTasks} viewAllLabel="tasks">
             {tasksQuery.isPending ? (
               <>
@@ -741,7 +782,7 @@ export default function TodayScreen() {
           </Section>
         </Stagger>
 
-        <Stagger index={7} reduceMotion={reduceMotion}>
+        <Stagger index={8} reduceMotion={reduceMotion}>
           <Section
             title="Goal progress"
             count={activeGoalsQuery.data?.length ?? 0}
@@ -797,7 +838,7 @@ export default function TodayScreen() {
             destinations; everything else lives behind a hamburger most
             users never open, which was a confirmed discoverability problem
             (see the note in app/(app)/_layout.tsx). */}
-        <Stagger index={8} reduceMotion={reduceMotion}>
+        <Stagger index={9} reduceMotion={reduceMotion}>
           <View style={styles.section}>
             <Text style={styles.sectionTitle} accessibilityRole="header">
               Jump back in
@@ -840,6 +881,17 @@ export default function TodayScreen() {
                   onPress={() => go(ROUTES.notes)}
                 />
               </View>
+              {/* Sharing sits next to Reports because it IS reports — the
+                  other direction of them. /reports is your own numbers;
+                  /mentees lists the people who've shared their data with
+                  you, and each row there opens /mentee/{ownerId}, a real
+                  reports view over that person's shared time entries and
+                  goals. Both were holes in this grid: Sharing and Coach had
+                  no Today entry at all, only the drawer, and this grid's
+                  whole job is to be the complete list of off-tab
+                  destinations. Rows stay two-up — `actionRow` is a flex row
+                  of `flex: 1` cards, so a lone card renders full-width and
+                  breaks the rhythm of the rows above it. */}
               <View style={styles.actionRow}>
                 <QuickActionCard
                   title="Reports"
@@ -847,6 +899,22 @@ export default function TodayScreen() {
                   icon="reports"
                   accessibilityLabel="Open reports"
                   onPress={() => go(ROUTES.reports)}
+                />
+                <QuickActionCard
+                  title="Sharing"
+                  subtitle="Reports shared with you"
+                  icon="mentees"
+                  accessibilityLabel="Open reports people have shared with you"
+                  onPress={goMentees}
+                />
+              </View>
+              <View style={styles.actionRow}>
+                <QuickActionCard
+                  title="Coach"
+                  subtitle="Ask the AI"
+                  icon="coach"
+                  accessibilityLabel="Open Coach AI"
+                  onPress={goCoach}
                 />
                 <QuickActionCard
                   title="Settings"
