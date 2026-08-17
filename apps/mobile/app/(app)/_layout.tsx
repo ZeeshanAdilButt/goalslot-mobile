@@ -24,7 +24,7 @@ import { BELL_SCOPE } from "@/lib/notification-feed";
 import { notificationQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useTimerStore } from "@/lib/timer-store";
-import { syncWidgets } from "@/widgets/widget-sync";
+import { RUNNING_SYNC_INTERVAL_MS, syncWidgets } from "@/widgets/widget-sync";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 /**
@@ -302,17 +302,33 @@ export default function AppLayout() {
 
   // Keeps the home-screen widget in step with the app on BOTH platforms —
   // see src/widgets/widget-sync.ts for why the two need different machinery
-  // behind one call. Three triggers:
+  // behind one call. Four triggers:
   //
   //  1. mount — this layout only mounts once authenticated, so it doubles as
   //     "just signed in / just opened the app".
   //  2. foreground — picks up anything that changed while backgrounded.
-  //  3. timer transitions — the important one. Neither platform notices a
-  //     session starting on its own: Android would wait for the next
-  //     `updatePeriodMillis` tick (30 min) and iOS for the next foreground,
-  //     so without this a running timer simply doesn't appear on the home
-  //     screen. Keyed on the fields the widget actually renders, so an
-  //     unrelated store write doesn't cause a redraw.
+  //  3. timer transitions — neither platform notices a session starting on
+  //     its own: Android would wait for the next `updatePeriodMillis` tick
+  //     (30 min) and iOS for the next foreground, so without this a running
+  //     timer simply doesn't appear on the home screen. Keyed on the fields
+  //     the widget actually renders, so an unrelated store write doesn't
+  //     cause a redraw.
+  //  4. a tick every RUNNING_SYNC_INTERVAL_MS while a session is RUNNING —
+  //     without this, trigger 3 draws the progress bar correctly at the
+  //     moment a session starts/resumes and then never again: nothing was
+  //     redrawing it as elapsed time (and therefore the bar's fill fraction)
+  //     kept moving, so it looked "TRACKING · 27m" with a bar frozen at
+  //     whatever fraction was true when the session last started, resumed,
+  //     or the app was last foregrounded. Reported as "tracking widget bar
+  //     doesn't progress on android". Same shape as GlobalTrackingBanner's
+  //     own `setInterval` for the in-app clock digits — started/stopped on
+  //     the RUNNING transition, not a store-owned interval (see
+  //     timer-store.ts's header for why the store itself never ticks).
+  //     This only closes the gap while this layout's JS is actually alive
+  //     (foregrounded, or briefly backgrounded before Android suspends RN
+  //     timers); it does not reach the "app fully closed, just looking at
+  //     the home screen" case, which needs a native scheduler and is out of
+  //     scope for this effect.
   useEffect(() => {
     void syncWidgets();
 
@@ -332,6 +348,19 @@ export default function AppLayout() {
       },
     );
 
+    let runningSyncInterval: ReturnType<typeof setInterval> | undefined;
+    const stopRunningSync = () => {
+      if (runningSyncInterval !== undefined) {
+        clearInterval(runningSyncInterval);
+        runningSyncInterval = undefined;
+      }
+    };
+    const startRunningSync = () => {
+      if (runningSyncInterval !== undefined) return;
+      runningSyncInterval = setInterval(() => void syncWidgets(), RUNNING_SYNC_INTERVAL_MS);
+    };
+    if (useTimerStore.getState().status === "running") startRunningSync();
+
     const unsubscribeTimer = useTimerStore.subscribe((state, previous) => {
       if (
         state.status !== previous.status ||
@@ -340,11 +369,17 @@ export default function AppLayout() {
       ) {
         void syncWidgets();
       }
+      if (state.status === "running" && previous.status !== "running") {
+        startRunningSync();
+      } else if (state.status !== "running" && previous.status === "running") {
+        stopRunningSync();
+      }
     });
 
     return () => {
       appStateSubscription.remove();
       unsubscribeTimer();
+      stopRunningSync();
     };
   }, []);
 

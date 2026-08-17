@@ -94,7 +94,7 @@ import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
-import { syncWidgets } from "@/widgets/widget-sync";
+import { RUNNING_SYNC_INTERVAL_MS, syncWidgets } from "@/widgets/widget-sync";
 
 const RECENT_SKELETON_ROWS = 4;
 
@@ -777,8 +777,24 @@ export default function TimerScreen() {
   // scope, is a no-op on iOS-without-a-session-change, and swallows its own
   // failures, so firing it here alongside `_layout.tsx`'s own trigger is
   // redundant on a purely local session but harmless.
+  //
+  // The interval below is the same "redundant on a purely local session but
+  // not on a server one" story, for a different bug: firing `syncWidgets()`
+  // only on a transition draws the progress bar correctly the instant a
+  // session starts/resumes and then never again, so the bar sits frozen
+  // while elapsed time (and its fill fraction) keeps moving underneath it —
+  // "tracking widget bar doesn't progress on android". `_layout.tsx` now
+  // covers this for LOCAL-store transitions; this covers the SERVER-only
+  // session case for the same reason the effect above exists — a session
+  // that never touches the local store also never fires `_layout.tsx`'s
+  // subscription. Started/stopped by this effect re-running on every
+  // `effectiveStatus` change rather than tracked imperatively, since this
+  // hook (unlike `_layout.tsx`'s) is already keyed on that value.
   useEffect(() => {
     void syncWidgets();
+    if (effectiveStatus !== "running") return;
+    const id = setInterval(() => void syncWidgets(), RUNNING_SYNC_INTERVAL_MS);
+    return () => clearInterval(id);
   }, [effectiveStatus, effectiveStartedAt]);
 
   /**
