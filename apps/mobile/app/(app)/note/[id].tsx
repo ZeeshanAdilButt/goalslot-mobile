@@ -73,6 +73,7 @@ import {
 import { queueOfflineEdit } from "@/lib/offline";
 import { noteQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
+import { createSequentialWriteQueue, type SequentialWriteQueue } from "@/lib/sequential-write-queue";
 import { useCapabilities } from "@/providers/capabilities-provider";
 
 const TITLE_DEBOUNCE_MS = 500;
@@ -406,24 +407,60 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   //  2. It replaces the whole document, so it must never land under a live
   //     cursor. Touching the editor (or the title) stops dictation first —
   //     see `stopForTyping` below.
-  //  3. It emits an update, so the existing debounced autosave WOULD
-  //     eventually persist this on its own. We deliberately do not rely on
-  //     that: `saveContent` is called directly and awaited. The debounce is
-  //     ~1s, `cancelVoice()` on blur does not abort an in-flight phrase, and
-  //     a user who dictates a sentence and immediately hits back would lose
-  //     it into a webview nobody reads again. (It would also make persistence
-  //     depend on `emitUpdate` defaulting true in a minified transitive
-  //     TipTap.) `saveContent` early-returns when nothing changed, so the
-  //     debounced emission that follows is a no-op.
+  //  3. It emits an update, so the existing debounced autosave (the
+  //     `editedContent` effect below) WOULD eventually persist this on its
+  //     own too. We deliberately do not rely on THAT to be the save for this
+  //     phrase — `saveContent` is called directly and awaited via
+  //     `enqueueContentSave` here. The debounce is ~1s, `cancelVoice()` on
+  //     blur does not abort an in-flight phrase, and a user who dictates a
+  //     sentence and immediately hits back would lose it into a webview
+  //     nobody reads again. But the debounced emission is NOT a no-op: it
+  //     fires its own independent `getHTML()` off natural pauses between
+  //     spoken phrases (routinely >1s), and used to call `saveContent`
+  //     directly, racing this path's writes as two unordered network calls —
+  //     whichever HTTP response landed last won, sometimes stamping the note
+  //     back down to an earlier, shorter snapshot. Both paths now go through
+  //     `enqueueContentSave` (see below) so every content write for this note
+  //     — dictation or debounced typing — is strictly serialized through one
+  //     queue, and a stale read can never be sent after a fresher one still
+  //     in flight.
   const { voice } = useCapabilities();
 
-  /** The in-flight (or queued) dictation write, if any — the LOCAL edit plus
-   *  its network save, chained after whatever the previous phrase's write was
-   *  still doing. `flushPending` waits on it so a blur-time `getHTML()`
-   *  cannot capture the document from BEFORE the append and then save that
-   *  stale copy over the freshly dictated text. See `appendSpokenPhrase` for
-   *  why this is deliberately NOT what gates the mic reopening. */
-  const pendingDictationRef = useRef<Promise<void> | null>(null);
+  // EVERY `saveContent` call for this note (dictation's read-modify-write,
+  // the debounced `editedContent` effect, and `flushPending`) is routed
+  // through this queue instead of calling `saveContent` directly, so the
+  // underlying `apiClient.notes.update` calls stay strictly sequential — the
+  // next write's request is not even sent until the previous one has fully
+  // resolved — and two independent, unordered HTTP round trips can never
+  // race and have the stale one's response land last. See
+  // `sequential-write-queue.ts` for the (separately unit-tested) generic
+  // mechanism. `flushPending` awaits `contentWriteQueueRef.current.pending()`
+  // so a blur-time `getHTML()` cannot capture the document from BEFORE an
+  // in-flight write and then save that stale copy over fresher content. See
+  // `appendSpokenPhrase` for why this queue is deliberately NOT what gates
+  // the mic reopening.
+  //
+  // `saveContent` is read through a ref, not closed over directly, so the
+  // queue instance (built once, via the lazy useRef initializer) can outlive
+  // every render even though `saveContent`'s identity changes whenever its
+  // own dependencies (e.g. `formatLocked`) do.
+  const saveContentRef = useRef(saveContent);
+  saveContentRef.current = saveContent;
+  const contentWriteQueueRef = useRef<SequentialWriteQueue<string> | null>(null);
+  if (!contentWriteQueueRef.current) {
+    contentWriteQueueRef.current = createSequentialWriteQueue<string>((html) => saveContentRef.current(html));
+  }
+
+  /** Enqueue a content save behind whatever this note's write queue is
+   *  currently doing, so `apiClient.notes.update` calls for this note are
+   *  always sent in the order they were initiated rather than left to race
+   *  as independent, unordered `fetch` calls. Every caller — dictation and
+   *  the debounced `editedContent` effect alike — must route through this
+   *  rather than calling `saveContent` directly, or its write can leapfrog
+   *  (or be leapfrogged by) another one still in flight. */
+  const enqueueContentSave = useCallback((html: string): Promise<void> => {
+    return contentWriteQueueRef.current!.enqueue(html);
+  }, []);
 
   const appendSpokenPhrase = useCallback(
     (transcript: string): Promise<void> => {
@@ -489,38 +526,30 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
         return next;
       })();
 
-      // WRITE QUEUE — the network save is chained behind the PREVIOUS
-      // phrase's full write (local edit + save), not just this phrase's own
-      // local edit, so saves reach the server in the same order the phrases
-      // were spoken even when their HTTP round trips don't resolve in that
-      // order. Without this, a slow save for an earlier phrase resolving
-      // after a faster save for a later one would stamp `lastSavedContentRef`
-      // (and the cache, via `patchCaches`) back down to the earlier, shorter
-      // content. Deliberately built off `local`/the returned promise rather
-      // than the other way around, so this queuing never blocks the mic from
-      // reopening.
-      const previousWrite = pendingDictationRef.current;
-      const write = local.then(async (next) => {
-        if (previousWrite) await previousWrite.catch(() => undefined);
-        // Awaited by `flushPending` via `pendingDictationRef`, not by the
-        // dictation loop. This never throws: `saveContent` routes a network
-        // failure to the offline outbox and surfaces the rest as the passive
-        // banner.
-        await saveContent(next);
-      });
+      // WRITE QUEUE — the network save goes through `enqueueContentSave`,
+      // the same queue the debounced `editedContent` effect and
+      // `flushPending` use, so saves reach the server in the same order the
+      // phrases were spoken (and can never be leapfrogged by a debounced
+      // save of stale content firing off a mid-dictation pause) even when
+      // their HTTP round trips don't resolve in that order. Without this, a
+      // slow save resolving after a faster/later one — dictation's own or
+      // the debounced autosave's — would stamp `lastSavedContentRef` (and
+      // the cache, via `patchCaches`) back down to earlier, shorter content.
+      // Deliberately built off `local`/the returned promise rather than the
+      // other way around, so this queuing never blocks the mic from
+      // reopening. Awaited by `flushPending` via `contentWriteQueueRef`, not by
+      // the dictation loop. This never throws: `saveContent` routes a
+      // network failure to the offline outbox and surfaces the rest as the
+      // passive banner.
+      const write = local.then((next) => enqueueContentSave(next));
       // Observed here so a rejected `local` — already surfaced through the
       // returned promise below, which the dictation loop awaits and turns
       // into the soft-stopped notice/toast — doesn't ALSO produce an
       // unhandled promise rejection on this separate background chain.
       write.catch(() => undefined);
-
-      // Kept even after it settles: awaiting an already-settled promise is
-      // free, so there is no need to clear it, and never clearing means
-      // `flushPending` can't observe a half-updated ref.
-      pendingDictationRef.current = write;
       return local.then(() => undefined);
     },
-    [editor, saveContent],
+    [editor, enqueueContentSave],
   );
 
   const dictation = useDictationLoop({
@@ -568,12 +597,20 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
     [saveTitle],
   );
 
-  // Save each debounced content emission.
+  // Save each debounced content emission. Routed through `enqueueContentSave`
+  // rather than calling `saveContent` directly: `useEditorContent`'s own
+  // debounce timer restarts on every `onUpdate`, including the ones dictation
+  // fires via `setContent`, so a natural pause between spoken phrases (often
+  // >1s) can fire this effect mid-dictation with a `getHTML()` read of
+  // content from BEFORE the phrase in flight. Without a shared queue that
+  // "shadow save" and a dictation write racing as two independent, unordered
+  // `apiClient.notes.update` calls could resolve out of order and have the
+  // stale one win — see the write-queue comment on `contentWriteQueueRef` above.
   useEffect(() => {
     if (typeof editedContent === "string") {
-      void saveContent(editedContent);
+      void enqueueContentSave(editedContent);
     }
-  }, [editedContent, saveContent]);
+  }, [editedContent, enqueueContentSave]);
 
   /** Flush anything pending right now — called on blur while the webview is
    *  still alive, so getHTML() can capture keystrokes newer than the last
@@ -589,20 +626,24 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
       titleTimerRef.current = null;
       void saveTitle(titleRef.current);
     }
-    // A dictated phrase is a read-modify-write over an async `getHTML()`.
-    // Reading the document again while one is still in flight would capture
-    // the version from BEFORE the append and then save that over the top of
-    // it — losing the sentence the user just spoke. Wait it out first.
-    // (Rejections are already handled by the dictation loop; swallowed here
-    // so a failed append can't also skip the flush.)
-    await pendingDictationRef.current?.catch(() => undefined);
+    // A dictated phrase (or a debounced content emission) is a read-modify-
+    // write over an async `getHTML()`. Reading the document again while one
+    // is still in flight would capture the version from BEFORE that write
+    // and then save that over the top of it — losing the sentence the user
+    // just spoke, or a shadow save landing after this flush and stamping the
+    // note back down. Wait out the ENTIRE write queue first, not just
+    // dictation's own chain, so this flush actually waits for everything in
+    // flight for this note. (Rejections are already handled by the dictation
+    // loop / the debounce effect; swallowed here so a failed write can't also
+    // skip the flush.)
+    await contentWriteQueueRef.current?.pending()?.catch(() => undefined);
     try {
       const html = await editor.getHTML();
-      if (typeof html === "string") await saveContent(html);
+      if (typeof html === "string") await enqueueContentSave(html);
     } catch {
       // Webview already torn down — the last debounced emission was saved.
     }
-  }, [editor, formatLocked, readOnly, saveContent, saveTitle]);
+  }, [editor, enqueueContentSave, formatLocked, readOnly, saveTitle]);
 
   const flushPendingRef = useRef(flushPending);
   flushPendingRef.current = flushPending;
