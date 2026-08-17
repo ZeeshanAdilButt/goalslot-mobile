@@ -112,6 +112,8 @@ __export(index_exports, {
   createTaskQueries: () => createTaskQueries,
   createTaskSchema: () => createTaskSchema,
   createTasksApi: () => createTasksApi,
+  createTemplateQueries: () => createTemplateQueries,
+  createTemplatesApi: () => createTemplatesApi,
   createTimeEntriesApi: () => createTimeEntriesApi,
   createTimeEntryQueries: () => createTimeEntryQueries,
   createTimeEntrySchema: () => createTimeEntrySchema,
@@ -1677,6 +1679,20 @@ function createTasksApi(api) {
   };
 }
 
+// src/api/templates.ts
+function createTemplatesApi(api) {
+  return {
+    /** GET /templates — browse list. Summaries only. */
+    list: () => api.get("/templates"),
+    /** GET /templates/:id — full definition (schedule/goals/tasks) for the detail screen. */
+    getOne: (id) => api.get(`/templates/${id}`),
+    /** POST /templates/:id/import — each section is opt-in per `options`. */
+    import: (id, options) => api.post(`/templates/${id}/import`, options),
+    /** POST /templates/:id/sync — tasks-only re-sync for a template already imported. */
+    sync: (id) => api.post(`/templates/${id}/sync`)
+  };
+}
+
 // src/api/time-entries.ts
 function createTimeEntriesApi(api) {
   return {
@@ -1889,6 +1905,10 @@ function createApiClient(config) {
     // the same `Notification` rows every dispatch already writes server-side.
     // See ./notifications.ts.
     notifications: createNotificationsApi(api),
+    // Curated community templates (Library): browse, read one in full, import
+    // its opt-in sections into the signed-in user's account, and re-sync new
+    // tasks from a template already imported. See ./templates.ts.
+    templates: createTemplatesApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.
@@ -2578,6 +2598,31 @@ function createNotificationQueries(api) {
     unreadCount: (scope) => (0, import_react_query15.queryOptions)({
       queryKey: notificationQueries.unreadCount(scope),
       queryFn: async () => (await api.list({ limit: 1, scope })).data.unreadCount
+    })
+  };
+}
+
+// src/queries/templates.ts
+var import_react_query16 = require("@tanstack/react-query");
+function createTemplateQueries(api) {
+  const templateQueries = {
+    all: ["templates"],
+    list: () => [...templateQueries.all, "list"],
+    detail: (id) => [...templateQueries.all, "detail", id]
+  };
+  const fetchTemplates = async () => (await api.list()).data;
+  const fetchTemplate = async (id) => (await api.getOne(id)).data;
+  return {
+    templateQueries,
+    fetchTemplates,
+    fetchTemplate,
+    list: () => (0, import_react_query16.queryOptions)({
+      queryKey: templateQueries.list(),
+      queryFn: fetchTemplates
+    }),
+    detail: (id) => (0, import_react_query16.queryOptions)({
+      queryKey: templateQueries.detail(id),
+      queryFn: () => fetchTemplate(id)
     })
   };
 }
@@ -4154,6 +4199,8 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   createTaskQueries,
   createTaskSchema,
   createTasksApi,
+  createTemplateQueries,
+  createTemplatesApi,
   createTimeEntriesApi,
   createTimeEntryQueries,
   createTimeEntrySchema,

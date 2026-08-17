@@ -27,6 +27,7 @@ import { createPushSubscriptionsApi } from './push-subscriptions'
 import { createSharingApi } from './sharing'
 import { createScheduleApi } from './schedule'
 import { createTasksApi } from './tasks'
+import { createTemplatesApi } from './templates'
 import { createTimeEntriesApi } from './time-entries'
 import { createTimerSessionApi } from './timer-session'
 import { createUsersApi } from './users'
@@ -245,6 +246,10 @@ export function createApiClient(config: ApiClientConfig) {
     // the same `Notification` rows every dispatch already writes server-side.
     // See ./notifications.ts.
     notifications: createNotificationsApi(api),
+    // Curated community templates (Library): browse, read one in full, import
+    // its opt-in sections into the signed-in user's account, and re-sync new
+    // tasks from a template already imported. See ./templates.ts.
+    templates: createTemplatesApi(api),
     // Namespaced under /coach on the API, but account settings rather than
     // anything the chat screen calls — kept as its own key so the two don't
     // have to grow into one object. See ./coach-settings.ts.

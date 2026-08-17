@@ -67,6 +67,7 @@ export type DrawerHref =
   | "/notes"
   | "/messages"
   | "/mentees"
+  | "/library"
   | "/coach"
   | "/settings";
 
@@ -144,6 +145,9 @@ const NAV_GROUPS: DrawerNavGroup[] = [
       // Messages, this one isn't service-gated: it's built entirely on the
       // sharing directory GoalSlot's own API already serves.
       { href: "/mentees", label: "Sharing", icon: "mentees" },
+      // Curated community templates — built entirely on goal-slot-api's own
+      // templates module, same as Sharing above: no external service gate.
+      { href: "/library", label: "Library", icon: "library" },
       { href: "/reports", label: "Reports", icon: "reports" },
       { href: "/categories", label: "Categories", icon: "categories" },
       { href: "/settings", label: "Settings", icon: "settings" },

@@ -497,6 +497,15 @@ export default function AppLayout() {
               name="mentee/[id]"
               options={{ href: null, tabBarStyle: { display: "none" } }}
             />
+            {/* Library: curated community templates. Same "pushed, not
+                tabbed" shape as Mentees/Messages just above — a list screen
+                plus a detail route that hides the tab bar. See
+                DrawerContent for the entry point. */}
+            <Tabs.Screen name="library" options={{ title: "Library", href: null }} />
+            <Tabs.Screen
+              name="library/[id]"
+              options={{ href: null, tabBarStyle: { display: "none" } }}
+            />
             <Tabs.Screen
               name="settings"
               options={{ title: "Settings", href: null }}

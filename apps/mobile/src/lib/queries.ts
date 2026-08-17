@@ -21,6 +21,7 @@ import {
   createScheduleQueries,
   createSharingQueries,
   createTaskQueries,
+  createTemplateQueries,
   createTimeEntryQueries,
   createTimerSessionQueries,
 } from "@goalslot/shared";
@@ -62,3 +63,8 @@ export const instructionsQueries = createInstructionsQueries(apiClient.instructi
 // list screen (app/(app)/notifications.tsx). Same server-side `Notification`
 // rows every dispatch already writes; see packages/shared/src/api/notifications.ts.
 export const notificationQueries = createNotificationQueries(apiClient.notifications);
+// Library: browse curated community templates and read one in full. Import
+// and sync are one-off mutations, not wrapped here — see
+// packages/shared/src/queries/templates.ts's header for why, and
+// app/(app)/library/[id].tsx for the call sites.
+export const templateQueries = createTemplateQueries(apiClient.templates);

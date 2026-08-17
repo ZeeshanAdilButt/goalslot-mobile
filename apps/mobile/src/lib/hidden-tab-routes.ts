@@ -49,6 +49,7 @@ export const HIDDEN_TAB_BACK_DESTINATIONS = {
   goals: "/",
   messages: "/",
   mentees: "/",
+  library: "/",
   settings: "/",
   instructions: "/",
 
@@ -62,6 +63,7 @@ export const HIDDEN_TAB_BACK_DESTINATIONS = {
   // the right landing for it as much as for the other four.
   "message/[id]": "/messages",
   "mentee/[id]": "/mentees",
+  "library/[id]": "/library",
 
   // Pushed from Settings.
   "notification-settings": "/settings",

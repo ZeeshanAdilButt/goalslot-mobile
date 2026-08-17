@@ -25,6 +25,7 @@ import {
   BatteryFull,
   Bell,
   BellOff,
+  BookOpen,
   Calendar,
   CalendarOff,
   Check,
@@ -94,6 +95,9 @@ const ICONS = {
   // instructions you can assign them, both new alongside it.
   mentees: Users,
   instructions: ClipboardList,
+  // The Library screen (community templates) — web literally uses `BookOpen`
+  // for this exact feature (library-page.tsx:5), same 1:1-with-web rule.
+  library: BookOpen,
   add: Plus,
   // Opens the navigation drawer — see app/(app)/_layout.tsx's hamburger.
   menu: Menu,
