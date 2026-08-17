@@ -110,6 +110,33 @@ export const NewConversationSheet = forwardRef<BottomSheetModal, NewConversation
       <BottomSheetModal
         ref={sheetRef}
         snapPoints={["60%"]}
+        // DO NOT REMOVE — this prop is the whole reason this sheet opens at all.
+        //
+        // @gorhom/bottom-sheet v5 defaults `enableDynamicSizing` to TRUE
+        // (components/bottomSheet/constants.ts: DEFAULT_DYNAMIC_SIZING), and
+        // while it is on, explicit `snapPoints` are NOT enough: hooks/
+        // useAnimatedDetents.ts skips the `!enableDynamicSizing` early-return
+        // that would honour them, then bails with `return {}` because
+        // `contentHeight` is still INITIAL_LAYOUT_VALUE (-999). `detents` is
+        // therefore `undefined`, and every motion path guards on it —
+        // handleSnapToIndex, evaluatePosition and isLayoutCalculated all
+        // early-return — so `present()` is a silent no-op and even the
+        // backdrop (appearsOnIndex={0}) never shows. Literally nothing
+        // appears on screen.
+        //
+        // `contentHeight` is only ever written by BottomSheetView's onLayout
+        // and by bottom-sheet scrollables' onContentSizeChange. This sheet's
+        // header, error banner and all three explanatory states are plain
+        // RN Views, which report nothing — so the sheet could only ever open
+        // when the contact list branch rendered, and even then it sized
+        // itself to the list alone (the header is outside it) and snapped to
+        // the smallest detent, because useAnimatedDetents sorts descending.
+        //
+        // Turning dynamic sizing off routes through the early-return that
+        // honours `snapPoints` immediately and never consults contentHeight:
+        // a true fixed 60% sheet in every state. eslint's no-restricted-syntax
+        // rule below enforces this pairing repo-wide.
+        enableDynamicSizing={false}
         onChange={handleSheetPositionChange}
         backdropComponent={renderBackdrop}
         enablePanDownToClose

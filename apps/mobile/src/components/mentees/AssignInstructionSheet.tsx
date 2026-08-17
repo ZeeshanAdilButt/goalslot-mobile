@@ -98,6 +98,17 @@ export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstruc
     return (
       <KeyboardSheet
         ref={sheetRef}
+        // Exempt from the enableDynamicSizing={false} rule, and safe to be:
+        // this sheet has exactly ONE content branch and it is a
+        // `BottomSheetView` (just below), which reports its height via
+        // onLayout and so always produces detents. It can never hit the
+        // never-measured / never-opens failure mode that made
+        // NewConversationSheet invisible — that one had plain RN Views on
+        // its loading, error and empty branches. Left on dynamic sizing
+        // deliberately rather than pinned to 55%: the form is short, and
+        // opening at its natural height (with 55% as the drag-up detent) is
+        // the current, working behaviour.
+        // eslint-disable-next-line no-restricted-syntax
         snapPoints={["55%"]}
         onChange={handleSheetPositionChange}
         onDismiss={reset}

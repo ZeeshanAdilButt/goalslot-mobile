@@ -350,6 +350,15 @@ export const CoachHistorySheet = forwardRef<CoachHistorySheetRef, CoachHistorySh
     <BottomSheetModal
       ref={sheetRef}
       snapPoints={["70%"]}
+      // DO NOT REMOVE — see the long note on NewConversationSheet's copy of
+      // this prop. In short: v5 defaults `enableDynamicSizing` to true, and
+      // while it is on the sheet refuses to compute any snap position until
+      // a BottomSheetView or bottom-sheet scrollable reports a content
+      // height, so `present()` silently does nothing. Both non-list states
+      // here — "Loading…" and the "No previous conversations yet" EmptyState
+      // — are plain RN Views, so "Previous chats" was invisible for exactly
+      // the users who have no previous chats.
+      enableDynamicSizing={false}
       onChange={handleSheetPositionChange}
       backdropComponent={renderBackdrop}
       enablePanDownToClose

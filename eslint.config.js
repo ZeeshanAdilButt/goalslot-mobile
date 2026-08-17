@@ -26,13 +26,36 @@ export default tseslint.config(
       // all three in; a pure action/list sheet with nothing for the
       // keyboard to cover can silence this with a one-line
       // eslint-disable-next-line and a comment saying so.
+      // Severity is "error" rather than "warn" deliberately: both selectors
+      // below cover defects that have each shipped to real devices more than
+      // once, and a warning is invisible in an editor that only surfaces
+      // errors. CI already runs --max-warnings 0, so this changes nothing
+      // there — it only makes the failure visible earlier.
       "no-restricted-syntax": [
-        "warn",
+        "error",
         {
           selector:
             "JSXOpeningElement[name.name='BottomSheetModal']:not(:has(JSXAttribute[name.name='android_keyboardInputMode']))",
           message:
             "BottomSheetModal is missing android_keyboardInputMode. If this sheet has a text input, build it on KeyboardSheet instead. If it's a pure action/list sheet, add eslint-disable-next-line no-restricted-syntax with a comment confirming that.",
+        },
+        {
+          // Reported on the `snapPoints` attribute rather than on the opening
+          // element ON PURPOSE. Pure list/action sheets legitimately silence
+          // the rule above with an `eslint-disable-next-line
+          // no-restricted-syntax` sitting on the `<BottomSheetModal` line,
+          // and that one comment would suppress the whole rule — including
+          // this selector — if this also reported there. Anchoring to the
+          // offending prop keeps the two independent, and points at the
+          // declaration that actually has to change.
+          // KeyboardSheet is included because it forwards every prop straight
+          // through to BottomSheetModal, so a sheet built on the blessed
+          // wrapper inherits exactly the same contract — and the wrapper is
+          // the path new sheets are told to take.
+          selector:
+            ":matches(JSXOpeningElement[name.name='BottomSheetModal'], JSXOpeningElement[name.name='KeyboardSheet']):not(:has(JSXAttribute[name.name='enableDynamicSizing'])) > JSXAttribute[name.name='snapPoints']",
+          message:
+            "BottomSheetModal/KeyboardSheet with explicit snapPoints must also set enableDynamicSizing={false}. @gorhom/bottom-sheet v5 defaults enableDynamicSizing to TRUE, and while it is on, snapPoints are ignored until a BottomSheetView or bottom-sheet scrollable reports a content height — plain RN Views never do, so present() becomes a silent no-op and the sheet (and its backdrop) never appear at all. Either add enableDynamicSizing={false}, or, if every branch of this sheet really does render a measuring BottomSheet* child, disable this line with a comment saying which one.",
         },
       ],
     },
