@@ -144,7 +144,7 @@ describe('messaging queries', () => {
     } as unknown as MessagingServiceClient
 
     const sharingApi = {
-      getMyShares: vi.fn().mockResolvedValue({ data: [{ id: 's1', sharedWith: { id: 'u2', email: 'z@e.com', name: 'Zoe' } }] }),
+      getMyShares: vi.fn().mockResolvedValue({ data: [{ id: 's1', sharedWith: { id: 'u2', email: 'z@e.com', name: 'Zoe' }, isAccepted: true }] }),
       getSharedWithMe: vi.fn().mockResolvedValue({ data: [] }),
     } as unknown as SharingApi
 

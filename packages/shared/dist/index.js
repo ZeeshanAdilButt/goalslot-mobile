@@ -515,7 +515,7 @@ function toContact(peer, relationship) {
 function buildMessagingContacts(outgoing = [], incoming = []) {
   const byUserId = /* @__PURE__ */ new Map();
   for (const share of outgoing) {
-    if (!share.sharedWith) continue;
+    if (!share.sharedWith || share.isAccepted !== true) continue;
     byUserId.set(share.sharedWith.id, toContact(share.sharedWith, "shared-with-them"));
   }
   for (const share of incoming) {

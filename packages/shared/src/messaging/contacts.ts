@@ -38,8 +38,14 @@ export function buildMessagingContacts(
 
   for (const share of outgoing) {
     // Null while an emailed invite is still outstanding — there is no account
-    // to address a message to yet.
-    if (!share.sharedWith) continue
+    // to address a message to yet. `getSharedWithMe` (the `incoming` half)
+    // is already filtered to accepted shares server-side, but `getMyShares`
+    // is not — it returns every share the caller sent regardless of whether
+    // the recipient has accepted, so this direction needs its own check.
+    // Skipping unaccepted ones matters beyond tidiness: the server's
+    // canMessage check requires isAccepted, so offering someone here who
+    // hasn't accepted yet would let the user pick them and then 403.
+    if (!share.sharedWith || share.isAccepted !== true) continue
     byUserId.set(share.sharedWith.id, toContact(share.sharedWith, 'shared-with-them'))
   }
 
