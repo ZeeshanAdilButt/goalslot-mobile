@@ -17,6 +17,19 @@
 // user with 60 unread notifications has 20 of them in the cache, so the badge
 // would drop to 40 the moment they marked the visible page read. The pages
 // are a window; the count is a total.
+//
+// THAT SAID, `markAllNotificationsReadInPages` below DOES write the server's
+// total onto every cached page's own `unreadCount` field (never computes it).
+// notifications.tsx reads its "does the user have anything left to mark
+// read" flag — `canMarkAllRead` — straight off `pages[0]?.unreadCount`, the
+// same field this module documents as the frozen snapshot from whichever
+// fetch last populated it. A patch that only touched `readAt` (the original
+// shape of this function) left that snapshot exactly where it was before the
+// call — e.g. 43 — so the "Mark all read" button/action never disappeared
+// after successfully clearing everything, and stayed tappable indefinitely.
+// Stamping the just-cleared total onto the cached pages keeps that read
+// truthful without a follow-up request, the same "patch, don't invalidate"
+// principle every other transform in this file already follows for `readAt`.
 
 import type { AppNotification, NotificationListResponse } from "@goalslot/shared";
 
@@ -95,12 +108,30 @@ export function removeNotificationFromPages(
  * Only the pages currently in cache are touched, and that is correct rather
  * than a shortfall: the server cleared the whole scope in one statement, and
  * any page fetched after this comes back from the server already read.
+ *
+ * `unreadCount` is the server's post-clear total for the scope (mark-all-read
+ * always returns 0 — see `MarkAllNotificationsReadResponse`'s docblock in
+ * packages/shared/src/api/notifications.ts). It gets stamped onto EVERY
+ * loaded page's `unreadCount` field, not just read and discarded: that field
+ * is what `canMarkAllRead` reads (via `pages[0]?.unreadCount` in
+ * notifications.tsx) to decide whether the control is still worth showing.
+ * Leaving it untouched — as this function originally did — meant the button
+ * kept reporting the PRE-clear total (e.g. 43) and stayed visible and
+ * tappable after a call that had already succeeded, since nothing short of a
+ * full refetch would otherwise refresh it.
  */
 export function markAllNotificationsReadInPages(
   existing: NotificationPages | undefined,
   readAtIso: string,
+  unreadCount: number,
 ): NotificationPages | undefined {
-  return mapItems(existing, (item) => withReadAt(item, readAtIso));
+  if (!existing) return existing;
+  const withReadRows = mapItems(existing, (item) => withReadAt(item, readAtIso));
+  if (!withReadRows) return withReadRows;
+  return {
+    ...withReadRows,
+    pages: withReadRows.pages.map((page) => ({ ...page, unreadCount })),
+  };
 }
 
 /**

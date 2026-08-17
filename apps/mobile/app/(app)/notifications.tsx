@@ -124,7 +124,12 @@ export default function NotificationsScreen() {
       const readAt = new Date().toISOString();
       queryClient.setQueryData<InfiniteData<NotificationListResponse>>(
         notificationQueries.notificationQueries.list(BELL_SCOPE),
-        (existing) => markAllNotificationsReadInPages(existing, readAt),
+        // Also stamps the server's post-clear total (0) onto every cached
+        // page's own `unreadCount` — `canMarkAllRead` below reads that same
+        // field via `pages[0]?.unreadCount`, so leaving it at the pre-clear
+        // total left "Mark all read" visible and tappable after it had
+        // already succeeded.
+        (existing) => markAllNotificationsReadInPages(existing, readAt, response.data.unreadCount),
       );
       // Straight off the mutation response — the server defines this as 0 by
       // construction (it just cleared every unread row in the scope), so

@@ -38,6 +38,7 @@ describe("markAllNotificationsReadInPages", () => {
     const result = markAllNotificationsReadInPages(
       pages([notification("a", null), notification("b", null)], [notification("c", null)]),
       READ_AT,
+      0,
     );
 
     expect(result?.pages.flatMap((page) => page.items).map((item) => item.readAt)).toEqual([
@@ -53,32 +54,63 @@ describe("markAllNotificationsReadInPages", () => {
     const result = markAllNotificationsReadInPages(
       pages([notification("a", EARLIER), notification("b", null)]),
       READ_AT,
+      0,
     );
 
     expect(result?.pages[0]?.items[0]?.readAt).toBe(EARLIER);
     expect(result?.pages[0]?.items[1]?.readAt).toBe(READ_AT);
   });
 
+  // Regression test: this is the crash-adjacent bug the "Mark all read"
+  // control tap needs fixed. notifications.tsx's `canMarkAllRead` decides
+  // whether to render/enable the button off `pages[0]?.unreadCount` — NOT
+  // off a count of unread rows in these pages (see this file's header
+  // comment) — because that mirrors the server's scope-wide total, not just
+  // what happens to be loaded. Before this fix, `markAllNotificationsReadInPages`
+  // only patched `readAt` and left every page's own `unreadCount` field at
+  // its PRE-clear value. So after a successful "Mark all read" the button
+  // kept reporting the old total (here 43) and stayed visible and tappable
+  // — inviting exactly the repeated taps on an already-cleared scope that
+  // produced the field-reported crash/error-toast pattern.
+  it("resets every loaded page's own unreadCount to the server's post-clear total", () => {
+    // Every page in a real response carries the SAME scope-wide total (see
+    // this suite's `pages()` helper), not a per-page count — 3 unread here
+    // (a, b, c), echoed on both loaded pages.
+    const input = pages([notification("a", null), notification("b", null)], [notification("c", null)]);
+    expect(input.pages[0]?.unreadCount).toBe(3);
+    expect(input.pages[1]?.unreadCount).toBe(3);
+
+    const result = markAllNotificationsReadInPages(input, READ_AT, 0);
+
+    expect(result?.pages[0]?.unreadCount).toBe(0);
+    expect(result?.pages[1]?.unreadCount).toBe(0);
+    // The control-visibility check itself, end to end: this is what
+    // notifications.tsx actually reads to decide whether "Mark all read" is
+    // still offered after the mutation succeeds.
+    expect(canMarkAllRead(result?.pages[0]?.unreadCount)).toBe(false);
+  });
+
   it("carries pageParams through untouched", () => {
     // These are the cursors react-query replays on a refetch. Rewriting them
     // silently breaks paging on the next pull-to-refresh.
     const input = pages([notification("a", null)], [notification("b", null)]);
-    expect(markAllNotificationsReadInPages(input, READ_AT)?.pageParams).toEqual(input.pageParams);
+    expect(markAllNotificationsReadInPages(input, READ_AT, 0)?.pageParams).toEqual(input.pageParams);
   });
 
   it("does not mutate the cached value in place", () => {
     // react-query compares by reference to decide whether to re-render; an
     // in-place mutation both skips the render and corrupts the previous value.
     const input = pages([notification("a", null)]);
-    const result = markAllNotificationsReadInPages(input, READ_AT);
+    const result = markAllNotificationsReadInPages(input, READ_AT, 0);
 
     expect(input.pages[0]?.items[0]?.readAt).toBeNull();
+    expect(input.pages[0]?.unreadCount).toBe(1);
     expect(result).not.toBe(input);
     expect(result?.pages[0]).not.toBe(input.pages[0]);
   });
 
   it("is a no-op on an empty cache", () => {
-    expect(markAllNotificationsReadInPages(undefined, READ_AT)).toBeUndefined();
+    expect(markAllNotificationsReadInPages(undefined, READ_AT, 0)).toBeUndefined();
   });
 });
 
