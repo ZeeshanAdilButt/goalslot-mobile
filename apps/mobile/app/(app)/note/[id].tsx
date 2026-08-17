@@ -417,14 +417,36 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
   //     debounced emission that follows is a no-op.
   const { voice } = useCapabilities();
 
-  /** The in-flight dictation write, if any. `flushPending` waits on it so a
-   *  blur-time `getHTML()` cannot capture the document from BEFORE the
-   *  append and then save that stale copy over the freshly dictated text. */
+  /** The in-flight (or queued) dictation write, if any — the LOCAL edit plus
+   *  its network save, chained after whatever the previous phrase's write was
+   *  still doing. `flushPending` waits on it so a blur-time `getHTML()`
+   *  cannot capture the document from BEFORE the append and then save that
+   *  stale copy over the freshly dictated text. See `appendSpokenPhrase` for
+   *  why this is deliberately NOT what gates the mic reopening. */
   const pendingDictationRef = useRef<Promise<void> | null>(null);
 
   const appendSpokenPhrase = useCallback(
     (transcript: string): Promise<void> => {
-      const write = (async () => {
+      // LOCAL EDIT ONLY — read the webview, append the phrase, write it back.
+      // This is the promise `onPhrase` returns to the dictation loop, which
+      // AWAITS it inside `settle()` before the mic is allowed to reopen (see
+      // useDictationLoop.ts's `onPhrase` doc comment). Keeping this to just
+      // the webview round trip — and NOT the network save below — is what
+      // keeps the mic closed for one bridge round trip instead of however
+      // long `apiClient.notes.update` takes; that gap used to be sized by a
+      // real, uncapped HTTP POST, which is long enough for a resumed
+      // sentence to go completely unheard.
+      //
+      // Safe to do without an explicit await on the PREVIOUS phrase's local
+      // edit: the mic can only reopen (and so a next phrase can only be
+      // captured and reach this function) once THIS promise settles, and
+      // `editor.setContent` below runs synchronously before it does. So
+      // `appendSpokenPhrase` is structurally never re-entered until the
+      // prior phrase's `setContent` has already been posted into the
+      // webview's single ordered message channel — the ordering that
+      // prevents a torn read-modify-write is guaranteed by the mic gate
+      // itself, not by how long the previous phrase's save happened to take.
+      const local = (async () => {
         let timer: ReturnType<typeof setTimeout> | null = null;
         let html: unknown;
         try {
@@ -464,17 +486,39 @@ function NoteEditor({ detail }: { detail: NoteDetailResponse }) {
           throw err instanceof Error ? err : new Error("Couldn't add that sentence to this page.");
         }
 
-        // Awaited, not fired and forgotten — see consequence 3 above. This
-        // never throws: `saveContent` routes a network failure to the offline
-        // outbox and surfaces the rest as the passive banner.
-        await saveContent(next);
+        return next;
       })();
+
+      // WRITE QUEUE — the network save is chained behind the PREVIOUS
+      // phrase's full write (local edit + save), not just this phrase's own
+      // local edit, so saves reach the server in the same order the phrases
+      // were spoken even when their HTTP round trips don't resolve in that
+      // order. Without this, a slow save for an earlier phrase resolving
+      // after a faster save for a later one would stamp `lastSavedContentRef`
+      // (and the cache, via `patchCaches`) back down to the earlier, shorter
+      // content. Deliberately built off `local`/the returned promise rather
+      // than the other way around, so this queuing never blocks the mic from
+      // reopening.
+      const previousWrite = pendingDictationRef.current;
+      const write = local.then(async (next) => {
+        if (previousWrite) await previousWrite.catch(() => undefined);
+        // Awaited by `flushPending` via `pendingDictationRef`, not by the
+        // dictation loop. This never throws: `saveContent` routes a network
+        // failure to the offline outbox and surfaces the rest as the passive
+        // banner.
+        await saveContent(next);
+      });
+      // Observed here so a rejected `local` — already surfaced through the
+      // returned promise below, which the dictation loop awaits and turns
+      // into the soft-stopped notice/toast — doesn't ALSO produce an
+      // unhandled promise rejection on this separate background chain.
+      write.catch(() => undefined);
 
       // Kept even after it settles: awaiting an already-settled promise is
       // free, so there is no need to clear it, and never clearing means
       // `flushPending` can't observe a half-updated ref.
       pendingDictationRef.current = write;
-      return write;
+      return local.then(() => undefined);
     },
     [editor, saveContent],
   );
