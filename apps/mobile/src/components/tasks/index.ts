@@ -11,3 +11,4 @@ export * from "./TaskBoard";
 export * from "./TaskBoardCard";
 export * from "./TaskGoalFilter";
 export * from "./TaskMetaChips";
+export * from "./TaskRemindersSync";

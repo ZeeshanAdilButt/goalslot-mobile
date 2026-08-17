@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "@/components/ui/Icon";
 import { FloatingMessagesButton } from "@/components/messaging/FloatingMessagesButton";
 import { ScheduleRemindersSync } from "@/components/schedule";
+import { TaskRemindersSync } from "@/components/tasks";
 import { ScreenErrorBoundary } from "@/components/ScreenErrorBoundary";
 import { useAuth } from "@/providers/auth-provider";
 import { AppDrawer } from "@/components/navigation/AppDrawer";
@@ -394,6 +395,12 @@ export default function AppLayout() {
           signed-in session, so they survive a sign-in's notification sweep
           and edits made outside the Schedule tab. See the component. */}
       <ScheduleRemindersSync />
+      {/* Renders nothing. Same reasoning as ScheduleRemindersSync above, for
+          task due-date reminders: re-arms them for the whole signed-in
+          session so a sign-in's notification sweep and Coach-created (or
+          any other) tasks with a due date get a reminder without the user
+          ever opening the Tasks tab. See the component. */}
+      <TaskRemindersSync />
       {/* paddingTop reserves exactly the tracking banner's own footprint
           (see bannerHeight above) so it pushes every screen's content down
           instead of painting over it — the banner used to be a pure overlay,
