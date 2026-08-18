@@ -26,7 +26,17 @@
 // palette slot — a filter chip and the goal chips it's filtering by should
 // visibly be the same goal.
 
-import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { useCallback, useEffect, useRef } from "react";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 
 import { safeColor, withAlpha } from "@/components/lists";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
@@ -48,8 +58,29 @@ export interface TaskGoalFilterProps {
 }
 
 export function TaskGoalFilter({ options, value, onChange, style }: TaskGoalFilterProps) {
+  const scrollRef = useRef<ScrollView>(null);
+  // Chip x-position within the scroll content, keyed by option key — filled
+  // in as each chip's onLayout fires. `value` can become the active goal
+  // before this component ever renders it as selected (the auto-default
+  // effect in tasks.tsx runs on focus/schedule-block change), and chips
+  // reflow whenever the goal list itself changes, so a plain "scroll on
+  // mount" wouldn't keep the selected chip in view — this re-derives the
+  // target position every time either changes.
+  const chipX = useRef<Record<string, number>>({});
+
+  const revealSelected = useCallback((key: string) => {
+    const x = chipX.current[key];
+    if (x === undefined || !scrollRef.current) return;
+    scrollRef.current.scrollTo({ x: Math.max(0, x - spacing.xl), animated: true });
+  }, []);
+
+  useEffect(() => {
+    revealSelected(value);
+  }, [value, revealSelected]);
+
   return (
     <ScrollView
+      ref={scrollRef}
       horizontal
       showsHorizontalScrollIndicator={false}
       style={style}
@@ -62,6 +93,10 @@ export function TaskGoalFilter({ options, value, onChange, style }: TaskGoalFilt
           option={option}
           selected={option.key === value}
           onPress={() => onChange(option.key)}
+          onLayout={(event) => {
+            chipX.current[option.key] = event.nativeEvent.layout.x;
+            if (option.key === value) revealSelected(option.key);
+          }}
         />
       ))}
     </ScrollView>
@@ -72,10 +107,12 @@ function GoalFilterChip({
   option,
   selected,
   onPress,
+  onLayout,
 }: {
   option: GoalFilterOption;
   selected: boolean;
   onPress: () => void;
+  onLayout: (event: LayoutChangeEvent) => void;
 }) {
   const accent = option.color ? safeColor(option.color, colors.foreground) : null;
 
@@ -101,6 +138,7 @@ function GoalFilterChip({
     <Pressable
       style={[styles.chip, { backgroundColor: background, borderColor: border }]}
       onPress={onPress}
+      onLayout={onLayout}
       accessibilityRole="tab"
       accessibilityLabel={`${option.label}, ${option.count} task${option.count === 1 ? "" : "s"}`}
       accessibilityState={{ selected }}
