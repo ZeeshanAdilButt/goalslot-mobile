@@ -61,11 +61,12 @@ import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetView, type BottomSheetBackdropProps } from "@gorhom/bottom-sheet";
 import { useQuery } from "@tanstack/react-query";
-import { useLocalSearchParams } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 
 import {
   genId,
   getLocalDateString,
+  resolveActiveBlock,
   type CompleteTaskInput,
   type Task,
   type TaskStatus,
@@ -106,7 +107,7 @@ import { apiClient, notify } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticCompletion } from "@/lib/haptics";
 import { offlineSync, outbox, queueOfflineEdit } from "@/lib/offline";
-import { taskQueries } from "@/lib/queries";
+import { scheduleQueries, taskQueries } from "@/lib/queries";
 import { queryClient } from "@/lib/query-client";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
@@ -160,6 +161,10 @@ function buildRows(tasks: Task[]): TaskListRow[] {
 const GOAL_FILTER_ALL = "all";
 /** The goal-less bucket — tasks without a goal stay visible under this key, never hidden. */
 const GOAL_FILTER_NO_GOAL = "none";
+
+/** Same as app/(app)/index.tsx's own constant — resolveActiveBlock needs the
+ *  device's IANA zone to decide which schedule block is happening right now. */
+const DEVICE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /**
  * One option per distinct goal actually present on the (unfiltered) task
@@ -251,6 +256,36 @@ export default function TasksScreen() {
   // deleted elsewhere), and rendering an empty row for a key that no longer
   // exists would look like a bug rather than an empty result.
   const activeGoalFilter = goalFilterOptions.some((option) => option.key === goalFilter) ? goalFilter : GOAL_FILTER_ALL;
+
+  // True once the user has picked a goal filter themselves this session —
+  // set by `chooseGoalFilter` below, the only path either the filter row or
+  // the "Show all tasks" empty-state action goes through. Guards the
+  // auto-select effect underneath: it should set the filter for you when you
+  // arrive with nothing chosen yet, but never fight a pick you already made.
+  const userSelectedGoalFilterRef = useRef(false);
+  const chooseGoalFilter = useCallback((key: string) => {
+    userSelectedGoalFilterRef.current = true;
+    setGoalFilter(key);
+  }, []);
+
+  // Defaults the goal filter to whatever schedule block is happening right
+  // now, so opening Tasks mid-block lands straight on that goal's tasks
+  // instead of "All". `useFocusEffect`, not a plain mount effect: re-checks
+  // "what's active now" every time this screen regains focus (returning from
+  // another tab after the block changed), not just once per app session —
+  // while `userSelectedGoalFilterRef` keeps a deliberate manual pick from
+  // being silently overridden on the next visit.
+  const scheduleQuery = useQuery(scheduleQueries.weekly());
+  useFocusEffect(
+    useCallback(() => {
+      if (userSelectedGoalFilterRef.current) return;
+      const activeBlock = resolveActiveBlock(scheduleQuery.data, new Date(), DEVICE_TIMEZONE);
+      const activeGoalId = activeBlock?.goal?.id;
+      if (!activeGoalId) return;
+      if (!goalFilterOptions.some((option) => option.key === activeGoalId)) return;
+      setGoalFilter(activeGoalId);
+    }, [goalFilterOptions, scheduleQuery.data]),
+  );
 
   const filteredTasks = useMemo(() => {
     const all = tasks ?? [];
@@ -707,7 +742,7 @@ export default function TasksScreen() {
         description={`Nothing under "${filterLabel}" right now. Try another goal, or clear the filter to see everything.`}
         actionLabel="Show all tasks"
         actionIcon="close"
-        onAction={() => setGoalFilter(GOAL_FILTER_ALL)}
+        onAction={() => chooseGoalFilter(GOAL_FILTER_ALL)}
         hint={
           view === "board"
             ? "Board view sorts them into Backlog, To Do, Doing and Done."
@@ -763,7 +798,7 @@ export default function TasksScreen() {
         <TaskGoalFilter
           options={goalFilterOptions}
           value={activeGoalFilter}
-          onChange={setGoalFilter}
+          onChange={chooseGoalFilter}
           style={styles.goalFilter}
         />
       ) : null}
