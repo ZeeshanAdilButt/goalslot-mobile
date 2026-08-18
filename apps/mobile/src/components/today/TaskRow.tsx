@@ -30,7 +30,7 @@ const STATUS_COPY: Record<Task["status"], string> = {
 export interface TaskRowProps {
   task: Task;
   isLast: boolean;
-  /** Opens the Tasks tab. Omit to render the row as static content. */
+  /** Opens this task's editor. Omit to render the row as static content. */
   onPress?: () => void;
 }
 
@@ -45,7 +45,7 @@ export const TaskRow = memo(function TaskRow({ task, isLast, onPress }: TaskRowP
 
   const Container = onPress ? PressableScale : View;
   const pressProps = onPress
-    ? ({ onPress, accessibilityRole: "button", accessibilityHint: "Opens your tasks" } as const)
+    ? ({ onPress, accessibilityRole: "button", accessibilityHint: "Opens this task" } as const)
     : null;
 
   return (

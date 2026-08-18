@@ -55,7 +55,7 @@
 //     at the bottom of each card.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable } from "react-native-gesture-handler";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
@@ -77,6 +77,7 @@ import { EditTaskSheet, type EditTaskSheetRef } from "@/components/EditTaskSheet
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { QuickAddSheet } from "@/components/QuickAddSheet";
 import { useBottomSheetBackHandler } from "@/hooks/useBottomSheetBackHandler";
+import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import { useScreenView } from "@/hooks/useScreenView";
 import { SkeletonListItem } from "@/components/Skeleton";
 import { Icon, type IconName } from "@/components/ui/Icon";
@@ -246,6 +247,14 @@ export default function TasksScreen() {
 
   const [view, setView] = useState<TaskView>("list");
 
+  // The new search field above the list means this screen now has a text
+  // input above a scroll container, which on Android under edge-to-edge
+  // doesn't resize the window for the keyboard — without this, rows near
+  // the bottom of the (List view's) FlashList would be laid out under the
+  // keyboard with no way to scroll them into view. See
+  // src/hooks/useKeyboardInset.ts's header for the full mechanism.
+  const keyboardInset = useKeyboardInset();
+
   // Options are built off the FULL task list (never the already-filtered
   // one) so picking "Olostep" doesn't make every other goal's chip vanish
   // from the row along with its tasks.
@@ -287,12 +296,31 @@ export default function TasksScreen() {
     }, [goalFilterOptions, scheduleQuery.data]),
   );
 
-  const filteredTasks = useMemo(() => {
+  // Goal filter alone — kept separate from the title search below so the two
+  // narrowing steps can be told apart. "This goal has no tasks at all" and
+  // "this goal has tasks, but none match what you typed" are different
+  // situations with different recovery actions (clear the goal filter vs.
+  // clear the search), and collapsing them into one derived list would lose
+  // that distinction at the point where the empty-state copy is chosen.
+  const goalFilteredTasks = useMemo(() => {
     const all = tasks ?? [];
     if (activeGoalFilter === GOAL_FILTER_ALL) return all;
     if (activeGoalFilter === GOAL_FILTER_NO_GOAL) return all.filter((task) => !task.goal);
     return all.filter((task) => task.goal?.id === activeGoalFilter);
   }, [tasks, activeGoalFilter]);
+
+  // Persistent title search, case-insensitive substring match. Composes with
+  // (narrows within) the goal filter above rather than replacing it — the
+  // list stays "whatever the goal filter/view already show", just fewer rows
+  // when there's a search term. No debounce: the task list is small enough
+  // to filter on every keystroke with a plain useMemo.
+  const [searchQuery, setSearchQuery] = useState("");
+  const trimmedSearch = searchQuery.trim();
+  const filteredTasks = useMemo(() => {
+    if (!trimmedSearch) return goalFilteredTasks;
+    const needle = trimmedSearch.toLowerCase();
+    return goalFilteredTasks.filter((task) => task.title.toLowerCase().includes(needle));
+  }, [goalFilteredTasks, trimmedSearch]);
 
   const rows = useMemo(() => buildRows(filteredTasks), [filteredTasks]);
 
@@ -729,7 +757,7 @@ export default function TasksScreen() {
         }
       />
     );
-  } else if (filteredTasks.length === 0) {
+  } else if (goalFilteredTasks.length === 0) {
     // Distinct from the true-empty branch above: there ARE tasks, the goal
     // filter just narrowed them to nothing. Offering "Add task" here would
     // be wrong too — the gap isn't that nothing exists, it's that this one
@@ -743,6 +771,26 @@ export default function TasksScreen() {
         actionLabel="Show all tasks"
         actionIcon="close"
         onAction={() => chooseGoalFilter(GOAL_FILTER_ALL)}
+        hint={
+          view === "board"
+            ? "Board view sorts them into Backlog, To Do, Doing and Done."
+            : "Swipe a task right to complete it, left to reschedule or delete."
+        }
+      />
+    );
+  } else if (filteredTasks.length === 0) {
+    // The goal filter (if any) still has tasks under it — the search term is
+    // what narrowed the list to nothing. Recovery is clearing the search,
+    // not the goal filter, which is why this is a separate branch from the
+    // one above rather than folded into it.
+    content = (
+      <ListEmptyState
+        variant="tasks"
+        title="No matching tasks"
+        description={`No tasks match "${trimmedSearch}".`}
+        actionLabel="Clear search"
+        actionIcon="close"
+        onAction={() => setSearchQuery("")}
         hint={
           view === "board"
             ? "Board view sorts them into Backlog, To Do, Doing and Done."
@@ -773,7 +821,7 @@ export default function TasksScreen() {
         getItemType={(row) => row.type}
         refreshing={isFetching && !isPending}
         onRefresh={refetch}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: spacing.xxxl * 3 + keyboardInset }]}
       />
     );
   }
@@ -790,6 +838,37 @@ export default function TasksScreen() {
         subtitle={VIEW_SUBTITLE[view]}
         action={<SegmentedControl options={VIEW_OPTIONS} value={view} onChange={setView} />}
       />
+
+      {/* Persistent title search — inline, not the header search button's
+          full-screen SearchOverlay. Styled to match that overlay's own input
+          (rounded field, leading icon, muted placeholder) for consistency,
+          but this one filters THIS screen's own list in place, composing
+          with the goal filter below rather than replacing it. */}
+      <View style={styles.searchWrap}>
+        <Icon name="search" size={16} color={colors.mutedForeground} />
+        <TextInput
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Search tasks by title"
+          placeholderTextColor={colors.mutedForeground}
+          autoCorrect={false}
+          autoCapitalize="none"
+          returnKeyType="search"
+          accessibilityLabel="Search tasks by title"
+          accessibilityHint="Filters the task list below to titles containing this text"
+        />
+        {searchQuery.length > 0 ? (
+          <Pressable
+            onPress={() => setSearchQuery("")}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+            hitSlop={spacing.md}
+          >
+            <Icon name="close" size={16} color={colors.mutedForeground} />
+          </Pressable>
+        ) : null}
+      </View>
 
       {/* Hidden below two buckets (see buildGoalFilterOptions): with only one
           goal in play — or none at all — every task on screen already IS
@@ -1096,6 +1175,32 @@ const styles = StyleSheet.create({
   },
   listArea: {
     flex: 1,
+  },
+  // Matches SearchOverlay's own searchRow/searchInput styling (rounded
+  // field, hairline border, muted placeholder) for visual consistency with
+  // the app's other search entry point, even though this one is a plain
+  // inline field rather than that overlay.
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget,
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    ...shadows.subtle,
+  },
+  searchInput: {
+    flex: 1,
+    // 16pt keeps iOS from zooming the field on focus — matches
+    // SearchOverlay's own searchInput.
+    fontSize: 16,
+    color: colors.foreground,
+    paddingVertical: spacing.sm,
   },
   goalFilter: {
     flexGrow: 0,

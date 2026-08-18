@@ -61,6 +61,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { QuickAddSheet, type QuickAddKind } from "@/components/QuickAddSheet";
 import { Skeleton, SkeletonListItem } from "@/components/Skeleton";
 import { describeCountdown } from "@/components/today/countdown";
+import { isDueToday, sortByStatusThenTitle } from "@/components/today/due-today";
 import { FocusNowCard } from "@/components/today/FocusNowCard";
 import { GoalProgressRow } from "@/components/today/GoalProgressRow";
 import { JournalPromptCard, type JournalPromptState } from "@/components/today/JournalPromptCard";
@@ -102,10 +103,10 @@ const HAMBURGER_CLEARANCE = 64;
 // without pushing the nav tiles off the bottom of a plausible scroll.
 const GOAL_PREVIEW_COUNT = 3;
 
-// Same reasoning for tasks, which needed it more: `isDueToday` deliberately
-// counts every undated TODO/DOING task, so on an account with a real backlog
-// this section was rendering the entire task list inside the page scroll.
-// Five rows is a glance; the count badge and "View all" carry the rest.
+// Same reasoning for tasks: on an account with a real backlog of
+// dated-for-today tasks, this section could still render a long list inside
+// the page scroll. Five rows is a glance; the count badge and "View all"
+// carry the rest.
 const TASK_PREVIEW_COUNT = 5;
 
 // The FOCUS NOW card's own task list is denser real estate than a full
@@ -155,20 +156,10 @@ function greetingFor(hour: number): string {
 // No due-date/today filter exists on TaskListFilters (see
 // packages/shared/src/types/task.ts) — the API only supports status/day/goal
 // filters, not "due today". So this fetches the full list and filters
-// client-side. "Due today" here means: explicitly due today, OR (judgement
-// call) has no due date at all but is actively being worked (TODO/DOING) —
-// those are exactly the tasks with no better home on a daily agenda than
-// "today". DONE tasks never show, regardless of due date.
-function isDueToday(task: Task, todayStr: string): boolean {
-  if (task.status === "DONE") return false;
-  if (task.dueDate) return task.dueDate.slice(0, 10) === todayStr;
-  return task.status === "TODO" || task.status === "DOING";
-}
-
-function sortByStatusThenTitle(a: Task, b: Task): number {
-  if (a.status !== b.status) return a.status === "DOING" ? -1 : b.status === "DOING" ? 1 : 0;
-  return a.title.localeCompare(b.title);
-}
+// client-side. "Due today" here means strictly: has a `dueDate` that
+// resolves to today's local date. DONE tasks never show, regardless of due
+// date. See due-today.ts for the implementation and why the previous
+// undated-task fallback was removed.
 
 export default function TodayScreen() {
   const { user } = useAuth();
@@ -805,7 +796,12 @@ export default function TodayScreen() {
                     key={task.id}
                     task={task}
                     isLast={index === previewTasks.length - 1 && dueTodayTasks.length <= TASK_PREVIEW_COUNT}
-                    onPress={goTasks}
+                    // Opens THIS task, not just the Tasks tab — same
+                    // `/tasks?taskId=…` deep link FocusNowCard's own
+                    // goal-linked task rows already use via `openTaskEditor`.
+                    // The "More" row right below intentionally stays on the
+                    // generic `goTasks`: it isn't about one task.
+                    onPress={() => openTaskEditor(task)}
                   />
                 ))}
                 <MoreRow
