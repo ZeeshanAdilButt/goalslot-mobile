@@ -60,6 +60,9 @@ import {
   journalEntryPreview,
   removeJournalEntry,
 } from "@/components/journal/recent-entries";
+import { JournalAffirmations } from "@/components/journal/JournalAffirmations";
+import { JournalUntangleSheet, type JournalUntangleSheetRef } from "@/components/journal/JournalUntangleSheet";
+import { appendUntanglePrompt, promptForDate, type UntanglePrompt } from "@/components/journal/journal-writing-help";
 import { useKeyboardInset } from "@/hooks/useKeyboardInset";
 import { Reveal } from "@/components/reports/Reveal";
 import { PressableScale } from "@/components/today/PressableScale";
@@ -248,6 +251,21 @@ export default function JournalScreen() {
     },
     [],
   );
+
+  // "Untangle a feeling" — see JournalUntangleSheet.tsx. Imperative
+  // present()/dismiss(), same shape as EditGoalSheet/QuickAddSheet, so the
+  // "Stuck?" banner below (and, in principle, any other future entry point)
+  // just calls `.present()` rather than owning open/closed state itself.
+  const untangleSheetRef = useRef<JournalUntangleSheetRef>(null);
+  const handleInsertUntanglePrompt = useCallback((prompt: UntanglePrompt) => {
+    // Same setters the manual editor and voice dictation both use below —
+    // an inserted prompt is just more text in the same box, saved the same
+    // way, never a parallel concept. See journal-writing-help.ts's
+    // `appendUntanglePrompt` for why this appends rather than inserting at
+    // the cursor (a v1 simplification, unlike web's Tiptap-backed insert).
+    setDraft((prev) => appendUntanglePrompt(prev, prompt));
+    setIsDirty(true);
+  }, []);
 
   useScreenView("journal");
 
@@ -851,7 +869,10 @@ export default function JournalScreen() {
             handleEditorFocus();
           }}
           onBlur={() => setIsEditorFocused(false)}
-          placeholder="Write about your day..."
+          // Date-hashed so the same day always shows the same prompt (matches
+          // web's journal-entry-editor.tsx `promptForDate` bit-for-bit — see
+          // journal-writing-help.ts) rather than a single static placeholder.
+          placeholder={promptForDate(selectedDate)}
           placeholderTextColor={colors.mutedForeground}
           textAlignVertical="top"
           accessibilityLabel={`Journal entry for ${formatDisplayDate(selectedDate)}`}
@@ -875,6 +896,12 @@ export default function JournalScreen() {
   const header = (
     <>
       <Text style={styles.eyebrow}>Journal</Text>
+      {/* Rotating affirmations — mobile port of goal-slot-web's
+          journal-affirmations.tsx, sat "under the page header" there too.
+          See JournalAffirmations.tsx for the cross-fade/cadence details. */}
+      <View style={styles.affirmationsRow}>
+        <JournalAffirmations />
+      </View>
 
       {/* The date IS this screen's headline — there's no separate title above
           it — so it gets the same visual weight index.tsx's `greeting` and
@@ -1090,6 +1117,28 @@ export default function JournalScreen() {
         <Text style={styles.voiceIdleLabel}>Talk about your day — dictate today's entry</Text>
       </View>
 
+      {/* "Stuck?" — mobile port of goal-slot-web's journal-entry-editor.tsx
+          persistent tip strip. Same copy, same trigger (opens the Untangle
+          sheet below). Web renders this as a glowing, breathing strip
+          between the header and the editor; that decorative glow animation
+          isn't reproduced here (a static brand-tinted surface, matching this
+          screen's own `voiceIdleRow` convention above, carries the same
+          "this deserves attention" read without a second Reanimated loop
+          competing with the affirmations cross-fade already running above). */}
+      <Pressable
+        style={styles.stuckBanner}
+        onPress={() => untangleSheetRef.current?.present()}
+        accessibilityRole="button"
+        accessibilityLabel="Stuck? A feeling is usually a question your mind is trying to ask. Untangle a feeling."
+        accessibilityHint="Opens a list of writing prompts you can insert into today's entry"
+      >
+        <Icon name="sparkles" size={16} color={colors.primaryText} />
+        <Text style={styles.stuckBannerText} numberOfLines={2}>
+          <Text style={styles.stuckBannerTextBold}>Stuck?</Text> A feeling is usually a question your mind is
+          trying to ask — <Text style={styles.stuckBannerTextLink}>pick a prompt to untangle it.</Text>
+        </Text>
+      </Pressable>
+
       <Animated.View style={[styles.editorArea, editorTransitionStyle]}>
         {editorContent}
         {/* A small, quiet craft touch — the kind of ambient feedback a real
@@ -1219,6 +1268,8 @@ export default function JournalScreen() {
     // with a tall status bar (reported on a Samsung S22).
     <SafeAreaView style={styles.container} edges={["top"]}>
       {body}
+
+      <JournalUntangleSheet ref={untangleSheetRef} onInsertPrompt={handleInsertUntanglePrompt} />
 
       <ConfirmDialog
         visible={pendingDelete !== null}
@@ -1383,6 +1434,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
+  // Wraps JournalAffirmations — same horizontal rhythm as `eyebrow` above it
+  // (JournalAffirmations itself carries no padding of its own, so it stays a
+  // plain, reusable "just render some text" component).
+  affirmationsRow: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: 2,
+  },
   dateNav: {
     flexDirection: "row",
     alignItems: "center",
@@ -1444,6 +1502,32 @@ const styles = StyleSheet.create({
     minHeight: 0,
     overflow: "hidden",
     opacity: 0,
+  },
+  // "Stuck?" tip strip — same brand-tinted surface role as `voiceIdleRow`
+  // above (this screen's one other "worth noticing" row), placed right
+  // above the editor so it's visible whenever the entry is open, matching
+  // web's own "between the header and the editor" placement.
+  stuckBanner: {
+    ...VOICE_SURFACE,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    borderColor: colors.primaryBorder,
+    backgroundColor: colors.primaryMuted,
+  },
+  stuckBannerText: {
+    flex: 1,
+    fontSize: typography.size.sm,
+    lineHeight: 18,
+    color: colors.foreground,
+  },
+  stuckBannerTextBold: {
+    fontWeight: typography.weight.bold,
+    color: colors.foreground,
+  },
+  stuckBannerTextLink: {
+    color: colors.primaryText,
+    fontWeight: typography.weight.semibold,
   },
   voicePanel: {
     ...VOICE_SURFACE,
