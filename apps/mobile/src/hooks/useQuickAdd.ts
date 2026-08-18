@@ -16,8 +16,9 @@
 //   4. on success, invalidate that domain's whole-collection query key
 //      (packages/shared's `create*Queries().{goal,task,schedule}Queries.all`)
 //      so the optimistic entry gets reconciled against the server response;
-//   5. on failure that looks like "no server response" (offline/timeout —
-//      see `hasResponse` below, mirroring the same check in
+//   5. on a retryable failure (no server response at all — offline/timeout —
+//      or a 5xx from the server or a proxy in front of it; see `isRetryable`
+//      below, mirroring the same check in
 //      packages/shared/src/offline/sync.ts), enqueue the create into the
 //      offline outbox so it replays once connectivity returns
 //      (src/lib/offline.ts registers the matching "<domain>-create"
@@ -49,7 +50,7 @@ import {
   createScheduleBlockSchema,
   createTaskSchema,
   genId,
-  hasResponse,
+  isRetryable,
   type AnalyticsCapability,
   type CreateGoalInput,
   type CreateScheduleBlockInput,
@@ -172,8 +173,8 @@ async function runQuickAdd<TInput, TCreated>({
     notify(successMessage, "success");
     onSuccess(created);
   } catch (err) {
-    if (!hasResponse(err)) {
-      // No server response at all — offline/timeout. The create WAS queued
+    if (isRetryable(err)) {
+      // No server response at all (offline/timeout), or a 5xx — the create WAS queued
       // (about to be, below), so the optimistic entry stays exactly where it
       // is instead of being yanked back out from under the user; it just
       // gets tagged so the row can show a "queued" treatment instead of

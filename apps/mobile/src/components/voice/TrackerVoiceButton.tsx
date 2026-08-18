@@ -32,7 +32,7 @@ import {
   createTimeEntrySchema,
   genId,
   getLocalDateString,
-  hasResponse,
+  isRetryable,
   parseVoiceCommand,
   type ActionableVoiceIntent,
   type CreateTimeEntryInput,
@@ -150,8 +150,8 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
         }
         return `Logged ${minutes} min${target === null ? "" : ` to ${target.name}`}`;
       } catch (err) {
-        if (!hasResponse(err)) {
-          // Offline. Measured-and-then-dropped time is unrecoverable, so it
+        if (isRetryable(err)) {
+          // Offline, or a transient 5xx. Measured-and-then-dropped time is unrecoverable, so it
           // is banked rather than surfaced as a failure the user has to
           // remember to redo.
           await outbox.addToOutbox({

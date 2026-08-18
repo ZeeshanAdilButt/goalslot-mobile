@@ -1745,6 +1745,10 @@ function genId() {
 function hasResponse(err) {
   return Boolean(err?.response);
 }
+function isRetryable(err) {
+  if (!hasResponse(err)) return true;
+  return err.response.status >= 500;
+}
 
 // src/offline/outbox.ts
 var DEFAULT_STORAGE_KEY = "goalslot-offline-outbox";
@@ -4036,6 +4040,7 @@ export {
   isConversationUnread,
   isNamedTarget,
   isPendingMessage,
+  isRetryable,
   isReversibleVoiceIntent,
   labelInputSchema,
   lastReadAtFor,

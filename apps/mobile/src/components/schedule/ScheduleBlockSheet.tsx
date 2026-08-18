@@ -73,7 +73,7 @@ import {
   createScheduleBlockSchema,
   DAYS_OF_WEEK_FULL,
   genId,
-  hasResponse,
+  isRetryable,
   minutesToTime,
   timeToMinutes,
   updateScheduleBlockSchema,
@@ -437,7 +437,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
           });
           created.push(result.data);
         } catch (err) {
-          if (hasResponse(err)) {
+          if (!isRetryable(err)) {
             rejectionErr = err;
             break;
           }
@@ -577,7 +577,7 @@ export const ScheduleBlockSheet = forwardRef<ScheduleBlockSheetRef, object>(func
           await apiClient.schedule.update(target.id, payload);
           succeededIds.push(target.id);
         } catch (err) {
-          if (hasResponse(err)) {
+          if (!isRetryable(err)) {
             rejectionErr = err;
             break;
           }

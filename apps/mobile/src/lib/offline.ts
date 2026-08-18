@@ -6,7 +6,7 @@ import {
   createOperationRegistry,
   createOutbox,
   genId,
-  hasResponse,
+  isRetryable,
   markPendingMessage,
   toMessagingError,
   type CompleteTaskInput,
@@ -72,7 +72,7 @@ NetInfo.fetch()
  *
  * Deliberately NOT wired into TanStack's `onlineManager`. This app's offline
  * story is the outbox below: a mutation is expected to FAIL while offline so
- * `useQuickAdd`'s `hasResponse` check can decide whether to queue it. Handing
+ * `useQuickAdd`'s `isRetryable` check can decide whether to queue it. Handing
  * `onlineManager` a real signal would make TanStack pause those mutations
  * instead, which silently bypasses the outbox — a bigger behaviour change
  * than any one feature should make on the way past.
@@ -102,16 +102,18 @@ export const operationRegistry = createOperationRegistry();
  * Shared by every edit/complete/delete call site that queues to the outbox
  * (goals.tsx, EditGoalSheet.tsx, tasks.tsx, EditTaskSheet.tsx,
  * ScheduleBlockSheet.tsx, journal.tsx, note/[id].tsx): mirrors
- * useQuickAdd.ts's hasResponse-check -> outbox.addToOutbox shape so every
+ * useQuickAdd.ts's isRetryable-check -> outbox.addToOutbox shape so every
  * mutation queues exactly the same way instead of N near-identical copies.
  *
- * Returns whether the failure actually got queued: `true` means no server
- * response arrived (offline/timeout) and the entry is now in the outbox, so
- * the caller should keep its optimistic patch (tagged `pendingSync: true`)
- * rather than roll it back. `false` means the server actually answered and
- * rejected the request — nothing was queued, and the caller should roll
- * back to the pre-edit snapshot and show its own inline error, same as
- * before this offline pass.
+ * Returns whether the failure actually got queued: `true` means the failure
+ * was retryable — no server response arrived at all (offline/timeout), or
+ * the server responded with a 5xx (its own transient failure, or a reverse
+ * proxy in front of it failing mid-deploy) — and the entry is now in the
+ * outbox, so the caller should keep its optimistic patch (tagged
+ * `pendingSync: true`) rather than roll it back. `false` means the server
+ * gave a genuine, non-retryable rejection (4xx) — nothing was queued, and
+ * the caller should roll back to the pre-edit snapshot and show its own
+ * inline error, same as before this offline pass.
  *
  * `idempotencyKey`: for operations whose replay can create a NEW row
  * server-side (task-complete's TimeEntry, note-create's Note — see their
@@ -132,7 +134,7 @@ export async function queueOfflineEdit(
   err: unknown,
   idempotencyKey?: string,
 ): Promise<boolean> {
-  if (hasResponse(err)) return false;
+  if (!isRetryable(err)) return false;
   await outbox.addToOutbox({
     id: genId(),
     kind,
@@ -149,8 +151,8 @@ export async function queueOfflineEdit(
 
 // Quick-add (src/hooks/useQuickAdd.ts) is the first caller of these: it
 // enqueues a create here when the live `apiClient.<domain>.create()` call
-// fails without a server response (offline/timeout, per `hasResponse` in
-// that hook), and the sync engine replays it by `kind` once connectivity
+// fails with a retryable error (offline/timeout, or a 5xx — per `isRetryable`
+// in that hook), and the sync engine replays it by `kind` once connectivity
 // returns. `invalidateKeys` points at each domain's whole-collection key
 // (not a single filtered list variant) so a replayed create refreshes every
 // view of that domain, not just the one quick-add happened to patch

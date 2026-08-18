@@ -150,6 +150,7 @@ __export(index_exports, {
   isConversationUnread: () => isConversationUnread,
   isNamedTarget: () => isNamedTarget,
   isPendingMessage: () => isPendingMessage,
+  isRetryable: () => isRetryable,
   isReversibleVoiceIntent: () => isReversibleVoiceIntent,
   labelInputSchema: () => labelInputSchema,
   lastReadAtFor: () => lastReadAtFor,
@@ -1944,6 +1945,10 @@ function genId() {
 // src/offline/http-error.ts
 function hasResponse(err) {
   return Boolean(err?.response);
+}
+function isRetryable(err) {
+  if (!hasResponse(err)) return true;
+  return err.response.status >= 500;
 }
 
 // src/offline/outbox.ts
@@ -4237,6 +4242,7 @@ var SHARED_PACKAGE_NAME = "@goalslot/shared";
   isConversationUnread,
   isNamedTarget,
   isPendingMessage,
+  isRetryable,
   isReversibleVoiceIntent,
   labelInputSchema,
   lastReadAtFor,

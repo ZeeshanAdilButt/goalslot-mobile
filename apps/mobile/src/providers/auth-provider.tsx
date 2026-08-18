@@ -10,7 +10,7 @@
 
 import { create } from "zustand";
 
-import { hasResponse, type User } from "@goalslot/shared";
+import { isRetryable, type User } from "@goalslot/shared";
 
 import { apiClient, setSessionExpiredHandler } from "../lib/api-client";
 import {
@@ -120,18 +120,20 @@ export const useAuthStore = create<AuthState>((set) => ({
       const response = await apiClient.auth.getProfile();
       set({ user: response.data, status: "authenticated" });
     } catch (err) {
-      // `hasResponse` (packages/shared/src/offline/http-error.ts) is the
-      // same "did the server actually answer?" check every other offline
-      // call site in this app uses (timer.tsx, journal.tsx, notes.tsx,
-      // src/lib/offline.ts) to tell a network failure apart from a genuine
-      // rejection. A request that never reached the server (no wifi, DNS
-      // failure, timeout — going offline right on cold start) has no
-      // `.response` at all; it is NOT proof the stored token is invalid, so
-      // it must never clear tokens or bounce to the login screen. Doing
-      // that here was the direct cause of "turn off wifi, get logged out
-      // with no way back in": the token really was deleted, not just the
-      // UI's belief about it.
-      if (!hasResponse(err)) {
+      // `isRetryable` (packages/shared/src/offline/http-error.ts) is the
+      // same "should this be treated as a transient failure, not a genuine
+      // rejection?" check every other offline call site in this app uses
+      // (timer.tsx, journal.tsx, notes.tsx, src/lib/offline.ts). A request
+      // that never reached the server (no wifi, DNS failure, timeout —
+      // going offline right on cold start) has no `.response` at all, and a
+      // 5xx means the server (or a reverse proxy in front of it) failed
+      // transiently — neither is proof the stored token is invalid, so
+      // neither may clear tokens or bounce to the login screen. Doing that
+      // here was the direct cause of "turn off wifi, get logged out with no
+      // way back in": the token really was deleted, not just the UI's
+      // belief about it. A transient 502/503 during a deploy would have hit
+      // the exact same bug.
+      if (isRetryable(err)) {
         // Stay optimistically authenticated on the locally stored token —
         // there is no cached profile to show yet, but the alternative
         // (unauthenticated) is strictly worse and unrecoverable while
