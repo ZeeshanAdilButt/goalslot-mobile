@@ -1,4 +1,4 @@
-import { shouldShowFloatingMessagesButton } from "./floating-messages";
+import { shouldShowFloatingMessagesButton, shouldShowHeaderMessagesIcon } from "./floating-messages";
 
 const ENABLED = true;
 
@@ -65,5 +65,26 @@ describe("shouldShowFloatingMessagesButton", () => {
     // "unavailable" is worse than no button.
     expect(shouldShowFloatingMessagesButton("/", false)).toBe(false);
     expect(shouldShowFloatingMessagesButton("/tasks", false)).toBe(false);
+  });
+});
+
+describe("shouldShowHeaderMessagesIcon", () => {
+  it("shows on exactly the four screens the floating button gives up to a competing FAB", () => {
+    // Removing the floating button from these four also removed the only
+    // way to reach Messages from them (menu aside) — reported by the user
+    // as "the floating icon from messaging is gone" on Today.
+    for (const pathname of ["/", "/goals", "/tasks", "/schedule"]) {
+      expect(shouldShowHeaderMessagesIcon(pathname, ENABLED)).toBe(true);
+    }
+  });
+
+  it("stays off everywhere else — those screens keep their existing, correct substitute", () => {
+    for (const pathname of ["/timer", "/voice", "/notes", "/journal", "/messages", "/notifications", "/mentees"]) {
+      expect(shouldShowHeaderMessagesIcon(pathname, ENABLED)).toBe(false);
+    }
+  });
+
+  it("stays hidden in a build with no messaging service", () => {
+    expect(shouldShowHeaderMessagesIcon("/", false)).toBe(false);
   });
 });

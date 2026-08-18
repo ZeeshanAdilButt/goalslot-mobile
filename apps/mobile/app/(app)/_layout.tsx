@@ -18,7 +18,7 @@ import { SearchOverlay } from "@/components/search/SearchOverlay";
 import type { SearchHref } from "@/components/search/search-index";
 import { useMessagingLiveUpdates } from "@/hooks/useMessagingLiveUpdates";
 import { useUnreadMessagesCount } from "@/hooks/useUnreadMessagesCount";
-import { shouldShowFloatingMessagesButton } from "@/lib/floating-messages";
+import { shouldShowFloatingMessagesButton, shouldShowHeaderMessagesIcon } from "@/lib/floating-messages";
 import { messagingEnabled } from "@/lib/messaging-config";
 import { BELL_SCOPE } from "@/lib/notification-feed";
 import { notificationQueries } from "@/lib/queries";
@@ -685,6 +685,39 @@ export default function AppLayout() {
               </View>
             ) : null}
           </Pressable>
+          {/* Today/Goals/Tasks/Schedule's own substitute for the floating
+              Messages button, which `shouldShowFloatingMessagesButton` hides
+              on exactly these four screens because it would sit on top of
+              their own create FAB (see floating-messages.ts). Without this,
+              those four screens lost Messages reachability entirely (menu
+              aside) the moment that exclusion shipped — reported by the user
+              as "the floating icon from messaging is gone." See
+              shouldShowHeaderMessagesIcon's own header for why it's scoped to
+              exactly these four and no others. */}
+          {shouldShowHeaderMessagesIcon(pathname, messagingEnabled) ? (
+            <Pressable
+              onPress={openMessages}
+              style={styles.messagesTriggerButton}
+              accessibilityRole="button"
+              accessibilityLabel={
+                unreadMessages > 0 ? `Messages, ${unreadMessages} unread` : "Messages"
+              }
+              hitSlop={8}
+            >
+              <Icon name="messages" color={colors.foreground} size={20} />
+              {unreadMessages > 0 ? (
+                <View
+                  style={styles.notificationBadge}
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                >
+                  <Text style={styles.notificationBadgeText}>
+                    {unreadMessages > 99 ? "99+" : unreadMessages}
+                  </Text>
+                </View>
+              ) : null}
+            </Pressable>
+          ) : null}
         </View>
       </SafeAreaView>
 
@@ -739,6 +772,16 @@ const styles = StyleSheet.create({
     ...shadows.fab,
   },
   notificationsTriggerButton: {
+    width: 40,
+    height: 40,
+    marginRight: spacing.lg,
+    borderRadius: radii.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.card,
+    ...shadows.fab,
+  },
+  messagesTriggerButton: {
     width: 40,
     height: 40,
     marginRight: spacing.lg,

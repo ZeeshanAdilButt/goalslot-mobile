@@ -81,3 +81,28 @@ export function shouldShowFloatingMessagesButton(pathname: string, messagingEnab
   if (OBSCURES_OWN_CONTENT.some((route) => pathname === route)) return false;
   return !TAB_BAR_HIDDEN_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
+
+/**
+ * Whether the header button column (menu/search/bell, top-right — see
+ * app/(app)/_layout.tsx) should carry its own small Messages icon.
+ *
+ * Exactly the OWNS_THE_CORNER screens, and no others: those are the only
+ * ones where `shouldShowFloatingMessagesButton` above is false SPECIFICALLY
+ * because the floating button would sit on the screen's own FAB, not for
+ * some other reason (redundant, obscures content, tab bar hidden) — so
+ * they're the only screens that lose Messages reachability entirely without
+ * a substitute. Reported by the user as "the floating icon from messaging
+ * is gone" on Today, after the OWNS_THE_CORNER exclusion above shipped:
+ * removing the collision also removed the only way to reach Messages from
+ * these four screens (menus aside), which is a real regression the header
+ * icon exists to close. Every other excluded screen keeps its existing,
+ * correct substitute: Messages itself needs no button to itself, the note/
+ * message/mentee detail screens have no tab bar to dock a header column
+ * above in the first place, and Journal's own content push-down problem has
+ * nothing to do with reachability — the drawer's Messages row already
+ * covers it there, same as it does everywhere.
+ */
+export function shouldShowHeaderMessagesIcon(pathname: string, messagingEnabled: boolean): boolean {
+  if (!messagingEnabled) return false;
+  return OWNS_THE_CORNER.some((route) => pathname === route);
+}
