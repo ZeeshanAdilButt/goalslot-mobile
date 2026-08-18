@@ -48,6 +48,7 @@ import {
 import { Icon } from "@/components/ui/Icon";
 import { useScreenView } from "@/hooks/useScreenView";
 import { apiClient, notify } from "@/lib/api-client";
+import { dedupeWeekSchedule } from "@/lib/dedupe-week-schedule";
 import { parseScheduleDayParam } from "@/lib/deep-links";
 import { getErrorMessage } from "@/lib/get-error-message";
 import { hapticLight } from "@/lib/haptics";
@@ -181,6 +182,14 @@ export default function ScheduleScreen() {
   // flashes a blocking skeleton over data that's already on screen.
   const showSkeleton = weeklyQuery.isPending;
 
+  // Defensive belt-and-suspenders: drops any repeated block id before it
+  // reaches layout/render. Does not paper over genuine data-layer duplicate
+  // ROWS (see dedupe-week-schedule.ts's header) — those need the confirmed
+  // causes fixed and, for rows created before the fix, a server-side
+  // cleanup — but it stops any duplicate that reaches this screen, from
+  // whatever cause, from rendering twice.
+  const weekData = useMemo(() => dedupeWeekSchedule(weeklyQuery.data), [weeklyQuery.data]);
+
   const todayIndex = now.getDay();
   const nowMinutes = selectedDay === todayIndex ? now.getHours() * 60 + now.getMinutes() : null;
 
@@ -207,19 +216,19 @@ export default function ScheduleScreen() {
   }, [todayStart]);
 
   const blockCounts = useMemo(
-    () => Array.from({ length: DAYS_IN_WEEK }, (_, index) => weeklyQuery.data?.[index]?.length ?? 0),
-    [weeklyQuery.data],
+    () => Array.from({ length: DAYS_IN_WEEK }, (_, index) => weekData?.[index]?.length ?? 0),
+    [weekData],
   );
 
   const entries = useMemo(
-    () => positionBlocks(weeklyQuery.data?.[selectedDay] ?? []),
-    [weeklyQuery.data, selectedDay],
+    () => positionBlocks(weekData?.[selectedDay] ?? []),
+    [weekData, selectedDay],
   );
 
   // Every block across the whole week, not just the selected day — reminders
   // cover "all schedule blocks" per the user's own words, not just whichever
   // day happens to be open right now.
-  const allBlocks = useMemo(() => Object.values(weeklyQuery.data ?? {}).flat(), [weeklyQuery.data]);
+  const allBlocks = useMemo(() => Object.values(weekData ?? {}).flat(), [weekData]);
   const reminders = useScheduleReminders(allBlocks);
 
   // The other days the open block is part of — a real series, or a lookalike
@@ -231,8 +240,8 @@ export default function ScheduleScreen() {
   );
 
   const dayWindow = useMemo(
-    () => getDayWindow(weeklyQuery.data?.[selectedDay] ?? []),
-    [weeklyQuery.data, selectedDay],
+    () => getDayWindow(weekData?.[selectedDay] ?? []),
+    [weekData, selectedDay],
   );
 
   const scheduledMinutes = useMemo(
