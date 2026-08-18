@@ -27,7 +27,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
-import { formatDuration, formatTime12h, type ScheduleBlock } from "@goalslot/shared";
+import { formatDuration, formatTime12h, type ScheduleBlock, type Task } from "@goalslot/shared";
 
 import { ErrorState } from "@/components/ErrorState";
 import { Icon } from "@/components/ui/Icon";
@@ -36,7 +36,7 @@ import { ProgressRing } from "@/components/today/ProgressRing";
 import { SectionEmpty } from "@/components/today/SectionEmpty";
 import { Skeleton } from "@/components/Skeleton";
 import { useReduceMotion } from "@/hooks/useReduceMotion";
-import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
 const RING_SIZE = 86;
 
@@ -59,6 +59,20 @@ export interface FocusNowCardProps {
   nextLabel: string | null;
   /** Opens the schedule — the web bar's "View Schedule" link. */
   onOpenSchedule: () => void;
+  /**
+   * Incomplete tasks under `activeBlock.goal`, already capped by the caller
+   * (see GOAL_TASK_PREVIEW_COUNT in app/(app)/index.tsx) — this component
+   * doesn't slice. Omitted or empty renders nothing: a card this dense
+   * doesn't get an empty state of its own for "no tasks", it just quietly
+   * doesn't grow.
+   */
+  goalTasks?: Task[];
+  /** Matching tasks beyond what `goalTasks` already includes, for a "+N more" row. */
+  goalTasksHiddenCount?: number;
+  /** Opens `task` in the Tasks tab's own EditTaskSheet (via its `?taskId=` deep link). */
+  onTaskPress?: (task: Task) => void;
+  /** "+N more" tap target — the Tasks tab, unfiltered (same destination `onOpenSchedule`'s sibling sections use for their own overflow). */
+  onViewAllGoalTasks?: () => void;
 }
 
 export function FocusNowCard({
@@ -70,6 +84,10 @@ export function FocusNowCard({
   nextBlock,
   nextLabel,
   onOpenSchedule,
+  goalTasks,
+  goalTasksHiddenCount = 0,
+  onTaskPress,
+  onViewAllGoalTasks,
 }: FocusNowCardProps) {
   if (loading) {
     return (
@@ -109,81 +127,145 @@ export function FocusNowCard({
   if (activeBlock) {
     const pct = activeProgress ? Math.round(activeProgress.pct * 100) : 0;
     const remaining = activeProgress ? formatDuration(activeProgress.minutesLeft) : null;
+    const hasGoalTasks = !!goalTasks && goalTasks.length > 0;
 
     return (
-      <PressableScale
-        style={styles.shellBrand}
-        onPress={onOpenSchedule}
-        accessibilityRole="button"
-        accessibilityLabel={`Focus now: ${activeBlock.title}, ${pct} percent elapsed${
-          remaining ? `, ${remaining} left` : ""
-        }${nextBlock ? `. Up next: ${nextBlock.title}${nextLabel ? `, ${nextLabel}` : ""}` : ""}. Open schedule.`}
-      >
-        <View style={styles.heroRow}>
-          <ProgressRing
-            progress={activeProgress?.pct ?? 0}
-            size={RING_SIZE}
-            strokeWidth={9}
-            color={colors.primary}
-            // A pale track on the warm card, not the grey border token —
-            // grey-on-yellow muddies into an unintended third color.
-            trackColor={colors.white}
-          >
-            <Text style={styles.ringValue}>{pct}%</Text>
-            <Text style={styles.ringUnit}>done</Text>
-          </ProgressRing>
+      // This used to be ONE PressableScale wrapping the whole card, with
+      // onOpenSchedule as its only affordance. It's now a plain shell with
+      // the hero (ring/title/chips/"Up next") as an inner PressableScale,
+      // and the goal-tasks list below as separate, sibling PressableScales.
+      // Pressable defaults `accessible` to true, which collapses its entire
+      // subtree into ONE screen-reader-focusable node carrying only its own
+      // accessibilityLabel — exactly what the hero wants (that's why
+      // `nextUpFooter` is marked accessibilityElementsHidden below, its
+      // text already folded into the label). But the goal-task rows need
+      // the OPPOSITE: each one has to stay independently reachable and
+      // speak its own task title, or VoiceOver/TalkBack users would lose
+      // access to every task but the first three words baked into a shared
+      // label. Splitting the outer Pressable in two is what makes both
+      // true at once.
+      <View style={styles.shellBrand}>
+        <PressableScale
+          onPress={onOpenSchedule}
+          accessibilityRole="button"
+          accessibilityLabel={`Focus now: ${activeBlock.title}, ${pct} percent elapsed${
+            remaining ? `, ${remaining} left` : ""
+          }${nextBlock ? `. Up next: ${nextBlock.title}${nextLabel ? `, ${nextLabel}` : ""}` : ""}. Open schedule.`}
+        >
+          <View style={styles.heroRow}>
+            <ProgressRing
+              progress={activeProgress?.pct ?? 0}
+              size={RING_SIZE}
+              strokeWidth={9}
+              color={colors.primary}
+              // A pale track on the warm card, not the grey border token —
+              // grey-on-yellow muddies into an unintended third color.
+              trackColor={colors.white}
+            >
+              <Text style={styles.ringValue}>{pct}%</Text>
+              <Text style={styles.ringUnit}>done</Text>
+            </ProgressRing>
 
-          <View style={styles.heroBody}>
-            <View style={styles.eyebrowRow}>
-              <LiveDot />
-              <Text style={styles.eyebrowBrand}>Focus now</Text>
-            </View>
-
-            <Text style={styles.heroTitle} numberOfLines={2}>
-              {activeBlock.title}
-            </Text>
-
-            <View style={styles.metaRow}>
-              <View style={styles.chipOnBrand}>
-                <Icon name="timer" size={12} color={colors.primaryForeground} />
-                <Text style={styles.chipOnBrandText}>
-                  {formatTime12h(activeBlock.startTime)} – {formatTime12h(activeBlock.endTime)}
-                </Text>
+            <View style={styles.heroBody}>
+              <View style={styles.eyebrowRow}>
+                <LiveDot />
+                <Text style={styles.eyebrowBrand}>Focus now</Text>
               </View>
-              {remaining ? (
-                <View style={styles.pillSolid}>
-                  <Text style={styles.pillSolidText}>{remaining} left</Text>
+
+              <Text style={styles.heroTitle} numberOfLines={2}>
+                {activeBlock.title}
+              </Text>
+
+              <View style={styles.metaRow}>
+                <View style={styles.chipOnBrand}>
+                  <Icon name="timer" size={12} color={colors.primaryForeground} />
+                  <Text style={styles.chipOnBrandText}>
+                    {formatTime12h(activeBlock.startTime)} – {formatTime12h(activeBlock.endTime)}
+                  </Text>
+                </View>
+                {remaining ? (
+                  <View style={styles.pillSolid}>
+                    <Text style={styles.pillSolidText}>{remaining} left</Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {activeBlock.goal?.title ? (
+                <View style={styles.goalRow}>
+                  <Icon name="goals" size={12} color={colors.primaryForeground} />
+                  <Text style={styles.goalText} numberOfLines={1}>
+                    {activeBlock.goal.title}
+                  </Text>
                 </View>
               ) : null}
             </View>
+          </View>
 
-            {activeBlock.goal?.title ? (
-              <View style={styles.goalRow}>
-                <Icon name="goals" size={12} color={colors.primaryForeground} />
-                <Text style={styles.goalText} numberOfLines={1}>
-                  {activeBlock.goal.title}
+          {/* The web bar shows the live block AND the "Up next" chip at the
+              same time (focus-now-bar.tsx:76-80 computes `upcomingList`
+              unconditionally, and :138-155 renders the chip beside the active
+              block). Mobile previously suppressed "next" whenever anything was
+              running, which hid it in exactly the moment a user asks "how much
+              longer, and what then?". */}
+          {nextBlock ? (
+            <View style={styles.nextUpFooter} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+              <Text style={styles.nextUpLabel}>Up next</Text>
+              <Text style={styles.nextUpTitle} numberOfLines={1}>
+                {nextBlock.title}
+              </Text>
+              {nextLabel ? <Text style={styles.nextUpWhen}>{nextLabel}</Text> : null}
+            </View>
+          ) : null}
+        </PressableScale>
+
+        {/* Tasks under the goal this block belongs to — "what am I actually
+            supposed to be doing right now", one layer more concrete than
+            the block/goal titles above. Caller (app/(app)/index.tsx) only
+            passes `goalTasks` when there's at least one incomplete match;
+            this renders nothing rather than an empty state when there
+            isn't, matching this card's own file-header note that its shell
+            never disappears but its optional parts don't force themselves
+            into view either. */}
+        {hasGoalTasks ? (
+          <View style={styles.goalTasksSection}>
+            {goalTasks!.map((task) => (
+              <PressableScale
+                key={task.id}
+                haptic={false}
+                style={styles.goalTaskRow}
+                onPress={() => onTaskPress?.(task)}
+                accessibilityRole="button"
+                accessibilityLabel={`${task.title}, open task`}
+              >
+                <View
+                  style={[styles.goalTaskMarker, task.status === "DOING" && styles.goalTaskMarkerDoing]}
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                />
+                <Text style={styles.goalTaskTitle} numberOfLines={1}>
+                  {task.title}
                 </Text>
-              </View>
+                <Icon name="chevron" size={12} color={colors.primaryText} />
+              </PressableScale>
+            ))}
+            {goalTasksHiddenCount > 0 ? (
+              <PressableScale
+                haptic={false}
+                style={styles.goalTaskMoreRow}
+                onPress={onViewAllGoalTasks}
+                accessibilityRole="button"
+                accessibilityLabel={`${goalTasksHiddenCount} more ${
+                  goalTasksHiddenCount === 1 ? "task" : "tasks"
+                } for this goal`}
+              >
+                <Text style={styles.goalTaskMoreText}>
+                  +{goalTasksHiddenCount} more {goalTasksHiddenCount === 1 ? "task" : "tasks"}
+                </Text>
+              </PressableScale>
             ) : null}
           </View>
-        </View>
-
-        {/* The web bar shows the live block AND the "Up next" chip at the
-            same time (focus-now-bar.tsx:76-80 computes `upcomingList`
-            unconditionally, and :138-155 renders the chip beside the active
-            block). Mobile previously suppressed "next" whenever anything was
-            running, which hid it in exactly the moment a user asks "how much
-            longer, and what then?". */}
-        {nextBlock ? (
-          <View style={styles.nextUpFooter} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <Text style={styles.nextUpLabel}>Up next</Text>
-            <Text style={styles.nextUpTitle} numberOfLines={1}>
-              {nextBlock.title}
-            </Text>
-            {nextLabel ? <Text style={styles.nextUpWhen}>{nextLabel}</Text> : null}
-          </View>
         ) : null}
-      </PressableScale>
+      </View>
     );
   }
 
@@ -459,6 +541,57 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     fontWeight: "400",
     color: colors.mutedForeground,
+  },
+  // Same hairline-under-`spacing.md` rule as `nextUpFooter`, so the card
+  // reads as one stack of "sections" rather than the tasks looking bolted
+  // onto the hero. Sits outside the hero's own PressableScale — see the
+  // comment above this section's JSX for why.
+  goalTasksSection: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.primary,
+    gap: spacing.xs,
+  },
+  // Deliberately more compact than TaskRow (this card is already the
+  // densest thing on Today): no status pill, no metadata line, a plain dot
+  // in place of TaskRow's 22px checkbox ring. Three of these plus the hero
+  // above still has to fit above the fold.
+  goalTaskRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: minTouchTarget,
+    paddingVertical: spacing.xs,
+  },
+  goalTaskMarker: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primaryText,
+    opacity: 0.4,
+  },
+  // "In progress" gets the same full-opacity treatment TaskRow gives its
+  // DOING marker, so a task already underway reads as more "live" than one
+  // still queued.
+  goalTaskMarkerDoing: {
+    opacity: 1,
+  },
+  goalTaskTitle: {
+    ...typography.bodySmall,
+    fontWeight: "500",
+    color: colors.foreground,
+    flex: 1,
+  },
+  goalTaskMoreRow: {
+    minHeight: minTouchTarget,
+    justifyContent: "center",
+    paddingVertical: spacing.xs,
+  },
+  goalTaskMoreText: {
+    ...typography.bodySmall,
+    fontWeight: "600",
+    color: colors.primaryText,
   },
   liveDotWrap: {
     width: 10,

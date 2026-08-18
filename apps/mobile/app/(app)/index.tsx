@@ -108,6 +108,11 @@ const GOAL_PREVIEW_COUNT = 3;
 // Five rows is a glance; the count badge and "View all" carry the rest.
 const TASK_PREVIEW_COUNT = 5;
 
+// The FOCUS NOW card's own task list is denser real estate than a full
+// section — it's a few lines inside an already-busy hero, not a card of its
+// own — so it gets a tighter cap than TASK_PREVIEW_COUNT.
+const GOAL_TASK_PREVIEW_COUNT = 3;
+
 // Shown in place of a stat whose query failed. A stat tile has no room for
 // an error, and printing "0m" for "we couldn't fetch it" is worse than
 // printing nothing.
@@ -376,6 +381,20 @@ export default function TodayScreen() {
 
   const previewTasks = useMemo(() => dueTodayTasks.slice(0, TASK_PREVIEW_COUNT), [dueTodayTasks]);
 
+  // Incomplete tasks under the currently-active block's goal, for the FOCUS
+  // NOW card's own task list — a level more concrete than the block/goal
+  // titles it already shows. Keyed on `activeBlock?.goalId` (a primitive)
+  // rather than `activeBlock` itself so this doesn't rebuild every minute
+  // the block's derived progress fields tick over.
+  const goalTasks = useMemo(() => {
+    if (!activeBlock?.goalId) return [];
+    return (tasksQuery.data ?? []).filter(
+      (task) => task.goalId === activeBlock.goalId && task.status !== "DONE",
+    );
+  }, [tasksQuery.data, activeBlock?.goalId]);
+
+  const previewGoalTasks = useMemo(() => goalTasks.slice(0, GOAL_TASK_PREVIEW_COUNT), [goalTasks]);
+
   // Derived-only display data for the hero card — computed the same way
   // dw-time-web's focus-now-bar.tsx computes its elapsed-progress bar and
   // "Xm left" chip, from data this screen already has (activeBlock, now).
@@ -419,6 +438,19 @@ export default function TodayScreen() {
   // The rail hands back the whole item rather than a bound handler, so one
   // stable callback covers all four destinations.
   const onQuickAccess = useCallback((item: QuickAccessItem) => go(item.href), [go]);
+
+  // Opens `task` directly in the Tasks tab's own EditTaskSheet, via the
+  // exact `/tasks?taskId=…` deep link a task notification tap and a shared
+  // task link both already resolve to (tasks.tsx's `deepLinkTaskId` effect;
+  // src/components/search/content-search.ts's task results build the same
+  // path string). Reusing it here — rather than mounting a second
+  // EditTaskSheet + ref on Today — means the FOCUS NOW card's task rows get
+  // the real editor for free, with no duplicate open/save/close logic to
+  // keep in sync with the Tasks tab's own.
+  const openTaskEditor = useCallback(
+    (task: Task) => go(`/tasks?taskId=${encodeURIComponent(task.id)}` as Href),
+    [go],
+  );
 
   // The FAB's menu mixes three sheet-openers with one navigation, so the pick
   // handler has to fork. Deliberately NOT folded into `openQuickAdd`, which
@@ -515,6 +547,10 @@ export default function TodayScreen() {
               nextBlock={nextUp.length > 0 ? nextUp[0].block : null}
               nextLabel={nextUpLabel}
               onOpenSchedule={goSchedule}
+              goalTasks={previewGoalTasks}
+              goalTasksHiddenCount={goalTasks.length - previewGoalTasks.length}
+              onTaskPress={openTaskEditor}
+              onViewAllGoalTasks={goTasks}
             />
           </View>
         </Stagger>
