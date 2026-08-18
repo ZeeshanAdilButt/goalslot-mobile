@@ -28,6 +28,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { DEFAULT_JOURNAL_REMINDER_HOUR, normalizeJournalReminderHour } from "./journal-reminders";
+import { DEFAULT_TASK_DIGEST_HOURS, normalizeTaskDigestHours } from "./task-digest-reminders";
 import { DEFAULT_REMINDER_INTERVAL_MINUTES, normalizeReminderIntervalMinutes } from "./timer-reminders";
 
 interface SettingsPersistedState {
@@ -37,18 +38,31 @@ interface SettingsPersistedState {
   journalReminderEnabled: boolean;
   /** Local hour (0-23, whole hours only) the journal reminder fires at, when armed. */
   journalReminderHour: number;
+  /**
+   * Whether the "N tasks due today" digest is armed. On by default: this
+   * replaces the old always-on per-task due-date reminder (see
+   * task-digest-reminders.ts's header), so an upgrading install should keep
+   * getting due-today nudges rather than silently losing them.
+   */
+  taskDigestEnabled: boolean;
+  /** Local hours (0-23, whole hours only, sorted ascending, deduped) the due-today digest fires at, when armed. */
+  taskDigestHours: number[];
 }
 
 interface SettingsState extends SettingsPersistedState {
   setTimerReminderIntervalMinutes: (minutes: number) => void;
   setJournalReminderEnabled: (enabled: boolean) => void;
   setJournalReminderHour: (hour: number) => void;
+  setTaskDigestEnabled: (enabled: boolean) => void;
+  setTaskDigestHours: (hours: number[]) => void;
 }
 
 const INITIAL_STATE: SettingsPersistedState = {
   timerReminderIntervalMinutes: DEFAULT_REMINDER_INTERVAL_MINUTES,
   journalReminderEnabled: true,
   journalReminderHour: DEFAULT_JOURNAL_REMINDER_HOUR,
+  taskDigestEnabled: true,
+  taskDigestHours: DEFAULT_TASK_DIGEST_HOURS,
 };
 
 /**
@@ -85,6 +99,12 @@ export function mergePersistedSettings(persisted: unknown, current: SettingsStat
     journalReminderEnabled:
       typeof stored.journalReminderEnabled === "boolean" ? stored.journalReminderEnabled : true,
     journalReminderHour: normalizeJournalReminderHour(stored.journalReminderHour),
+    // Same "undefined on upgrade must not read as off" reasoning as
+    // journalReminderEnabled above — this setting replaces the old
+    // always-on per-task reminder, so an install that predates it must keep
+    // getting due-today nudges, not lose them silently.
+    taskDigestEnabled: typeof stored.taskDigestEnabled === "boolean" ? stored.taskDigestEnabled : true,
+    taskDigestHours: normalizeTaskDigestHours(stored.taskDigestHours),
   };
 }
 
@@ -107,6 +127,14 @@ export const useSettingsStore = create<SettingsState>()(
       setJournalReminderHour(hour) {
         set({ journalReminderHour: normalizeJournalReminderHour(hour) });
       },
+
+      setTaskDigestEnabled(enabled) {
+        set({ taskDigestEnabled: enabled });
+      },
+
+      setTaskDigestHours(hours) {
+        set({ taskDigestHours: normalizeTaskDigestHours(hours) });
+      },
     }),
     {
       name: "goalslot-settings-store",
@@ -115,6 +143,8 @@ export const useSettingsStore = create<SettingsState>()(
         timerReminderIntervalMinutes: state.timerReminderIntervalMinutes,
         journalReminderEnabled: state.journalReminderEnabled,
         journalReminderHour: state.journalReminderHour,
+        taskDigestEnabled: state.taskDigestEnabled,
+        taskDigestHours: state.taskDigestHours,
       }),
       merge: mergePersistedSettings,
     },

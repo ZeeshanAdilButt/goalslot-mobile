@@ -1,17 +1,24 @@
-// Arms every task-due-date reminder for the whole authenticated session,
-// independent of which screen is open. Mirrors ScheduleRemindersSync.tsx
-// exactly, for the exact same reasons:
+// Arms the combined due-today task digest for the whole authenticated
+// session, independent of which screen is open. Mirrors
+// ScheduleRemindersSync.tsx exactly, for the exact same reasons:
 //
 //   1. Sign-in. session-reset.ts calls `clearAllNotifications()` on sign-IN
 //      as well as sign-out, so every reminder is wiped on a perfectly normal
-//      login. Without this mounted app-wide, nothing re-arms task reminders
+//      login. Without this mounted app-wide, nothing re-arms the digest
 //      until the user happens to open the Tasks tab.
 //   2. Edits made elsewhere. A task with a due date created by the Coach
 //      ("remind me to clean the kitchen in one week"), from QuickAdd, or
-//      synced from another device only gets a reminder on the next visit to
-//      Tasks otherwise. Mounting this once covers all of those for free —
-//      see task-reminders.ts's header for why this is an app-wide feature
-//      rather than something wired into the Coach's apply path specifically.
+//      synced from another device only feeds into today's count on the next
+//      visit to Tasks otherwise. Mounting this once covers all of those for
+//      free — see task-digest-reminders.ts's header for why this is an
+//      app-wide feature rather than something wired into the Coach's apply
+//      path specifically.
+//
+// Replaces the old per-task-per-due-date reminders (task-reminders.ts /
+// useTaskReminders.ts, now deleted — nothing else imported them) entirely:
+// that feature scheduled one notification PER eligible task, all firing at
+// once at a single fixed hour, which is exactly the "so many [notifications]
+// come... at once" complaint this digest was built to fix.
 //
 // It renders nothing. The query it reads is the same cached
 // `taskQueries.list()` the Tasks screen already subscribes to (unfiltered —
@@ -24,12 +31,12 @@ import { useQuery } from "@tanstack/react-query";
 
 import { queryClient } from "@/lib/query-client";
 import { taskQueries } from "@/lib/queries";
-import { useTaskReminderSync } from "@/lib/useTaskReminders";
+import { useTaskDigestReminderSync } from "@/lib/useTaskDigestReminders";
 
 export function TaskRemindersSync(): null {
   const { data } = useQuery(taskQueries.list());
 
-  useTaskReminderSync(data ?? []);
+  useTaskDigestReminderSync(data ?? []);
 
   // Foreground refetch — same trigger/shape as the bell-badge and widget-sync
   // AppState listener in app/(app)/_layout.tsx. Without this, a due-date

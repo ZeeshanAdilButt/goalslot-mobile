@@ -14,6 +14,7 @@
 
 import { DEFAULT_JOURNAL_REMINDER_HOUR } from "./journal-reminders";
 import { mergePersistedSettings } from "./settings-store";
+import { DEFAULT_TASK_DIGEST_HOURS } from "./task-digest-reminders";
 import { DEFAULT_REMINDER_INTERVAL_MINUTES } from "./timer-reminders";
 
 // The store module itself pulls in AsyncStorage at import time. Nothing in
@@ -35,6 +36,10 @@ const currentState = {
   journalReminderHour: DEFAULT_JOURNAL_REMINDER_HOUR,
   setJournalReminderEnabled: () => undefined,
   setJournalReminderHour: () => undefined,
+  taskDigestEnabled: true,
+  taskDigestHours: DEFAULT_TASK_DIGEST_HOURS,
+  setTaskDigestEnabled: () => undefined,
+  setTaskDigestHours: () => undefined,
 };
 
 describe("mergePersistedSettings", () => {
@@ -106,6 +111,39 @@ describe("mergePersistedSettings", () => {
       expect(mergePersistedSettings(persisted, currentState).journalReminderHour).toBe(
         DEFAULT_JOURNAL_REMINDER_HOUR,
       );
+    }
+  });
+
+  it("keeps a valid stored task digest toggle and hours", () => {
+    const merged = mergePersistedSettings(
+      { taskDigestEnabled: false, taskDigestHours: [7, 12, 20] },
+      currentState,
+    );
+
+    expect(merged.taskDigestEnabled).toBe(false);
+    expect(merged.taskDigestHours).toEqual([7, 12, 20]);
+  });
+
+  it("defaults taskDigestEnabled to true (not false) for an install that predates it", () => {
+    // Same upgrade concern as journalReminderEnabled above, and it matters
+    // even more here: this setting replaces the old always-on per-task
+    // reminder, so an existing install must keep getting due-today nudges,
+    // not silently lose them because `undefined` read as "off".
+    const merged = mergePersistedSettings({}, currentState);
+
+    expect(merged.taskDigestEnabled).toBe(true);
+    expect(merged.taskDigestHours).toEqual(DEFAULT_TASK_DIGEST_HOURS);
+  });
+
+  it("normalizes stored task digest hours: dedupes, sorts, and drops out-of-range values", () => {
+    const merged = mergePersistedSettings({ taskDigestHours: [18, 9, 9, -1, 24, 13] }, currentState);
+
+    expect(merged.taskDigestHours).toEqual([9, 13, 18]);
+  });
+
+  it("falls back to the default hours for a malformed or empty value", () => {
+    for (const persisted of [{ taskDigestHours: [] }, { taskDigestHours: "9" }, { taskDigestHours: null }]) {
+      expect(mergePersistedSettings(persisted, currentState).taskDigestHours).toEqual(DEFAULT_TASK_DIGEST_HOURS);
     }
   });
 });

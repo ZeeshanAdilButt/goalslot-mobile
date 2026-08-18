@@ -1,6 +1,7 @@
-// Notification preferences: one screen for OS permission plus all three
-// notification systems the app has — schedule-block alarms, the running
-// timer's check-in nudges, and the once-daily journal reminder.
+// Notification preferences: one screen for OS permission plus every
+// notification system the app has — schedule-block alarms, the running
+// timer's check-in nudges, the once-daily journal reminder, and the
+// due-today task digest.
 //
 // Reached from Settings' "Notifications" row (app/(app)/settings.tsx). That
 // row used to go dead the moment permission was granted: its onPress was
@@ -37,6 +38,15 @@
 // note above), so its switch below writes to settings-store directly and
 // leaves the mounted useJournalReminderSync() to notice the change and act
 // on it — same pattern the picker underneath it already uses for the timer.
+//
+// The "Due-today reminders" section is the odd one out of the three "new
+// state" sections: like the journal reminder it is settings-store state
+// (taskDigestEnabled/taskDigestHours) with its own picker, but its
+// reconciler (useTaskDigestReminderSync, in TaskRemindersSync.tsx) is
+// mounted app-wide like ScheduleRemindersSync rather than screen-local like
+// useJournalReminderSync — so this screen's switch/picker just write to the
+// store, same as the schedule-alarms switch above, and the app-wide mount
+// notices and acts on it.
 
 import { useCallback, useEffect, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
@@ -50,6 +60,7 @@ import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackBu
 import { hiddenTabBackDestination } from "@/lib/hidden-tab-routes";
 import { JournalReminderTimePicker } from "@/components/journal/JournalReminderTimePicker";
 import { SettingsRow, SettingsSection } from "@/components/settings";
+import { TaskDigestHoursPicker } from "@/components/tasks/TaskDigestHoursPicker";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { useScreenView } from "@/hooks/useScreenView";
 import { openBatteryOptimizationSettings } from "@/lib/battery-optimization";
@@ -175,6 +186,11 @@ export default function NotificationSettingsScreen() {
   const journalReminderHour = useSettingsStore((s) => s.journalReminderHour);
   const setJournalReminderHour = useSettingsStore((s) => s.setJournalReminderHour);
 
+  const taskDigestEnabled = useSettingsStore((s) => s.taskDigestEnabled);
+  const setTaskDigestEnabled = useSettingsStore((s) => s.setTaskDigestEnabled);
+  const taskDigestHours = useSettingsStore((s) => s.taskDigestHours);
+  const setTaskDigestHours = useSettingsStore((s) => s.setTaskDigestHours);
+
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -290,6 +306,36 @@ export default function NotificationSettingsScreen() {
           {journalReminderEnabled ? (
             <View style={styles.pickerCard}>
               <JournalReminderTimePicker value={journalReminderHour} onChange={setJournalReminderHour} />
+            </View>
+          ) : null}
+        </SettingsSection>
+
+        <SettingsSection
+          title="Due-today reminders"
+          footnote="One combined notification for everything due today, instead of a separate alert per task."
+        >
+          <SettingsRow
+            label="Remind me about tasks due today"
+            icon={taskDigestEnabled ? "bell" : "bell-off"}
+            description={
+              taskDigestEnabled
+                ? "A single nudge at each time below, only when something is due today."
+                : "Off — due-today tasks won't remind you."
+            }
+            accessory={
+              <Switch
+                value={taskDigestEnabled}
+                onValueChange={(value) => setTaskDigestEnabled(value)}
+                accessibilityRole="switch"
+                accessibilityLabel="Remind me about tasks due today"
+                accessibilityState={{ checked: taskDigestEnabled }}
+              />
+            }
+            divider={taskDigestEnabled}
+          />
+          {taskDigestEnabled ? (
+            <View style={styles.pickerCard}>
+              <TaskDigestHoursPicker value={taskDigestHours} onChange={setTaskDigestHours} />
             </View>
           ) : null}
         </SettingsSection>
