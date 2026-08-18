@@ -608,10 +608,24 @@ export default function TasksScreen() {
   useEffect(() => {
     if (!deepLinkTaskId || handledDeepLinkRef.current === deepLinkTaskId) return;
     const target = tasks?.find((task) => task.id === deepLinkTaskId);
-    if (!target) return;
+    if (target) {
+      handledDeepLinkRef.current = deepLinkTaskId;
+      openEdit(target);
+      return;
+    }
+    // Not found yet is not the same as gone: a warm start can resolve
+    // `isPending: false` immediately from a stale persisted cache while a
+    // background refetch (this screen's own mount, or the foreground
+    // reconcile in TaskRemindersSync.tsx) is still in flight and could still
+    // turn up the task. Only treat this as "the task is really gone" — e.g.
+    // a task-due reminder notification fired for a task that has since been
+    // completed and removed, or deleted, elsewhere — once the query has
+    // actually settled; firing on `isPending` alone would false-positive on
+    // every cold-start deep link that lands before the first fetch resolves.
+    if (isPending || isFetching) return;
     handledDeepLinkRef.current = deepLinkTaskId;
-    openEdit(target);
-  }, [deepLinkTaskId, openEdit, tasks]);
+    notify("That task was deleted or is no longer available.", "error");
+  }, [deepLinkTaskId, isFetching, isPending, openEdit, tasks]);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TaskListRow>) => {
