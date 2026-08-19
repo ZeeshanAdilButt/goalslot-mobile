@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hand-mirrored from src/theme/foundation.ts's light-mode token values —
+  native RemoteViews code can't import that TS module, so these are kept in
+  lockstep by hand. Only the handful TodayWidget.tsx's TrackingBand actually
+  uses. If foundation.ts's `primary`/`card`/`foreground`/`mutedForeground`/
+  `secondary` ever change, update here too.
+-->
+<resources>
+  <color name="widget_bridge_card">#FFFFFF</color>
+  <color name="widget_bridge_foreground">#18181B</color>
+  <color name="widget_bridge_muted_foreground">#71717A</color>
+  <color name="widget_bridge_primary">#F2CC0D</color>
+  <!-- secondary: 240 5% 96% (foundation.ts) — the progress track's empty segment. -->
+  <color name="widget_bridge_track">#F4F4F5</color>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The filled leading segment, matches TodayWidget.tsx's ProgressBar filled flex segment (accent-colored). Clipped horizontally by the framework's standard ProgressBar drawing (android:id="@android:id/progress" below), same as any platform ProgressBar's fill layer. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+  <solid android:color="@color/widget_bridge_primary" />
+  <corners android:radius="2dp" />
+</shape>

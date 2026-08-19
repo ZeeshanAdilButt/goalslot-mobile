@@ -1,7 +1,10 @@
 {
-  "platforms": ["ios"],
+  "platforms": ["ios", "android"],
   "ios": {
     "modules": ["WidgetBridgeModule"],
     "podspecPath": "widget-bridge.podspec"
+  },
+  "android": {
+    "modules": ["expo.modules.widgetbridge.WidgetBridgeModule"]
   }
 }

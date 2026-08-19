@@ -1,0 +1,33 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Already declared app-wide by expo-notifications (which needs it to
+       reschedule reminder alarms after a reboot) — redeclared here so this
+       module is self-contained and its manifest need is legible on its own;
+       the manifest merger dedupes identical <uses-permission> entries. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+  <application>
+    <!--
+      Unexported: only this app (via an explicit-component PendingIntent
+      built in LiveTrackingScheduler) or the system itself (BOOT_COMPLETED /
+      MY_PACKAGE_REPLACED, both implicit broadcasts the OS still delivers to
+      a manifest-registered receiver regardless of `exported`, the same way
+      expo-notifications' own NotificationsService receiver is set up) can
+      reach this. No other app can poke it.
+
+      No intent-filter action for the recurring tick itself: that PendingIntent
+      always targets this receiver by explicit component (see
+      LiveTrackingScheduler.tickPendingIntent), and Android delivers an
+      explicitly-targeted Intent to its component regardless of intent-filter
+      matching — filters only gate IMPLICIT intents, which the boot/upgrade
+      broadcasts below actually are.
+    -->
+    <receiver
+      android:name=".LiveTrackingAlarmReceiver"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

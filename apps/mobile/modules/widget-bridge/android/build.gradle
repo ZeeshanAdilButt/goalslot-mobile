@@ -1,0 +1,32 @@
+// Minimal Expo module Gradle config — mirrors the pattern every bundled Expo
+// module in this project uses (e.g. node_modules/expo-secure-store/android/
+// build.gradle): `expo-module-gradle-plugin` derives compileSdkVersion,
+// kotlinOptions, etc. from the root project's Expo config, so nothing here
+// needs to hardcode SDK levels that would drift from the rest of the app.
+//
+// No `publication` block: unlike expo-secure-store (published to npm/maven),
+// this is a private in-repo workspace package (`"widget-bridge": "workspace:*"`
+// in apps/mobile/package.json) linked straight off the filesystem via
+// Expo's autolinking — it is never published anywhere.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'io.goalslot.mobile'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.widgetbridge"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // AndroidX Core is what backs androidx.core.app.NotificationCompat-style
+  // helpers if ever needed, but more importantly here: nothing beyond the
+  // framework AlarmManager/AppWidgetManager/RemoteViews APIs is required for
+  // the live-tracking scheduler below, kept dependency-free on purpose.
+}

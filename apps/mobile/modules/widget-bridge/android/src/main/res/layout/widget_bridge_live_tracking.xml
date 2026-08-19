@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The "live tracking" card LiveTrackingScheduler pushes via AppWidgetManager
+  while native-driven — see that class's header comment for why this is a
+  deliberately separate, simpler view from TodayWidget.tsx's full card
+  rather than a reproduction of it. Only framework View classes RemoteViews
+  can inflate (LinearLayout, TextView, View, ProgressBar) — no custom views,
+  same constraint react-native-android-widget's own output is bound by.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/widget_bridge_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:orientation="vertical"
+  android:background="@drawable/widget_bridge_card_bg"
+  android:padding="16dp">
+
+  <LinearLayout
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical">
+
+    <View
+      android:layout_width="6dp"
+      android:layout_height="6dp"
+      android:layout_marginEnd="6dp"
+      android:background="@drawable/widget_bridge_dot" />
+
+    <TextView
+      android:id="@+id/widget_bridge_label"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="TRACKING"
+      android:textSize="11sp"
+      android:textStyle="bold"
+      android:letterSpacing="0.05"
+      android:textColor="@color/widget_bridge_muted_foreground" />
+  </LinearLayout>
+
+  <TextView
+    android:id="@+id/widget_bridge_title"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="6dp"
+    android:textSize="16sp"
+    android:textStyle="bold"
+    android:textColor="@color/widget_bridge_foreground"
+    android:singleLine="true"
+    android:ellipsize="end" />
+
+  <TextView
+    android:id="@+id/widget_bridge_secondary"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="2dp"
+    android:textSize="12sp"
+    android:textColor="@color/widget_bridge_muted_foreground"
+    android:singleLine="true"
+    android:ellipsize="end"
+    android:visibility="gone" />
+
+  <TextView
+    android:id="@+id/widget_bridge_elapsed"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="10dp"
+    android:textSize="15sp"
+    android:textStyle="bold"
+    android:textColor="@color/widget_bridge_foreground" />
+
+  <ProgressBar
+    android:id="@+id/widget_bridge_progress"
+    style="?android:attr/progressBarStyleHorizontal"
+    android:layout_width="match_parent"
+    android:layout_height="4dp"
+    android:layout_marginTop="10dp"
+    android:progressDrawable="@drawable/widget_bridge_progress_drawable"
+    android:max="1000"
+    android:progress="0" />
+
+</LinearLayout>

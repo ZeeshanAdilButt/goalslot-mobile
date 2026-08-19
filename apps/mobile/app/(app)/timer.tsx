@@ -96,6 +96,7 @@ import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { startAndroidLiveTracking, stopAndroidLiveTracking } from "@/widgets/android-live-tracking";
 import { RUNNING_SYNC_INTERVAL_MS, syncWidgets } from "@/widgets/widget-sync";
 
 const RECENT_SKELETON_ROWS = 4;
@@ -808,12 +809,48 @@ export default function TimerScreen() {
   // subscription. Started/stopped by this effect re-running on every
   // `effectiveStatus` change rather than tracked imperatively, since this
   // hook (unlike `_layout.tsx`'s) is already keyed on that value.
+  //
+  // Same effect also owns the Android native live-tracking scheduler
+  // (android-live-tracking.ts) — the AlarmManager-driven tick that keeps the
+  // widget's elapsed time/progress bar moving once the app is backgrounded
+  // or killed, closing the gap the interval above explicitly can't (see its
+  // own comment: "only helps while the calling JS is actually alive").
+  // Deliberately NOT also called from handlePause/handleResume's `.then()`
+  // re-sync (unlike `syncWidgets()` there): that duplicate call exists to
+  // beat a race against widget-data.ts's own independent network fetch
+  // (`fetchServerSession`), which this native path has no equivalent of — it
+  // never touches the network, so the optimistic `effectiveStatus` flip
+  // those handlers already trigger (before their POST even resolves) is
+  // sufficient on its own. `startAndroidLiveTracking`/`stopAndroidLiveTracking`
+  // no-op on iOS and are idempotent, so re-running this effect on every
+  // dependency change (e.g. `activeLabel` resolving shortly after a cold
+  // start) just re-anchors the same alarm rather than double-scheduling.
   useEffect(() => {
     void syncWidgets();
-    if (effectiveStatus !== "running") return;
+    if (effectiveStatus !== "running") {
+      stopAndroidLiveTracking();
+      return;
+    }
+    startAndroidLiveTracking({
+      primaryLabel: activeLabel,
+      secondaryLabel: effectiveTaskId && effectiveGoalId ? goalTitle : undefined,
+      startedAtMs: effectiveStartedAt ?? Date.now(),
+      pausedElapsedMs: effectivePausedElapsedMs,
+    });
     const id = setInterval(() => void syncWidgets(), RUNNING_SYNC_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [effectiveStatus, effectiveStartedAt]);
+    return () => {
+      clearInterval(id);
+      stopAndroidLiveTracking();
+    };
+  }, [
+    effectiveStatus,
+    effectiveStartedAt,
+    effectivePausedElapsedMs,
+    effectiveTaskId,
+    effectiveGoalId,
+    activeLabel,
+    goalTitle,
+  ]);
 
   /**
    * Files an already-logged entry under a goal/task after the fact. This is

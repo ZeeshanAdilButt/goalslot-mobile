@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Standard Android ProgressBar layer-list: a background track plus a
+  progress layer clipped to the current percentage — the framework itself
+  handles the clipping via the reserved `@android:id/progress` id, the same
+  mechanism every platform horizontal ProgressBar uses. RemoteViews can
+  drive this through `RemoteViews#setProgressBar`, unlike a raw flexbox
+  trick (which is what TodayWidget.tsx's JS-rendered ProgressBar does
+  instead, since react-native-android-widget has no ProgressBar primitive
+  of its own — see that file's own comment on the same trade-off).
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:id="@android:id/background" android:drawable="@drawable/widget_bridge_progress_bg" />
+  <item android:id="@android:id/progress">
+    <clip android:drawable="@drawable/widget_bridge_progress_fill" />
+  </item>
+</layer-list>
