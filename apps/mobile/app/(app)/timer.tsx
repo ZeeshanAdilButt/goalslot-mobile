@@ -226,8 +226,8 @@ const HERO_NON_RING_HEIGHT = 400;
  * small — growing into free space looks intentional, shrinking does not.
  */
 const RING_HEIGHT_FRACTION = 0.22;
-/** Screen padding (spacing.xl) + card padding (spacing.xl), both sides. */
-const RING_HORIZONTAL_INSET = 4 * spacing.xl;
+/** Card margin (spacing.md) + card padding (spacing.lg), both sides — keep in step with `timerCard`. */
+const RING_HORIZONTAL_INSET = 2 * (spacing.md + spacing.lg);
 
 const STATUS_META: Record<
   TimerStatus,
@@ -2276,7 +2276,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingHorizontal: spacing.xl,
+    // spacing.md, not the spacing.xl most tab headers use: this screen's
+    // gutter is set by `timerCard` below, and the title has to stay flush
+    // with the card's edge. See that style's own note for why the card runs
+    // wider here than a list screen's content would.
+    paddingHorizontal: spacing.md,
     // Reserves the floating menu button's column, and matches the spacing.md
     // top inset every other tab header uses (this was spacing.xs, which put
     // the title a few points higher than the hamburger it sits beside).
@@ -2298,9 +2302,16 @@ const styles = StyleSheet.create({
     // Vertical margins are asymmetric on purpose: the card sits close under
     // the screen header (spacing.md) and keeps a slightly larger gap to the
     // "Recent sessions" row below it (spacing.lg), which is a section break
-    // rather than a continuation. Horizontal stays spacing.xl — it is half of
-    // RING_HORIZONTAL_INSET's arithmetic above.
-    marginHorizontal: spacing.xl,
+    // rather than a continuation.
+    //
+    // Horizontal margin is deliberately tighter than the spacing.lg screen
+    // gutter the rest of the app uses, not looser: this card is the screen's
+    // whole subject rather than one item in a list, and every row inside it
+    // (the goal/task slots, the reminder chip rail) is content that wants the
+    // width. Paired with the spacing.lg padding below, that is 28pt from
+    // screen edge to content — down from 40pt, which read as a narrow column
+    // floating in the page. Keep RING_HORIZONTAL_INSET above in step.
+    marginHorizontal: spacing.md,
     marginTop: spacing.md,
     marginBottom: spacing.lg,
     // Padding and gap are both one step tighter than the surrounding page
@@ -2310,7 +2321,7 @@ const styles = StyleSheet.create({
     // (TrackingTarget), so this reads as the space BETWEEN the hero's
     // distinct pieces rather than inside one of them.
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: spacing.lg,
     borderRadius: radii.xl,
     backgroundColor: colors.card,
     borderWidth: 1,
@@ -2357,13 +2368,15 @@ const styles = StyleSheet.create({
    */
   scrollContent: {},
   skeletonArea: {
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: spacing.md,
   },
   historyHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: spacing.xl,
+    // Matches `timerCard`'s margin and SessionHistory's `listContent`, so the
+    // card, this header and the rows under it all share one edge.
+    paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
   },
   historyHeaderTitle: {

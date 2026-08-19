@@ -394,7 +394,10 @@ const SessionRow = memo(function SessionRow({
 
 const styles = StyleSheet.create({
   listContent: {
-    paddingHorizontal: spacing.xl,
+    // spacing.md to stay flush with the Timer screen's hero card and its
+    // "Recent sessions" header — see `timerCard` in app/(app)/timer.tsx for
+    // why that screen runs a tighter gutter than a plain list screen.
+    paddingHorizontal: spacing.md,
     paddingBottom: LIST_CONTENT_BOTTOM_PADDING,
   },
   dayHeader: {
