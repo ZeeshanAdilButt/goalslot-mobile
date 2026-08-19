@@ -13,6 +13,17 @@
 // (TimerDisplay -> TaskSelector -> TimerSettings -> TimerControls), so the
 // question "what am I tracking, and how often should it check in?" is
 // answered before the eye reaches the transport buttons.
+//
+// NO CAPTION LINE. This used to end with a sentence restating the choice
+// ("Checks in every 15 minutes while a timer runs" / "Checking in every 15
+// minutes · locked while tracking"), which cost the hero card ~24pt — a
+// quarter of what the Timer tab was overflowing by — to repeat a number the
+// selected chip is already showing two lines above it. The half of it that
+// was NOT redundant, the locked-while-running state, moved into the label row
+// as a "· Locked" suffix, so it still says why the chips have gone flat
+// without claiming a line of its own. Screen readers keep the fuller
+// explanation via the radio group's `accessibilityHint` below, where length
+// costs nothing.
 
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -36,6 +47,9 @@ export function ReminderIntervalPicker({ value, disabled, onChange }: ReminderIn
             select trigger; there is no bare "clock" name (see Icon.tsx). */}
         <Icon name="timer" size={14} color={colors.mutedForeground} />
         <Text style={styles.label}>Reminder</Text>
+        {/* The one piece of the old caption line that carried information the
+            chips don't already show — see this file's header. */}
+        {disabled ? <Text style={styles.labelLocked}>· Locked</Text> : null}
       </View>
 
       <ScrollView
@@ -47,6 +61,13 @@ export function ReminderIntervalPicker({ value, disabled, onChange }: ReminderIn
         // as "Every 15 minutes, selected".
         accessibilityRole="radiogroup"
         accessibilityLabel="Reminder interval"
+        // Carries the explanation the visible caption used to, where it costs
+        // no layout height.
+        accessibilityHint={
+          disabled
+            ? `Checking in every ${value} minutes. Locked while a timer is running.`
+            : `Checks in every ${value} minutes while a timer runs.`
+        }
       >
         {REMINDER_INTERVAL_OPTIONS.map((minutes) => {
           const selected = minutes === value;
@@ -72,12 +93,6 @@ export function ReminderIntervalPicker({ value, disabled, onChange }: ReminderIn
           );
         })}
       </ScrollView>
-
-      <Text style={styles.caption}>
-        {disabled
-          ? `Checking in every ${value} minutes · locked while tracking`
-          : `Checks in every ${value} minutes while a timer runs`}
-      </Text>
     </View>
   );
 }
@@ -97,6 +112,12 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.6,
     color: colors.mutedForeground,
+  },
+  labelLocked: {
+    ...typography.label,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: colors.mutedForegroundLight,
   },
   options: {
     flexDirection: "row",
@@ -133,10 +154,5 @@ const styles = StyleSheet.create({
   },
   chipLabelSelected: {
     color: colors.white,
-  },
-  caption: {
-    ...typography.bodySmall,
-    fontWeight: "400",
-    color: colors.mutedForeground,
   },
 });

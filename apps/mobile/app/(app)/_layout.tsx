@@ -587,7 +587,9 @@ export default function AppLayout() {
 
       {/* Renders nothing while idle; a slim tap-through-to-Timer pill while a
           session is running or paused, docked below the safe-area top on
-          every tab. Painted as an absolute overlay (paint order: after
+          every tab except the Timer tab itself (which already shows all of
+          this, and needs the height back — see the component's TIMER_ROUTE).
+          Painted as an absolute overlay (paint order: after
           <Tabs/>, so it draws above each tab's own content) purely so its
           own drop shadow can render over the content below it — the space
           it visually occupies is real, though: `bannerHeight` above pads

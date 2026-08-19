@@ -168,20 +168,64 @@ interface StartTarget {
  */
 type PickerTarget = { kind: "session"; slot: "goal" | "task" } | { kind: "entry"; entry: TimeEntry };
 
-/** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
-const MAX_RING_SIZE = 270;
 /**
- * Share of the viewport height the ring may take. This is what stops the
- * hero card from pushing Goal/Task/Reminder and the pinned transport footer
- * off a short-to-typical device: on a 844pt phone it resolves to ~245pt (a
- * ~45pt clock), on a 568pt one to the 150pt floor below. Trimmed from 0.34 —
- * the ring is the hero's single largest element, and at the old fraction it
- * routinely left the reminder picker needing a scroll to reach on an
- * 800-900pt Android phone even though nothing below it had actually
- * disappeared (see the "large blank gap" report this constant was tuned
- * against).
+ * Ring diameter ceiling on a large phone — past this the hero stops feeling
+ * like part of a screen, and, more concretely, past this the card stops
+ * fitting on the tallest phone we target once the hero is in its own tallest
+ * state (a live "Scheduled now" suggestion chip above two empty slots adds
+ * ~50pt over the ordinary case). The ceiling matters precisely because a
+ * large device has room to spare: the adaptive sizing below would otherwise
+ * hand all of it to the ring, and the leftover is what absorbs those states.
+ * At 210 the clock inside reads at 35pt (TimerRing derives it from the clear
+ * width inside the inner track), which is still the largest type on screen.
  */
-const RING_HEIGHT_FRACTION = 0.29;
+const MAX_RING_SIZE = 210;
+/**
+ * Ring diameter floor. Below this the digits inside it (TimerRing derives
+ * their font size from the clear width inside the inner track) bottom out at
+ * their own 26pt minimum and start crowding the rings, so a device too short
+ * to give the hero this much simply scrolls instead.
+ */
+const MIN_RING_SIZE = 150;
+/**
+ * Everything in the hero ABOVE the pinned transport footer that is not the
+ * ring: the screen header, the card's own margins/padding/border/gaps, the
+ * status pill, the voice row, both attribution slots and the reminder
+ * picker. Subtracted from the MEASURED height of the scrollable content area
+ * to decide how much is left for the ring (see `ringSize` below).
+ *
+ * This is the one hand-computed number in the layout, and it is deliberately
+ * a little larger than the stack actually measures at default text size
+ * (392pt, itemised below) so the states that make the hero taller — a session
+ * name caption, the "Scheduled now" suggestion chip, a font-scale bump — eat
+ * the slack rather than the ring's floor:
+ *
+ *   header (12 pad + 14 eyebrow + 2 + 24 title)     52
+ *   card margins (12 top / 16 bottom)               28
+ *   card padding (12 x 2) + border (1 x 2)          26
+ *   4 card gaps at spacing.sm                       32
+ *   status pill                                     28
+ *   voice row (44pt orb, one-line hint)             44
+ *   TrackingTarget (64 filled goal + 4 + 48 task)  116
+ *   ReminderIntervalPicker (14 + 8 + 44 chips)      66
+ *                                                  ---
+ *                                                  392
+ *
+ * Measuring the available space rather than taking a fraction of the whole
+ * window is what makes this survive the things a fraction cannot see: the
+ * transport footer's own measured height, the safe-area inset, the tab bar,
+ * and — the one that actually broke this screen twice — the global tracking
+ * banner's padding on an ancestor while a session is live.
+ */
+const HERO_NON_RING_HEIGHT = 400;
+/**
+ * Pre-measurement fallback only. `contentAreaHeight` is 0 on the very first
+ * frame (its `onLayout` has not fired yet), and sizing the ring off the whole
+ * window for that one frame keeps it from visibly popping from the floor up
+ * to its real size. Kept well below the old 0.29 so the first frame errs
+ * small — growing into free space looks intentional, shrinking does not.
+ */
+const RING_HEIGHT_FRACTION = 0.22;
 /** Screen padding (spacing.xl) + card padding (spacing.xl), both sides. */
 const RING_HORIZONTAL_INSET = 4 * spacing.xl;
 
@@ -247,6 +291,15 @@ export default function TimerScreen() {
   // GlobalTrackingBanner's `bannerHeight` — it stays correct under font
   // scaling/a11y text sizes without hand tuning.
   const [controlsFooterHeight, setControlsFooterHeight] = useState(0);
+  // Measured height of the scrollable region — i.e. the viewport minus the
+  // pinned footer above, minus the tab bar, minus the top safe-area inset,
+  // minus whatever <GlobalTrackingBanner/> is padding the whole tab stack by
+  // (app/(app)/_layout.tsx's `bannerHeight`). This is what `ringSize` sizes
+  // the hero against, so the ring gives way to Goal/Task/Reminder rather than
+  // pushing them off screen. No layout loop: `contentArea` is `flex: 1`
+  // beside a self-sizing footer, so its height is decided by its parent, not
+  // by the ring it ends up containing.
+  const [contentAreaHeight, setContentAreaHeight] = useState(0);
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   // Stable identity so it doesn't defeat SessionHistory's own row memoization
@@ -1831,12 +1884,23 @@ export default function TimerScreen() {
   };
 
   const statusMeta = STATUS_META[effectiveStatus];
-  const ringSize = Math.max(
-    150,
-    Math.min(
-      MAX_RING_SIZE,
-      width - RING_HORIZONTAL_INSET,
-      height * RING_HEIGHT_FRACTION,
+  // The ring takes whatever vertical room is left over once everything else
+  // in the hero has been paid for, capped by MAX_RING_SIZE and by the card's
+  // own width, floored at MIN_RING_SIZE. See HERO_NON_RING_HEIGHT for the
+  // itemised budget and for why this is measured rather than a fraction of
+  // the window — the previous two passes at "the Timer tab doesn't fit"
+  // both tuned a fraction, and both missed, because a fraction of the window
+  // cannot see the footer, the tab bar or the tracking banner.
+  const ringSize = Math.round(
+    Math.max(
+      MIN_RING_SIZE,
+      Math.min(
+        MAX_RING_SIZE,
+        width - RING_HORIZONTAL_INSET,
+        contentAreaHeight > 0
+          ? contentAreaHeight - HERO_NON_RING_HEIGHT
+          : height * RING_HEIGHT_FRACTION,
+      ),
     ),
   );
 
@@ -1985,7 +2049,10 @@ export default function TimerScreen() {
           <Tabs/> reserves that space itself — see tasks.tsx/goals.tsx's FABs
           for the same "no extra insets.bottom needed" precedent), so this
           footer needs no safe-area handling of its own either. */}
-      <View style={styles.contentArea}>
+      <View
+        style={styles.contentArea}
+        onLayout={(event) => setContentAreaHeight(event.nativeEvent.layout.height)}
+      >
         {recentQuery.isPending ? (
           <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: footerClearance }]}>
             {hero}
@@ -2228,22 +2295,28 @@ const styles = StyleSheet.create({
     color: colors.foreground,
   },
   timerCard: {
-    margin: spacing.xl,
-    // Both trimmed a step from spacing.xl/lg — with the ring itself shrunk
-    // (see RING_HEIGHT_FRACTION above) this is what actually closes the rest
-    // of the "large blank gap" report: five stacked gaps at the old spacing.lg
-    // cost 20pt more than they do now, on top of 8pt off the card's own top
-    // and bottom padding. Still comfortably more than the compact spacing.md
-    // rows use internally (TrackingTarget, ReminderIntervalPicker) — this is
-    // the space BETWEEN the hero's distinct pieces, not inside one of them.
-    paddingVertical: spacing.lg,
+    // Vertical margins are asymmetric on purpose: the card sits close under
+    // the screen header (spacing.md) and keeps a slightly larger gap to the
+    // "Recent sessions" row below it (spacing.lg), which is a section break
+    // rather than a continuation. Horizontal stays spacing.xl — it is half of
+    // RING_HORIZONTAL_INSET's arithmetic above.
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
+    // Padding and gap are both one step tighter than the surrounding page
+    // rhythm, and both are line items in HERO_NON_RING_HEIGHT's budget above
+    // — four stacked gaps are the second-largest consumer on this card after
+    // the ring itself. Still more than the spacing.xs rows use internally
+    // (TrackingTarget), so this reads as the space BETWEEN the hero's
+    // distinct pieces rather than inside one of them.
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.xl,
     borderRadius: radii.xl,
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
     ...shadows.card,
   },
   statusPill: {
@@ -2329,13 +2402,17 @@ const styles = StyleSheet.create({
   // arithmetic comment), which the Tabs navigator reserves as space this
   // screen's content never renders into — the same "no extra insets.bottom
   // needed" fact the return-JSX comment above already states. There was
-  // nothing left for this padding to actually be clearing; spacing.xxl below
-  // matches the plain bottom-of-screen breathing room tasks.tsx/goals.tsx use
-  // for their FABs, which sit in the exact same position relative to the bar.
+  // nothing left for this padding to actually be clearing. It has since come
+  // down again, from spacing.xxl to spacing.md: this footer is the whole
+  // screen's bottom edge, and the tab bar directly below it already carries
+  // its own `bottomClearance` (>= 24pt, see _layout.tsx) — so the previous
+  // value was stacking a second full gutter on top of one that was already
+  // there, at the direct expense of the ring above (every point spent here is
+  // a point HERO_NON_RING_HEIGHT's budget doesn't get).
   controlsFooter: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
-    paddingBottom: spacing.xxl,
+    paddingBottom: spacing.md,
     backgroundColor: colors.card,
     borderTopWidth: 1,
     borderTopColor: colors.border,

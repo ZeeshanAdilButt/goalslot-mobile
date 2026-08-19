@@ -6,11 +6,19 @@
 // — comfortably past the 44pt HIG minimum — because it's the control that
 // gets pressed mid-task, often one-handed, and it stays in the same place
 // across every state so the layout never jumps under a thumb that's already
-// moving. Trimmed down from an earlier 88pt/56pt pairing as part of the same
-// pass that tightened the hero card above it (see timer.tsx's
-// RING_HEIGHT_FRACTION/timerCard comments) — freeing up vertical space here
+// moving. Trimmed down from an earlier 88pt/56pt pairing as part of the pass
+// that tightened the hero card above it (see timer.tsx's
+// HERO_NON_RING_HEIGHT/timerCard comments) — freeing up vertical space here
 // was the other half of fitting Goal/Task/Reminder and this row on screen
 // together without the transport controls needing to dominate the footer.
+//
+// The circles keep their text labels ("Start"/"Pause"/"Resume"/"Stop") even
+// though the glyphs are the universal transport shapes: this row is what the
+// user reaches for mid-task without looking, and 14pt of label is a cheaper
+// way to buy back height elsewhere than making the one thing they aim at
+// ambiguous. The row's own `marginTop` is what went instead — the pinned
+// footer this renders into supplies its own `paddingTop`, so that margin was
+// a second gap stacked on the first (see timer.tsx's `controlsFooter`).
 //
 // Glyphs are drawn with react-native-svg instead of coming from
 // @/components/ui/Icon: that set is a fixed 1:1 mapping of the web app's
@@ -197,7 +205,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     width: "100%",
-    marginTop: spacing.sm,
   },
   side: {
     width: SECONDARY_SIZE + spacing.sm,

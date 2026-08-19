@@ -332,7 +332,15 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
     if (state.status === "processing") return "One moment…";
     if (state.message.length > 0) return state.message;
     if (notice !== null) return notice;
-    return "Say “start tracking deen”, “pause”, or “stop”";
+    // Deliberately short enough to set on ONE line beside the 44pt orb at
+    // default text size. The longer form this replaced ("Say “start tracking
+    // deen”, “pause”, or “stop”") wrapped to two lines at rest and to three
+    // under any font-scale bump, at which point the row grew past the orb and
+    // started costing the hero card height it does not have (see timer.tsx's
+    // HERO_NON_RING_HEIGHT). The named form ("start tracking <goal>") is not
+    // lost — it stays in the orb's own `accessibilityHint` below, and it is
+    // the form the Voice tab and both platforms' assistant shortcuts document.
+    return "Say “start”, “pause”, or “stop”";
   })();
 
   const blocked = state.status === "permission-denied" || state.status === "unavailable";
@@ -415,8 +423,8 @@ export function TrackerVoiceButton({ onStopSession, serverSessionActive }: Track
           status={state.status}
           onPress={handleMicPress}
           // The smallest legitimate touch target on this screen, deliberately
-          // — TimerControls' Start/Pause/Resume sits at 88pt and Stop at
-          // 56pt (see TimerControls.tsx), so this orb has to read as the
+          // — TimerControls' Start/Pause/Resume sits at 72pt and Stop at
+          // 48pt (see TimerControls.tsx), so this orb has to read as the
           // quieter of the two paths into the same actions, not a rival to
           // either.
           size={minTouchTarget}

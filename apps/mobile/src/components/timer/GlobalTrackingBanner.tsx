@@ -8,9 +8,10 @@
 // "It doesn't currently show that the timer is working if I am anywhere in
 // the app except for the timer screen."
 //
-// Renders nothing while idle. Mounted once in app/(app)/_layout.tsx, above
-// every tab's content, so it survives tab switches instead of being remounted
-// (and losing its tick phase) per screen.
+// Renders nothing while idle, and nothing on the Time Tracker tab itself —
+// see TIMER_ROUTE below. Mounted once in app/(app)/_layout.tsx, above every
+// tab's content, so it survives tab switches instead of being remounted (and
+// losing its tick phase) per screen.
 //
 // Elapsed time ticks via a plain `setInterval`, not the self-re-arming
 // setTimeout TimerRing.tsx uses for the hero clock. That precision is worth
@@ -30,7 +31,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { goalQueries, taskQueries, timerSessionQueries } from "@/lib/queries";
@@ -49,6 +50,25 @@ import { Icon } from "@/components/ui/Icon";
  * index.tsx already reserve in their own headers for the same button.
  */
 const HAMBURGER_CLEARANCE = 64;
+
+/**
+ * The one route this banner deliberately does NOT appear on — the Time
+ * Tracker tab, the route this banner's own tap target navigates to.
+ *
+ * This is the exact case this component's opening paragraph carves out ("if I
+ * am anywhere in the app EXCEPT for the timer screen"): the Timer tab already
+ * shows the status pill, the running clock, what's attached and the transport
+ * controls, so the banner is a duplicate status readout with a "go to the
+ * screen you are already on" affordance.
+ *
+ * It is also not free. `bannerHeight` in app/(app)/_layout.tsx pads the whole
+ * tab stack by this banner's measured footprint (~54pt) while a session is
+ * live — taken off the top of the very screen with the least room to give,
+ * and only ever while tracking, which is exactly when the Timer tab has the
+ * most to show. Suppressing it here is worth more vertical space on that
+ * screen than any single spacing change in the hero card.
+ */
+const TIMER_ROUTE = "/timer";
 
 const TICK_MS = 1000;
 
@@ -126,6 +146,11 @@ export function GlobalTrackingBanner({
   onContentHeightChange,
 }: GlobalTrackingBannerProps) {
   const router = useRouter();
+  // See TIMER_ROUTE. Read here rather than in _layout.tsx so the height this
+  // component reports (and the shared store it mirrors it into) goes to 0 on
+  // the same render the pill disappears — the caller only ever learns the
+  // footprint from us.
+  const onTimerScreen = usePathname() === TIMER_ROUTE;
 
   const localStatus = useTimerStore((s) => s.status);
   const localStartedAt = useTimerStore((s) => s.startedAt);
@@ -204,19 +229,26 @@ export function GlobalTrackingBanner({
     return () => clearInterval(id);
   }, [status]);
 
+  // Whether the pill renders at all. Both halves have to be folded into the
+  // reported height below, not just `status`: landing on the Timer tab
+  // mid-session hides the pill exactly like stopping does, and a stale height
+  // left behind would keep padding <Tabs/> for a banner that isn't there —
+  // which on this one screen is the whole point of hiding it.
+  const hidden = status === "idle" || onTimerScreen;
+
   // Hooks must run unconditionally, so this sits above the early return
-  // below — it's the only path that fires once status flips back to idle
-  // and the Pressable (and its onLayout) stop rendering entirely. Also
-  // resets the shared store below so <ConnectivityPill/> stops reserving
-  // room for a banner that's no longer on screen.
+  // below — it's the only path that fires once the pill stops rendering and
+  // the Pressable (and its onLayout) go with it. Also resets the shared store
+  // below so <ConnectivityPill/> stops reserving room for a banner that's no
+  // longer on screen.
   useEffect(() => {
-    if (status === "idle") {
+    if (hidden) {
       onContentHeightChange?.(0);
       useTrackingBannerHeight.getState().setHeight(0);
     }
-  }, [status, onContentHeightChange]);
+  }, [hidden, onContentHeightChange]);
 
-  if (status === "idle") return null;
+  if (hidden) return null;
 
   const isPaused = status === "paused";
   const elapsedMs = getElapsedMs({ status, startedAt, pausedElapsedMs });

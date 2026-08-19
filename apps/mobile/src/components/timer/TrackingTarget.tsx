@@ -253,13 +253,20 @@ function Slot({
   );
 }
 
+// `minHeight` and `paddingVertical` are both one step down from where they
+// started (minTouchTarget + spacing.md / spacing.sm). Two of these rows are
+// always on screen inside the hero card, so a step here is worth ~18pt to the
+// ring above them — see timer.tsx's HERO_NON_RING_HEIGHT for the full budget.
+// 48pt still clears the app's 44pt `minTouchTarget` floor with room to spare,
+// and the filled variant is taller than the floor anyway (its eyebrow, title
+// and subtitle stack to ~64pt), so nothing that already fit got smaller.
 const slotBase = {
   flexDirection: "row" as const,
   alignItems: "center" as const,
   gap: spacing.md,
   width: "100%" as const,
-  minHeight: minTouchTarget + spacing.md,
-  paddingVertical: spacing.sm,
+  minHeight: minTouchTarget + spacing.xs,
+  paddingVertical: spacing.xs,
   paddingHorizontal: spacing.md,
   borderRadius: radii.lg,
 };
@@ -267,7 +274,9 @@ const slotBase = {
 const styles = StyleSheet.create({
   container: {
     width: "100%",
-    gap: spacing.sm,
+    // The two slots are one group answering one question, so they sit closer
+    // to each other than the hero card's own between-sections gap.
+    gap: spacing.xs,
   },
   sessionName: {
     ...typography.bodySmall,
