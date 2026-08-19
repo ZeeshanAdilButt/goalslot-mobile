@@ -12,10 +12,10 @@ import { requireOptionalNativeModule } from "expo-modules-core";
 //   Android  react-native-android-widget already gets its data through its
 //            own headless JS task, so this module has nothing to do with
 //            the widget's actual content. It exists solely to run a native
-//            AlarmManager scheduler (`startLiveTracking`/`stopLiveTracking`)
+//            AlarmManager scheduler (`startLiveTrackingV2`/`stopLiveTracking`)
 //            that keeps the "TRACKING" band's elapsed time/progress bar
-//            ticking once a minute while the app is backgrounded or fully
-//            killed — see modules/widget-bridge/android's
+//            refreshing every few minutes while the app is backgrounded or
+//            fully killed — see modules/widget-bridge/android's
 //            LiveTrackingScheduler.kt for the full design rationale, and
 //            src/widgets/android-live-tracking.ts for the JS-side wrapper
 //            timer.tsx actually calls.
@@ -25,16 +25,17 @@ interface WidgetBridgeIOSModule {
   reload(): void;
 }
 
-/** Mirrors android/.../WidgetBridgeModule.kt's `LiveTrackingPayload` Record. */
-export interface LiveTrackingPayload {
-  taskName: string;
-  secondaryLabel?: string;
-  startedAtMs: number;
-  pausedElapsedMs: number;
-}
-
 interface WidgetBridgeAndroidModule {
-  startLiveTracking(payload: LiveTrackingPayload): void;
+  /**
+   * Optional because it only exists in builds carrying the CURRENT native
+   * scheduler. An older APK — one that is already installed and can only be
+   * replaced by a manual reinstall — exposes a `startLiveTracking` whose
+   * implementation draws its own RemoteViews card and breaks the widget
+   * outright. This update reaches both builds over the air, so the name is
+   * the runtime signal that tells them apart; see
+   * `androidLiveTrackingSupported` below.
+   */
+  startLiveTrackingV2?: () => void;
   stopLiveTracking(): void;
 }
 
@@ -54,13 +55,23 @@ export function reloadIOSWidgets(): void {
 }
 
 /**
- * Starts (or re-anchors, if already running) the native tick that keeps the
- * Android widget's live tracking band moving while this app's JS isn't
- * alive to do it. No-ops on iOS or if the native module isn't linked (e.g.
- * Expo Go, which can't carry custom native modules at all).
+ * True only on an Android build whose native module carries the current
+ * scheduler. False on iOS, in Expo Go (no custom native modules at all), and
+ * — the case this exists for — on an older installed APK whose native code
+ * would break the home-screen widget. Callers must check this rather than
+ * assuming the native side matches the JS they are running: an over-the-air
+ * update replaces the JS on every device, but the native half only changes
+ * when someone installs a new build.
  */
-export function startAndroidLiveTracking(payload: LiveTrackingPayload): void {
-  androidModule?.startLiveTracking(payload);
+export const androidLiveTrackingSupported = typeof androidModule?.startLiveTrackingV2 === "function";
+
+/**
+ * Starts (or re-anchors, if already running) the native tick that keeps the
+ * Android widget's tracking band refreshing while this app's JS isn't alive
+ * to do it. No-ops wherever `androidLiveTrackingSupported` is false.
+ */
+export function startAndroidLiveTracking(): void {
+  androidModule?.startLiveTrackingV2?.();
 }
 
 /** Stops the native tick — call on pause/stop, matching src/lib/timer-store.ts's own status transitions. */

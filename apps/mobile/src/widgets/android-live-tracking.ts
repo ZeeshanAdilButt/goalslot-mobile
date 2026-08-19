@@ -1,107 +1,48 @@
 // Thin wrapper around widget-bridge's native Android scheduler — the piece
-// that keeps the home-screen widget's "TRACKING" band (elapsed time +
-// progress bar) moving once a minute while this app's JS isn't alive to do
-// it (backgrounded, or fully killed by the OS). See
-// modules/widget-bridge/android/.../LiveTrackingScheduler.kt for the full
+// that keeps the home-screen widget's "TRACKING" band refreshing while this
+// app's JS isn't alive to do it (backgrounded, or fully killed by the OS).
+// See modules/widget-bridge/android/.../LiveTrackingScheduler.kt for the
 // design rationale and modules/widget-bridge/index.ts for the native call
 // surface this wraps.
 //
 // Deliberately separate from src/widgets/widget-sync.ts's `syncWidgets()`:
-// that redraws the FULL widget (today's schedule + tracking) through JS,
-// on every start/pause/resume/stop transition and every RUNNING_SYNC_INTERVAL_MS
-// while foregrounded. This only ever needs to be told "a session is running,
-// starting from here" or "stop" — the native side re-derives elapsed time
-// and progress itself, on its own schedule, with no further JS involvement.
-// Both mechanisms run side by side rather than one replacing the other: the
-// JS path still owns the rich, full-card redraw whenever it's actually
-// alive to produce one.
+// that redraws the widget through JS on every start/pause/resume/stop
+// transition and every RUNNING_SYNC_INTERVAL_MS while foregrounded. This only
+// tells the native side "a session is running" or "stop" — the alarm it arms
+// then asks the widget provider to redraw itself on its own schedule, with no
+// further JS involvement from this side. Both run side by side rather than
+// one replacing the other: the JS path still owns every redraw it is alive to
+// produce.
+//
+// EVERY CALL IS GATED ON `androidLiveTrackingSupported`, and that is not
+// belt-and-braces. An earlier native build shipped a scheduler that drew its
+// own RemoteViews card and broke the home-screen widget outright ("Couldn't
+// add widget."). That build is installed on real devices and can only be
+// replaced by a manual reinstall, while this JS reaches every device the
+// moment it is published — so the guard is what stops a device on the old
+// APK from re-arming the broken path.
 
 import { Platform } from "react-native";
 
-// `startAndroidLiveTracking` is deliberately NOT imported from the bridge
-// while the ticker is disabled — see the note on this file's own
-// `startAndroidLiveTracking` below. Re-add it here to turn the feature back
-// on, together with a native rebuild carrying the RemoteViews fix.
-import { stopAndroidLiveTracking as bridgeStop } from "widget-bridge";
+import {
+  androidLiveTrackingSupported,
+  startAndroidLiveTracking as bridgeStart,
+  stopAndroidLiveTracking as bridgeStop,
+} from "widget-bridge";
 
-export interface LiveTrackingInput {
-  /** The task/goal/session name to show as the card's headline — `null`/blank both fall back to a placeholder (see `buildLiveTrackingPayload`), matching widget-data.ts's own "never show a blank title" rule. */
-  primaryLabel: string | null | undefined;
-  /** The parent goal's title, shown only when tracking a task that has one — same rule TodayWidget.tsx's TrackingBand applies to its own `secondaryLabel`. */
-  secondaryLabel?: string | null;
-  /** Epoch ms the current RUNNING segment began — timer-store.ts's `startedAt` (or the server session's equivalent via resolveEffectiveTimer). */
-  startedAtMs: number;
-  /** Elapsed ms accumulated before this running segment (i.e. across any earlier pauses) — timer-store.ts's `pausedElapsedMs`. */
-  pausedElapsedMs: number;
-}
-
-const FALLBACK_LABEL = "Untitled session";
-
-/**
- * Pure shape-and-validate step, split out from `startAndroidLiveTracking`
- * below purely so it's unit-testable without mocking the native module —
- * see android-live-tracking.test.ts.
- *
- * Guards the same way getElapsedMs (timer-store.ts) guards `pausedElapsedMs`:
- * a value crossing from a server session's `accumulatedMs` has no runtime
- * validation, and a non-finite one propagating into the native side's
- * `elapsedMs % PROGRESS_CYCLE_MS` arithmetic would draw a garbage progress
- * bar every tick until the next legitimate call overwrote it.
- */
-export function buildLiveTrackingPayload(input: LiveTrackingInput): {
-  taskName: string;
-  secondaryLabel?: string;
-  startedAtMs: number;
-  pausedElapsedMs: number;
-} {
-  const trimmedPrimary = input.primaryLabel?.trim();
-  const trimmedSecondary = input.secondaryLabel?.trim();
-  return {
-    taskName: trimmedPrimary ? trimmedPrimary : FALLBACK_LABEL,
-    secondaryLabel: trimmedSecondary ? trimmedSecondary : undefined,
-    startedAtMs: Number.isFinite(input.startedAtMs) ? input.startedAtMs : Date.now(),
-    pausedElapsedMs: Number.isFinite(input.pausedElapsedMs) ? Math.max(0, input.pausedElapsedMs) : 0,
-  };
-}
-
-/**
- * DISABLED — the native ticker is switched off at the JS boundary while the
- * bug below is diagnosed. Read this before turning it back on.
- *
- * Symptom, reported from a real device: the home-screen widget intermittently
- * collapses to the launcher's "Couldn't add widget." error tile, and the user
- * observed it happening WHEN A TIMER IS STARTED — which is exactly when
- * `LiveTrackingScheduler.start()` fires its first `redrawWidget()`.
- *
- * Suspected cause: that redraw pushes a RemoteViews built from this module's
- * OWN layout (`widget_bridge_live_tracking.xml`) rather than the layout
- * react-native-android-widget generated for the widget. RemoteViews is
- * inflated in the LAUNCHER's process against the LAUNCHER's theme, so
- * anything that doesn't resolve there takes the whole widget down rather
- * than failing quietly — the `style="?android:attr/progressBarStyleHorizontal"`
- * theme-attribute reference on the ProgressBar is the prime suspect, with the
- * library-module resource IDs a distant second. Untested either way: this
- * needs a device, and the fix needs a native rebuild, so it can't be
- * confirmed or shipped over the air.
- *
- * Disabling it here rather than reverting the native code is deliberate — the
- * Kotlin ships inside an installed APK and can only be removed by a rebuild
- * plus a manual reinstall, whereas this call site reaches every device over
- * the air immediately. With no JS caller the scheduler never runs, no alarm
- * is ever armed, and the widget falls back to the JS `syncWidgets()` path it
- * used before any of this existed.
- *
- * Calls `bridgeStop()` rather than simply returning: a device that started a
- * session under the broken build may still have an alarm armed, and that
- * alarm re-arms itself on every fire. Stopping here guarantees the next
- * start/pause/resume/stop transition tears it down for good.
- */
-export function startAndroidLiveTracking(_input: LiveTrackingInput): void {
+/** Starts (or re-anchors) the native tick. No-ops on iOS, in Expo Go, and on any build without the current native scheduler. */
+export function startAndroidLiveTracking(): void {
   if (Platform.OS !== "android") return;
-  bridgeStop();
+  if (!androidLiveTrackingSupported) {
+    // Old native build: make sure nothing it may have armed earlier is still
+    // running, rather than simply doing nothing.
+    bridgeStop();
+    return;
+  }
+  bridgeStart();
 }
 
-/** Stops the native tick. No-ops on iOS/Expo Go — see widget-bridge/index.ts. */
+/** Stops the native tick. Safe on every build — `stopLiveTracking` exists in both the old and current native modules. */
 export function stopAndroidLiveTracking(): void {
   if (Platform.OS !== "android") return;
   bridgeStop();
