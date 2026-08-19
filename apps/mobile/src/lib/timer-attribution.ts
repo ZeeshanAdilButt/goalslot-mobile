@@ -104,11 +104,15 @@ export interface RefiledEntryNameInput {
  * when the user re-files an EXISTING entry under a goal, or `undefined` to
  * leave the name alone.
  *
- * Entries already saved with a stale auto-derived name (the bug this file's
- * sibling fixes) can't be corrected on mobile otherwise — the row can be
- * moved to the right goal or deleted, but its name is stuck, and that name is
- * what the web reports group by. Tapping the row and picking the right goal
- * now renames it too.
+ * CURRENTLY UNCALLED, and kept deliberately. It existed because tapping a
+ * history row opened the tracking picker and nothing else, so an entry
+ * already saved with a stale auto-derived name had no way to be renamed —
+ * the row could be re-filed or deleted, but its name was stuck, and that name
+ * is what the web reports group by. Tapping a row now opens ManualEntrySheet
+ * with the name in an editable field, which fixes that case directly and
+ * makes the inference below unnecessary rather than wrong. It stays here,
+ * tested, because the inference is the non-obvious part and any future
+ * bulk/automatic re-filing path would need exactly it again.
  *
  * The signature of an auto-derived name is that it is *literally the title of
  * one of the user's own goals* — that is the only thing handleStart and a

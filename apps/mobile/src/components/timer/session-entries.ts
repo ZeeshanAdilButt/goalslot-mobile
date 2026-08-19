@@ -82,8 +82,8 @@ export function sessionEntryTitle(entry: TimeEntry): string {
 /**
  * One-line screen-reader description of a row. The goal (or its absence) is
  * part of it deliberately: "no goal" is what tells a VoiceOver user which
- * rows the row-level "Add goal" action is worth invoking on, and it is
- * exactly the state the visible hollow dot conveys to everyone else.
+ * rows are worth opening the edit sheet on to file, and it is exactly the
+ * state the visible hollow dot conveys to everyone else.
  */
 export function describeSessionEntry(entry: TimeEntry): string {
   const goalPart = entry.goal?.title ? `, ${entry.goal.title}` : ", no goal";

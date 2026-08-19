@@ -1,5 +1,32 @@
 // Bottom sheet for logging time that was never tracked live — "I forgot to
-// start the timer, but I did 45 minutes of X this morning."
+// start the timer, but I did 45 minutes of X this morning" — and, since it
+// already owns exactly the right field set, for FIXING a session that was
+// logged wrong.
+//
+// TWO MODES, ONE FORM. `present()` opens an empty create form; `present(entry)`
+// prefills every field from an already-logged entry and saves through
+// PUT /time-entries/:id instead of POST. Tapping a row in SessionHistory used
+// to open TrackingPicker on its own, which could re-file the session under a
+// different goal and nothing else — its duration, date, start time and title
+// were unreachable from anywhere in the app once written. Extending this sheet
+// is a strict superset of that: the goal/task link is still one tap away
+// (same TrackingPicker, embedded below), just alongside the fields the user
+// actually came to change. The prefill and both payload shapes live in
+// manual-entry-form.ts so they can be tested without mounting a sheet.
+//
+// Web has its own edit form (goal-slot-web/src/features/time-tracker/
+// components/edit-time-entry-modal.tsx) over taskName / duration / notes /
+// goalId / date, with the same "at least 1 minute" rule this sheet already
+// enforces. This is that field set plus start time and a task link (both of
+// which this sheet already had for create), minus `notes` — see
+// buildTimeEntryUpdate for why an edit deliberately leaves that alone.
+//
+// OFFLINE, create only. The outbox has a "time-entry-create" operation (see
+// offline.ts's registry) and a "time-entry-delete" one, but no update kind for
+// time entries — so a failed EDIT reports inline through the normal error path
+// rather than silently pretending to have queued. Inventing an unregistered
+// kind would be worse than the error: the sync engine replays by kind, so an
+// entry it doesn't know would sit in the outbox forever.
 //
 // Mobile-only port of dw-time-web's ManualEntryModal
 // (goal-slot-web/src/features/time-tracker/components/manual-entry-modal.tsx):
@@ -58,17 +85,22 @@ import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
-  createTimeEntrySchema,
   formatDuration,
   genId,
   getLocalDateString,
-  getLocalTimeString,
   isRetryable,
-  type CreateTimeEntryInput,
   type Goal,
   type Task,
+  type TimeEntry,
+  type UpdateTimeEntryInput,
 } from "@goalslot/shared";
 
+import {
+  buildManualEntryFormState,
+  buildTimeEntryCreate,
+  buildTimeEntryUpdate,
+  type ManualEntryFields,
+} from "@/components/timer/manual-entry-form";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { parseDateKey, formatDateKey } from "@/components/ui/calendar-math";
@@ -85,12 +117,12 @@ import { queryClient } from "@/lib/query-client";
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
 export interface ManualEntrySheetRef {
-  present: () => void;
+  /** No argument logs a new entry; passing one opens that entry for editing. */
+  present: (entry?: TimeEntry) => void;
   dismiss: () => void;
 }
 
 const DURATION_PRESETS_MIN = [15, 30, 45, 60, 90, 120];
-const DEFAULT_DURATION_MIN = 30;
 
 function addDays(date: Date, days: number): Date {
   const result = new Date(date);
@@ -129,13 +161,20 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
   // for unless the sheet accounts for it itself.
   const insets = useSafeAreaInsets();
 
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState(getLocalDateString());
+  const initial = useMemo(() => buildManualEntryFormState(), []);
+  const [title, setTitle] = useState(initial.title);
+  const [date, setDate] = useState(initial.date);
   const [customDatePickerOpen, setCustomDatePickerOpen] = useState(false);
-  const [startTime, setStartTime] = useState(getLocalTimeString());
-  const [durationText, setDurationText] = useState(String(DEFAULT_DURATION_MIN));
+  const [startTime, setStartTime] = useState(initial.startTime);
+  const [durationText, setDurationText] = useState(initial.durationText);
   const [goalId, setGoalId] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  /**
+   * The entry being edited, or null for a create. Only its id is ever sent,
+   * but the whole entry is held so nothing here has to go back to the cache
+   * to answer "what was this before?" while the sheet is open.
+   */
+  const [editing, setEditing] = useState<TimeEntry | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,14 +191,16 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
   useImperativeHandle(
     ref,
     () => ({
-      present: () => {
-        setTitle("");
-        setDate(getLocalDateString());
+      present: (entry?: TimeEntry) => {
+        const next = buildManualEntryFormState(entry);
+        setTitle(next.title);
+        setDate(next.date);
         setCustomDatePickerOpen(false);
-        setStartTime(getLocalTimeString());
-        setDurationText(String(DEFAULT_DURATION_MIN));
-        setGoalId(null);
-        setTaskId(null);
+        setStartTime(next.startTime);
+        setDurationText(next.durationText);
+        setGoalId(next.goalId);
+        setTaskId(next.taskId);
+        setEditing(entry ?? null);
         setError(null);
         sheetRef.current?.present();
       },
@@ -215,27 +256,68 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
     setPickerOpen(false);
   }, []);
 
+  /**
+   * Saves an edit to an entry that already exists. No outbox fallback — see
+   * this file's header: the sync engine has no "time-entry-update" operation
+   * to replay, so a failure reports inline instead of pretending to queue.
+   *
+   * Goals are invalidated unconditionally here, unlike the create path's
+   * conditional below: an edit can change a goal's logged hours by moving the
+   * entry's duration, by re-filing it under a different goal, or by detaching
+   * it from the one it had — and in the last two cases the goal whose total
+   * just changed is the OLD one, which `goalId` no longer names.
+   */
+  const handleUpdate = useCallback(
+    async (id: string, fields: ManualEntryFields) => {
+      let payload;
+      try {
+        payload = buildTimeEntryUpdate(fields);
+      } catch {
+        setError("Please check the fields above and try again.");
+        return;
+      }
+
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        // The one cast the nullable link fields cost — see
+        // TimeEntryUpdatePayload in manual-entry-form.ts.
+        await apiClient.timeEntries.update(id, payload as UpdateTimeEntryInput);
+        hapticCompletion();
+        void queryClient.invalidateQueries({ queryKey: timeEntryQueries.timeEntryQueries.all });
+        void queryClient.invalidateQueries({ queryKey: goalQueries.goalQueries.all });
+        notify("Session updated", "success");
+        sheetRef.current?.dismiss();
+      } catch (err) {
+        console.error(err);
+        setError(getErrorMessage(err, "Couldn't save those changes. Your logged time is safe."));
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
 
-    const startedAt = buildLocalDate(date, startTime).toISOString();
+    const fields: ManualEntryFields = {
+      title: trimmedTitle,
+      date,
+      startedAt: buildLocalDate(date, startTime).toISOString(),
+      duration: parsedDuration,
+      goalId,
+      taskId,
+    };
 
-    let payload: CreateTimeEntryInput;
+    if (editing) {
+      await handleUpdate(editing.id, fields);
+      return;
+    }
+
+    let payload;
     try {
-      payload = createTimeEntrySchema.parse({
-        taskName: trimmedTitle,
-        // taskTitle only travels alongside a real taskId — same convention
-        // timer.tsx's handleStop and TrackerVoiceButton's logTime already
-        // follow (see UNRESOLVED_TARGET_LABEL's comment in timer.tsx): it's
-        // the denormalised snapshot of a REAL task's title, not a second copy
-        // of whatever free text the user typed.
-        ...(taskId ? { taskId, taskTitle: trimmedTitle } : {}),
-        ...(goalId ? { goalId } : {}),
-        duration: parsedDuration,
-        date,
-        startedAt,
-        notes: "Manual entry",
-      });
+      payload = buildTimeEntryCreate(fields);
     } catch {
       setError("Please check the fields above and try again.");
       return;
@@ -285,7 +367,7 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
     } finally {
       setIsSubmitting(false);
     }
-  }, [canSubmit, date, goalId, parsedDuration, startTime, taskId, trimmedTitle]);
+  }, [canSubmit, date, editing, goalId, handleUpdate, parsedDuration, startTime, taskId, trimmedTitle]);
 
   return (
     <>
@@ -312,7 +394,7 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
           contentContainerStyle={[styles.content, { paddingBottom: spacing.xxl + insets.bottom }]}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.title}>Manual time entry</Text>
+          <Text style={styles.title}>{editing ? "Edit session" : "Manual time entry"}</Text>
 
           <View style={styles.field}>
             <Text style={styles.label}>What did you work on?</Text>
@@ -458,10 +540,18 @@ export const ManualEntrySheet = forwardRef<ManualEntrySheetRef, object>(function
               onPress={() => void handleSubmit()}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Add time entry"
+              accessibilityLabel={editing ? "Save changes to this session" : "Add time entry"}
               accessibilityState={{ disabled: !canSubmit }}
             >
-              <Text style={styles.submitText}>{isSubmitting ? "Adding…" : "Add Entry"}</Text>
+              <Text style={styles.submitText}>
+                {editing
+                  ? isSubmitting
+                    ? "Saving…"
+                    : "Save Changes"
+                  : isSubmitting
+                    ? "Adding…"
+                    : "Add Entry"}
+              </Text>
             </TouchableOpacity>
           </View>
         </BottomSheetScrollView>

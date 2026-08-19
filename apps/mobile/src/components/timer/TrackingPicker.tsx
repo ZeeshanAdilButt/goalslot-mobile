@@ -84,7 +84,7 @@ export interface TrackingPickerProps {
    * that is already counting ("running"), or filing an entry that has
    * already been logged ("logged").
    */
-  mode?: "prestart" | "running" | "logged";
+  mode?: "prestart" | "running";
   /**
    * Which attribution slot is being filled. Undefined is the history-attach
    * flow, which offers goals and tasks together in one list — see this
@@ -251,7 +251,7 @@ export function TrackingPicker({
   // Deliberately terse. These used to be full explanatory sentences on every
   // variant, which read as a lecture on a sheet the user opens dozens of
   // times a day and already understands.
-  const sheetSubtitle = slot === "task" ? "Optional." : mode === "logged" ? "File time you already logged." : null;
+  const sheetSubtitle = slot === "task" ? "Optional." : null;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
@@ -339,13 +339,11 @@ export function TrackingPicker({
           >
             {/* The opt-out row. Hidden while searching (it isn't a search
                 result, and it would sit above the actual matches competing
-                for the first tap), and in "logged" mode, where the sheet is
-                only ever opened from an entry that already has nothing
-                attached — so "attach nothing" would be a row that does
-                nothing. In "task" mode it drops only the task: the goal is a
-                separate slot and clearing it from here would silently undo a
-                choice the user didn't come to this sheet to change. */}
-            {!searching && mode !== "logged" ? (
+                for the first tap). In "task" mode it drops only the task: the
+                goal is a separate slot and clearing it from here would
+                silently undo a choice the user didn't come to this sheet to
+                change. */}
+            {!searching ? (
               slot === "task" ? (
                 <PickerRow
                   title="No task"

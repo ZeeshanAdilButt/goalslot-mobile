@@ -24,23 +24,26 @@
 //
 //   - swipe left  -> Delete, behind a themed ConfirmDialog (never
 //                    `Alert.alert`; see ConfirmDialog.tsx's own header).
-//   - tap the row -> the tracking picker, to add or change the goal it's
-//                    filed under. `onAttachGoal` used to be offered only on
-//                    rows with no goal; the whole row is the affordance now,
-//                    so an entry filed against the wrong goal can be moved
-//                    rather than only an unfiled one being filled in.
+//   - tap the row -> ManualEntrySheet, prefilled from the entry, to edit it.
+//                    This used to open the tracking picker alone, which could
+//                    only re-file the session under a different goal — its
+//                    duration, date, start time and title were unreachable
+//                    from anywhere in the app once written, which is exactly
+//                    what people tapping a row were trying to fix. The sheet
+//                    is a superset: the goal/task link is still one tap away
+//                    inside it, using the same picker.
 //
 // Both are reachable without the gesture: the row is one accessibility
-// element whose activation opens the picker, with Delete exposed as a custom
-// accessibility action (the same `accessibilityActions`/
+// element whose activation opens the edit sheet, with Delete exposed as a
+// custom accessibility action (the same `accessibilityActions`/
 // `onAccessibilityAction` pairing notes.tsx uses for its own swipe actions).
 //
 // The delete mutation lives HERE rather than on the Timer screen even though
-// the screen owns the equivalent attach mutation. It needs nothing from the
-// screen's timer state — an entry id and the recent-entries cache is the
-// whole of it — and keeping it local means the Time Tracker screen didn't
-// have to grow a third piece of history-row plumbing. Mutating from a
-// component rather than a screen is already established here (see
+// the screen owns the sheet a tap opens. It needs nothing from the screen's
+// timer state — an entry id and the recent-entries cache is the whole of it —
+// and keeping it local means the Time Tracker screen didn't have to grow a
+// third piece of history-row plumbing. Mutating from a component rather than
+// a screen is already established here (see
 // components/voice/TrackerVoiceButton.tsx, which posts time entries and
 // queues them offline itself).
 
@@ -92,8 +95,10 @@ const LIST_CONTENT_BOTTOM_PADDING = spacing.xxxl;
  * vocabulary because it is genuinely app-specific, and it is declared once
  * at module scope so every memoised row shares the same array identity.
  * Activation (a plain double-tap under VoiceOver/TalkBack) is left as the
- * row's own `onPress`, which is the attribution picker — the non-destructive
- * of the two, and so the right thing to sit on the default gesture.
+ * row's own `onPress`, which opens the edit sheet — the non-destructive of
+ * the two, and so the right thing to sit on the default gesture. (It also
+ * only opens a form; nothing about the entry changes until that form is
+ * saved, so the default gesture stays reversible.)
  */
 const ROW_ACCESSIBILITY_ACTIONS: AccessibilityActionInfo[] = [
   { name: "delete", label: "Delete session" },
@@ -104,12 +109,10 @@ export interface SessionHistoryProps {
   refreshing: boolean;
   onRefresh: () => void;
   /**
-   * Opens the tracking picker for an already-logged entry. Offered on every
-   * row now, not just unattributed ones — see the ROW ACTIONS note above.
+   * Opens the edit sheet for an already-logged entry — see the ROW ACTIONS
+   * note above. Offered on every row, not just unattributed ones.
    */
-  onAttachGoal: (entry: TimeEntry) => void;
-  /** Id of the entry currently being saved, so its row can show the in-flight state. */
-  attachingEntryId?: string | null;
+  onEditEntry: (entry: TimeEntry) => void;
   /**
    * Rendered above the first row, inside this list's own scroll view.
    *
@@ -138,8 +141,7 @@ export function SessionHistory({
   entries,
   refreshing,
   onRefresh,
-  onAttachGoal,
-  attachingEntryId,
+  onEditEntry,
   ListHeaderComponent,
   contentBottomInset = 0,
 }: SessionHistoryProps) {
@@ -241,12 +243,7 @@ export function SessionHistory({
           item.kind === "header" ? (
             <DayHeader label={item.label} minutes={item.minutes} />
           ) : (
-            <SessionRow
-              entry={item.entry}
-              onAttachGoal={onAttachGoal}
-              onDelete={requestDelete}
-              attaching={attachingEntryId === item.entry.id}
-            />
+            <SessionRow entry={item.entry} onEdit={onEditEntry} onDelete={requestDelete} />
           )
         }
         refreshing={refreshing}
@@ -287,14 +284,12 @@ function DayHeader({ label, minutes }: { label: string; minutes: number }) {
 // for a reason that had nothing to do with that particular entry.
 const SessionRow = memo(function SessionRow({
   entry,
-  onAttachGoal,
+  onEdit,
   onDelete,
-  attaching,
 }: {
   entry: TimeEntry;
-  onAttachGoal: (entry: TimeEntry) => void;
+  onEdit: (entry: TimeEntry) => void;
   onDelete: (entry: TimeEntry) => void;
-  attaching: boolean;
 }) {
   const swipeableRef = useRef<Swipeable>(null);
   const goal = entry.goal;
@@ -344,12 +339,10 @@ const SessionRow = memo(function SessionRow({
       <Swipeable ref={swipeableRef} renderRightActions={renderRightActions} overshootRight={false}>
         <Pressable
           style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => onAttachGoal(entry)}
-          disabled={attaching}
+          onPress={() => onEdit(entry)}
           accessibilityRole="button"
           accessibilityLabel={describeSessionEntry(entry)}
-          accessibilityHint={goal ? "Change the goal this is filed under" : "File this session under a goal"}
-          accessibilityState={{ disabled: attaching, busy: attaching }}
+          accessibilityHint="Edits this session — its name, goal, date, start time and duration"
           accessibilityActions={ROW_ACCESSIBILITY_ACTIONS}
           onAccessibilityAction={handleAccessibilityAction}
         >
@@ -371,15 +364,15 @@ const SessionRow = memo(function SessionRow({
                 {goal.title}
               </Text>
             ) : (
-              // A hint, not a control: the whole row opens the same picker
-              // now, so a nested button here would be a second accessibility
-              // element competing with its own parent for the identical
-              // action. Marked as decoration for the same reason — the row's
-              // label already says "no goal" and its hint says what a tap
-              // does.
+              // A hint, not a control: the whole row opens the edit sheet,
+              // where the goal link lives, so a nested button here would be a
+              // second accessibility element competing with its own parent
+              // for the identical action. Marked as decoration for the same
+              // reason — the row's label already says "no goal" and its hint
+              // says what a tap does.
               <View style={styles.attachHint} importantForAccessibility="no-hide-descendants">
                 <Icon name="add" size={13} color={colors.mutedForeground} />
-                <Text style={styles.attachText}>{attaching ? "Saving…" : "Add goal"}</Text>
+                <Text style={styles.attachText}>Add goal</Text>
               </View>
             )}
           </View>

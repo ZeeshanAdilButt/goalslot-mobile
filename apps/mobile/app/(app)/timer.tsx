@@ -41,7 +41,6 @@ import {
   namedTarget,
   resolveSpokenTarget,
   toActiveTimerSession,
-  updateTimeEntrySchema,
   type ActiveTimerClient,
   type ActiveTimerSession,
   type CreateTimeEntryInput,
@@ -87,7 +86,6 @@ import {
   NOTIFICATION_DORMANT_TOLERANCE_MS,
   readStartConflict,
   resolveEffectiveTimer,
-  resolveRefiledEntryName,
   resolveRetargetedSessionName,
   resolveScheduledTarget,
 } from "@/lib/timer-attribution";
@@ -166,7 +164,10 @@ interface StartTarget {
  * opens listing only the thing that row is for, so "now also add a task"
  * isn't a second pass through a list that reads as "replace your goal".
  */
-type PickerTarget = { kind: "session"; slot: "goal" | "task" } | { kind: "entry"; entry: TimeEntry };
+// One variant, but kept as a tagged shape rather than collapsed to the bare
+// slot: `null` already means "closed", and a plain `"goal" | "task" | null`
+// would conflate that with the sheet's own two-slot state.
+type PickerTarget = { kind: "session"; slot: "goal" | "task" };
 
 /**
  * Ring diameter ceiling on a large phone — past this the hero stops feeling
@@ -282,6 +283,14 @@ export default function TimerScreen() {
   // history below) the same way tasks.tsx holds EditTaskSheet's.
   const manualEntrySheetRef = useRef<ManualEntrySheetRef>(null);
   const openManualEntry = useCallback(() => manualEntrySheetRef.current?.present(), []);
+  // The same sheet, prefilled — tapping a row in the session history below
+  // edits that entry (name, goal/task, date, start time, duration) rather
+  // than only re-filing it under a goal, which is all the tracking picker
+  // this used to open could do. Stable identity so it doesn't defeat
+  // SessionHistory's own row memoization (SessionRow is memo()'d — an inline
+  // arrow recreated on every render of this screen would make every visible
+  // row re-render regardless).
+  const openEditEntry = useCallback((entry: TimeEntry) => manualEntrySheetRef.current?.present(entry), []);
   // Measured (not guessed) height of the pinned Start/Pause/Stop footer below
   // — see the `hero`/return JSX further down for why TimerControls moved out
   // of the scrollable hero card into this fixed footer, and why the
@@ -302,13 +311,6 @@ export default function TimerScreen() {
   const [contentAreaHeight, setContentAreaHeight] = useState(0);
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
-  // Stable identity so it doesn't defeat SessionHistory's own row memoization
-  // (SessionRow is memo()'d — an inline arrow recreated on every render of
-  // this screen would make every visible row re-render regardless).
-  const openAttachPicker = useCallback((entry: TimeEntry) => setPickerTarget({ kind: "entry", entry }), []);
-  // Which already-logged entry is mid-attach, so its history row can show
-  // the in-flight state instead of the list looking inert for a round trip.
-  const [attachingEntryId, setAttachingEntryId] = useState<string | null>(null);
   // What the *next* run will be tracked against, chosen before pressing
   // Start. Once running, the store's own taskId/goalId is the source of truth
   // instead — this only matters pre-start.
@@ -898,47 +900,6 @@ export default function TimerScreen() {
   }, [effectiveStatus, effectiveStartedAt]);
 
   /**
-   * Files an already-logged entry under a goal/task after the fact. This is
-   * the other half of one-tap tracking: if attribution is optional up front,
-   * there has to be a cheap way to add it later, or "later" never happens.
-   *
-   * PUT /time-entries/:id already accepts goalId and taskId and recalculates
-   * progress on both the old and the new goal (see the API's
-   * time-entries.service.ts) — no backend change was needed for this.
-   */
-  const attachToEntry = useCallback(
-    async (
-      entry: TimeEntry,
-      patch: { taskId?: string; taskTitle?: string; goalId?: string; taskName?: string },
-    ) => {
-      setAttachingEntryId(entry.id);
-      try {
-        await apiClient.timeEntries.update(
-          entry.id,
-          updateTimeEntrySchema.parse(patch),
-        );
-        hapticCompletion();
-        void queryClient.invalidateQueries({
-          queryKey: timeEntryQueries.timeEntryQueries.all,
-        });
-        // The goal's logged hours move with the entry, so the goal list is
-        // stale too — Reports and Today both read it.
-        void queryClient.invalidateQueries({
-          queryKey: goalQueries.goalQueries.all,
-        });
-      } catch (err) {
-        console.error(err);
-        notify(getErrorMessage(err, "Couldn't attach that. Your logged time is safe."), "error", {
-          action: { label: "Retry", onPress: () => void attachToEntry(entry, patch) },
-        });
-      } finally {
-        setAttachingEntryId(null);
-      }
-    },
-    [],
-  );
-
-  /**
    * PATCHes the server timer session's attribution, with one shared
    * carve-out: `/timer/session` is a singleton with no id (see
    * timer-session.ts's header), so this races any other device or a
@@ -985,17 +946,8 @@ export default function TimerScreen() {
 
   const handlePickTask = useCallback(
     (task: Task) => {
-      const target = pickerTarget;
       setPickerTarget(null);
       userSelectedRef.current = true;
-      if (target?.kind === "entry") {
-        void attachToEntry(target.entry, {
-          taskId: task.id,
-          taskTitle: task.title,
-          ...(task.goalId ? { goalId: task.goalId } : {}),
-        });
-        return;
-      }
       // A task implies its goal, so picking one fills BOTH slots. Setting the
       // goal explicitly (rather than leaving it implied by the task) is what
       // lets "No task" later leave a goal still attached instead of silently
@@ -1023,30 +975,12 @@ export default function TimerScreen() {
       }
       applyLocally();
     },
-    [attachToEntry, goalsQuery.data, hasServerSession, patchServerSession, pickerTarget, retarget],
+    [goalsQuery.data, hasServerSession, patchServerSession, retarget],
   );
 
   const handlePickGoal = useCallback(
     (goal: Goal) => {
-      const target = pickerTarget;
       userSelectedRef.current = true;
-      if (target?.kind === "entry") {
-        // Re-filing an already-saved entry. If its name is only the title of
-        // whatever goal it used to carry, it moves with the goal — that is
-        // the sole in-app repair for rows already written with a stale name
-        // (see resolveRefiledEntryName); a chosen name is left alone.
-        const renamed = resolveRefiledEntryName({
-          entryTaskId: target.entry.taskId ?? null,
-          entryTaskName: cleanLabel(target.entry.taskName),
-          goalTitles: goalsQuery.data?.map((g) => cleanLabel(g.title)) ?? [],
-          nextGoalTitle: cleanLabel(goal.title),
-        });
-        void attachToEntry(target.entry, {
-          goalId: goal.id,
-          ...(renamed === undefined ? {} : { taskName: renamed }),
-        });
-        return;
-      }
       // A task only makes sense under its own goal, so switching goals drops
       // a task that belongs to a different one — but keeps it when it's a
       // task of the goal just picked, which is what makes the two slots feel
@@ -1095,18 +1029,7 @@ export default function TimerScreen() {
     // `goalTitle`/`taskTitle` are load-bearing here, not lint hygiene: they
     // are compared against `sessionName`, and a callback not recreated when
     // they change would compare two values captured in different renders.
-    [
-      activeTask,
-      attachToEntry,
-      goalTitle,
-      goalsQuery.data,
-      hasServerSession,
-      patchServerSession,
-      pickerTarget,
-      retarget,
-      sessionName,
-      taskTitle,
-    ],
+    [activeTask, goalTitle, hasServerSession, patchServerSession, retarget, sessionName, taskTitle],
   );
 
   /** "Just track time" — clears both slots, pre-start or mid-run. */
@@ -1839,18 +1762,17 @@ export default function TimerScreen() {
     user,
   ]);
 
-  // The picker serves three jobs from one sheet — setting up the next run,
-  // re-pointing a live one, and filing an entry that's already in history —
-  // so what counts as "currently selected" depends on which one opened it.
-  const pickerMode =
-    pickerTarget?.kind === "entry" ? "logged" : effectiveStatus === "idle" ? "prestart" : "running";
-  const pickerSlot = pickerTarget?.kind === "session" ? pickerTarget.slot : undefined;
+  // The picker serves two jobs from one sheet — setting up the next run and
+  // re-pointing a live one — so what counts as "currently selected" depends
+  // on which one opened it. (Filing an entry that's already in history used
+  // to be a third; it now happens inside ManualEntrySheet, which embeds its
+  // own instance of this picker alongside the rest of the entry's fields.)
+  const pickerMode = effectiveStatus === "idle" ? "prestart" : "running";
+  const pickerSlot = pickerTarget?.slot;
   // Both ids, separately: the sheet check-marks the goal AND the task, and
   // uses the goal to lead the task list with that goal's own tasks.
-  const pickerSelectedGoalId =
-    pickerTarget?.kind === "entry" ? (pickerTarget.entry.goalId ?? null) : slotGoalId;
-  const pickerSelectedTaskId =
-    pickerTarget?.kind === "entry" ? (pickerTarget.entry.taskId ?? null) : slotTaskId;
+  const pickerSelectedGoalId = slotGoalId;
+  const pickerSelectedTaskId = slotTaskId;
 
   /**
    * Applies the live schedule block's goal (and its task, when it names one)
@@ -2075,8 +1997,7 @@ export default function TimerScreen() {
             entries={recentQuery.data}
             refreshing={recentQuery.isFetching && !recentQuery.isPending}
             onRefresh={() => void recentQuery.refetch()}
-            onAttachGoal={openAttachPicker}
-            attachingEntryId={attachingEntryId}
+            onEditEntry={openEditEntry}
             contentBottomInset={footerClearance}
           />
         )}
