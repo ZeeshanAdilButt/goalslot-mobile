@@ -169,13 +169,19 @@ interface StartTarget {
 type PickerTarget = { kind: "session"; slot: "goal" | "task" } | { kind: "entry"; entry: TimeEntry };
 
 /** Ring diameter ceiling on a large phone — past this the hero stops feeling like part of a screen. */
-const MAX_RING_SIZE = 300;
+const MAX_RING_SIZE = 270;
 /**
  * Share of the viewport height the ring may take. This is what stops the
- * hero card from pushing the session list off a short device: on a 844pt
- * phone it resolves to ~287pt (a ~53pt clock), on a 568pt one to ~193pt.
+ * hero card from pushing Goal/Task/Reminder and the pinned transport footer
+ * off a short-to-typical device: on a 844pt phone it resolves to ~245pt (a
+ * ~45pt clock), on a 568pt one to the 150pt floor below. Trimmed from 0.34 —
+ * the ring is the hero's single largest element, and at the old fraction it
+ * routinely left the reminder picker needing a scroll to reach on an
+ * 800-900pt Android phone even though nothing below it had actually
+ * disappeared (see the "large blank gap" report this constant was tuned
+ * against).
  */
-const RING_HEIGHT_FRACTION = 0.34;
+const RING_HEIGHT_FRACTION = 0.29;
 /** Screen padding (spacing.xl) + card padding (spacing.xl), both sides. */
 const RING_HORIZONTAL_INSET = 4 * spacing.xl;
 
@@ -1898,7 +1904,7 @@ export default function TimerScreen() {
             the screen. It stays visually subordinate to that transport row
             on purpose: the orb renders at `minTouchTarget` (44pt — see
             TrackerVoiceButton's own styles), smaller than both TimerControls'
-            88pt primary and its 56pt Stop, so Start/Pause/Stop still reads as
+            72pt primary and its 48pt Stop, so Start/Pause/Stop still reads as
             the card's one primary action even though the mic sits above it.
             Self-contained — it reads the timer store and the goal/task lists
             itself — except for stopping, which is handed back to this
@@ -2223,14 +2229,21 @@ const styles = StyleSheet.create({
   },
   timerCard: {
     margin: spacing.xl,
-    paddingVertical: spacing.xl,
+    // Both trimmed a step from spacing.xl/lg — with the ring itself shrunk
+    // (see RING_HEIGHT_FRACTION above) this is what actually closes the rest
+    // of the "large blank gap" report: five stacked gaps at the old spacing.lg
+    // cost 20pt more than they do now, on top of 8pt off the card's own top
+    // and bottom padding. Still comfortably more than the compact spacing.md
+    // rows use internally (TrackingTarget, ReminderIntervalPicker) — this is
+    // the space BETWEEN the hero's distinct pieces, not inside one of them.
+    paddingVertical: spacing.lg,
     paddingHorizontal: spacing.xl,
     borderRadius: radii.xl,
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
-    gap: spacing.lg,
+    gap: spacing.md,
     ...shadows.card,
   },
   statusPill: {
@@ -2308,14 +2321,21 @@ const styles = StyleSheet.create({
   // exists at all. Matches the app tab bar's own top-border-plus-card
   // treatment (app/(app)/_layout.tsx's tabsScreenOptions.tabBarStyle) since
   // this sits directly above it and should read as one continuous piece of
-  // chrome, not a second, differently-styled bar. `paddingBottom` reuses the
-  // exact clearance `scrollContent` used to reserve for the tab bar's raised
-  // voice orb (see that style's own comment) — the orb pokes into THIS
-  // area now, not the scrollable content above it.
+  // chrome, not a second, differently-styled bar. `paddingBottom` used to be
+  // spacing.huge (48) on the theory that it had to clear the tab bar's raised
+  // voice orb — but that orb's own LIFT (14pt, VoiceTabButton.tsx) is already
+  // budgeted INSIDE the tab bar's own `tabBarStyle.height`
+  // (TAB_BAR_CONTENT_HEIGHT + bottomClearance, see _layout.tsx's own
+  // arithmetic comment), which the Tabs navigator reserves as space this
+  // screen's content never renders into — the same "no extra insets.bottom
+  // needed" fact the return-JSX comment above already states. There was
+  // nothing left for this padding to actually be clearing; spacing.xxl below
+  // matches the plain bottom-of-screen breathing room tasks.tsx/goals.tsx use
+  // for their FABs, which sit in the exact same position relative to the bar.
   controlsFooter: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
-    paddingBottom: spacing.huge,
+    paddingBottom: spacing.xxl,
     backgroundColor: colors.card,
     borderTopWidth: 1,
     borderTopColor: colors.border,

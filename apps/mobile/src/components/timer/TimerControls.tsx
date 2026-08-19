@@ -2,10 +2,15 @@
 //
 // Shaped like a media player rather than a row of text buttons: one large
 // round primary target in the middle (Start / Pause / Resume, whichever the
-// current state calls for) with Stop set beside it. The primary sits at 88pt
-// — roughly double the 44pt HIG minimum — because it's the control that gets
-// pressed mid-task, often one-handed, and it stays in the same place across
-// every state so the layout never jumps under a thumb that's already moving.
+// current state calls for) with Stop set beside it. The primary sits at 72pt
+// — comfortably past the 44pt HIG minimum — because it's the control that
+// gets pressed mid-task, often one-handed, and it stays in the same place
+// across every state so the layout never jumps under a thumb that's already
+// moving. Trimmed down from an earlier 88pt/56pt pairing as part of the same
+// pass that tightened the hero card above it (see timer.tsx's
+// RING_HEIGHT_FRACTION/timerCard comments) — freeing up vertical space here
+// was the other half of fitting Goal/Task/Reminder and this row on screen
+// together without the transport controls needing to dominate the footer.
 //
 // Glyphs are drawn with react-native-svg instead of coming from
 // @/components/ui/Icon: that set is a fixed 1:1 mapping of the web app's
@@ -26,8 +31,8 @@ import Svg, { Path, Rect } from "react-native-svg";
 import type { TimerStatus } from "@/lib/timer-store";
 import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 
-const PRIMARY_SIZE = 88;
-const SECONDARY_SIZE = 56;
+const PRIMARY_SIZE = 72;
+const SECONDARY_SIZE = 48;
 const PRESS_DURATION = 120;
 
 function PlayGlyph({ size, color }: { size: number; color: string }) {
@@ -157,10 +162,10 @@ export function TimerControls({ status, onStart, onPause, onResume, onStop }: Ti
           backgroundColor={colors.primary}
         >
           {isRunning ? (
-            <PauseGlyph size={40} color={colors.primaryForeground} />
+            <PauseGlyph size={32} color={colors.primaryForeground} />
           ) : (
             // Dark glyph on brand yellow — never white, the contrast fails.
-            <PlayGlyph size={40} color={colors.primaryForeground} />
+            <PlayGlyph size={32} color={colors.primaryForeground} />
           )}
         </TransportButton>
         <Text style={styles.slotLabel}>{primary.label}</Text>
@@ -176,7 +181,7 @@ export function TimerControls({ status, onStart, onPause, onResume, onStop }: Ti
               backgroundColor={colors.destructiveMuted}
               borderColor={colors.border}
             >
-              <StopGlyph size={24} color={colors.destructive} />
+              <StopGlyph size={20} color={colors.destructive} />
             </TransportButton>
             <Text style={styles.slotLabel}>Stop</Text>
           </View>
