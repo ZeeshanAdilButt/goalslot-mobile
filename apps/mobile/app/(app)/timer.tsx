@@ -19,7 +19,7 @@
 // exact local-only flow this screen always had.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -51,6 +51,7 @@ import {
 } from "@goalslot/shared";
 
 import { EmptyState, QueryErrorState, SkeletonListItem } from "@/components";
+import { ManualEntrySheet, type ManualEntrySheetRef } from "@/components/timer/ManualEntrySheet";
 import { ReminderIntervalPicker } from "@/components/timer/ReminderIntervalPicker";
 import { SessionHistory } from "@/components/timer/SessionHistory";
 import { TimerControls } from "@/components/timer/TimerControls";
@@ -58,6 +59,7 @@ import { TimerRing } from "@/components/timer/TimerRing";
 import { TrackingPicker } from "@/components/timer/TrackingPicker";
 import { TrackingTarget } from "@/components/timer/TrackingTarget";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { Icon } from "@/components/ui/Icon";
 import { TrackerVoiceButton } from "@/components/voice/TrackerVoiceButton";
 import { buildTrackingCandidates } from "@/components/voice/tracking-commands";
 import { useTimerNotification } from "@/components/timer/useTimerNotification";
@@ -93,7 +95,7 @@ import { getElapsedMs, useTimerStore, type TimerStatus } from "@/lib/timer-store
 import { useTimerReminders } from "@/lib/useTimerReminders";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalytics } from "@/providers/growth-provider";
-import { colors, radii, shadows, spacing, typography } from "@/theme/tokens";
+import { colors, minTouchTarget, radii, shadows, spacing, typography } from "@/theme/tokens";
 import { RUNNING_SYNC_INTERVAL_MS, syncWidgets } from "@/widgets/widget-sync";
 
 const RECENT_SKELETON_ROWS = 4;
@@ -222,6 +224,22 @@ export default function TimerScreen() {
   const setReminderIntervalMinutes = useSettingsStore(
     (s) => s.setTimerReminderIntervalMinutes,
   );
+
+  // Manual time entry — logging a session that was never tracked live. See
+  // ManualEntrySheet.tsx's own header for the full shape; this screen just
+  // holds the ref that opens it (the "+ Manual Entry" row near the session
+  // history below) the same way tasks.tsx holds EditTaskSheet's.
+  const manualEntrySheetRef = useRef<ManualEntrySheetRef>(null);
+  const openManualEntry = useCallback(() => manualEntrySheetRef.current?.present(), []);
+  // Measured (not guessed) height of the pinned Start/Pause/Stop footer below
+  // — see the `hero`/return JSX further down for why TimerControls moved out
+  // of the scrollable hero card into this fixed footer, and why the
+  // scrollable content needs to reserve exactly this much space at its own
+  // bottom so nothing ever renders underneath it. Same "measure via onLayout,
+  // don't hardcode" pattern app/(app)/_layout.tsx already uses for
+  // GlobalTrackingBanner's `bannerHeight` — it stays correct under font
+  // scaling/a11y text sizes without hand tuning.
+  const [controlsFooterHeight, setControlsFooterHeight] = useState(0);
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   // Stable identity so it doesn't defeat SessionHistory's own row memoization
@@ -1884,7 +1902,103 @@ export default function TimerScreen() {
           disabled={effectiveStatus === "running"}
           onChange={setReminderIntervalMinutes}
         />
+      </View>
 
+      {/* Section header for the session list below — this screen's own
+          equivalent of dw-time-web's "+ Manual Entry" button next to its
+          Recent Entries table (time-tracker-page.tsx's PageHeader actions).
+          Lives inside `hero`, so it's reused identically across every branch
+          below (loading/error/empty/populated) rather than only appearing
+          once entries exist. */}
+      <View style={styles.historyHeaderRow}>
+        <Text style={styles.historyHeaderTitle}>Recent sessions</Text>
+        <Pressable
+          style={({ pressed }) => [styles.manualEntryButton, pressed && styles.manualEntryButtonPressed]}
+          onPress={openManualEntry}
+          accessibilityRole="button"
+          accessibilityLabel="Add a manual time entry"
+        >
+          <Icon name="add" size={14} color={colors.foreground} />
+          <Text style={styles.manualEntryButtonText}>Manual Entry</Text>
+        </Pressable>
+      </View>
+    </>
+  );
+
+  // Extra bottom clearance the scrollable content needs to reserve so its
+  // last row never renders underneath the pinned footer below — the footer's
+  // own measured height, plus a little breathing room so content doesn't end
+  // flush against its top edge.
+  const footerClearance = controlsFooterHeight + spacing.lg;
+
+  return (
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      {/* flex: 1 above a fixed-height footer, NOT position: absolute — this
+          screen already has to keep exactly ONE scroll container (see
+          SessionHistory's own `ListHeaderComponent` doc for why), and a flex
+          sibling needs no extra bookkeeping to stay clear of it the way an
+          absolutely-positioned overlay would. Screen content here already
+          sits above the app's bottom tab bar (app/(app)/_layout.tsx's
+          <Tabs/> reserves that space itself — see tasks.tsx/goals.tsx's FABs
+          for the same "no extra insets.bottom needed" precedent), so this
+          footer needs no safe-area handling of its own either. */}
+      <View style={styles.contentArea}>
+        {recentQuery.isPending ? (
+          <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: footerClearance }]}>
+            {hero}
+            <View style={styles.skeletonArea}>
+              {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
+                <SkeletonListItem key={index} showLeading={false} />
+              ))}
+            </View>
+          </ScrollView>
+        ) : recentQuery.isError && !recentQuery.data ? (
+          // `isError && !data`, matching goals.tsx/tasks.tsx/schedule.tsx's own
+          // guard — without it a failed background refetch (e.g. pull-to-
+          // refresh while offline) would replace an already-loaded session
+          // list with a hard error instead of just leaving it on screen.
+          <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: footerClearance }]}>
+            {hero}
+            <QueryErrorState
+              error={recentQuery.error}
+              message="Couldn't load recent entries."
+              onRetry={() => void recentQuery.refetch()}
+            />
+          </ScrollView>
+        ) : !recentQuery.data || recentQuery.data.length === 0 ? (
+          <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: footerClearance }]}>
+            {hero}
+            <EmptyState
+              message="No sessions yet"
+              description="Just press start — logged sessions land here. Attaching a goal is optional."
+            />
+          </ScrollView>
+        ) : (
+          <SessionHistory
+            ListHeaderComponent={hero}
+            entries={recentQuery.data}
+            refreshing={recentQuery.isFetching && !recentQuery.isPending}
+            onRefresh={() => void recentQuery.refetch()}
+            onAttachGoal={openAttachPicker}
+            attachingEntryId={attachingEntryId}
+            contentBottomInset={footerClearance}
+          />
+        )}
+      </View>
+
+      {/* The pinned transport bar — see Fix 1's header note above and this
+          file's own history: Start/Pause/Resume/Stop used to be the LAST
+          child of the scrollable hero card, which on a shorter/typical
+          Android viewport put it below the fold — the user had to scroll to
+          reach Start (idle) or Pause/Stop (tracking). Pulling it out into a
+          fixed footer, sibling to the scroll container above rather than
+          part of its content, guarantees it's always visible regardless of
+          viewport height or how tall the hero card's own content gets.
+          Nothing about TimerControls itself changed — only where it renders. */}
+      <View
+        style={styles.controlsFooter}
+        onLayout={(event) => setControlsFooterHeight(event.nativeEvent.layout.height)}
+      >
         <TimerControls
           status={effectiveStatus}
           onStart={handleStart}
@@ -1893,51 +2007,8 @@ export default function TimerScreen() {
           onStop={() => void handleStop()}
         />
       </View>
-    </>
-  );
 
-  return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
-      {recentQuery.isPending ? (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          {hero}
-          <View style={styles.skeletonArea}>
-            {Array.from({ length: RECENT_SKELETON_ROWS }).map((_, index) => (
-              <SkeletonListItem key={index} showLeading={false} />
-            ))}
-          </View>
-        </ScrollView>
-      ) : recentQuery.isError && !recentQuery.data ? (
-        // `isError && !data`, matching goals.tsx/tasks.tsx/schedule.tsx's own
-        // guard — without it a failed background refetch (e.g. pull-to-
-        // refresh while offline) would replace an already-loaded session
-        // list with a hard error instead of just leaving it on screen.
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          {hero}
-          <QueryErrorState
-            error={recentQuery.error}
-            message="Couldn't load recent entries."
-            onRetry={() => void recentQuery.refetch()}
-          />
-        </ScrollView>
-      ) : !recentQuery.data || recentQuery.data.length === 0 ? (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          {hero}
-          <EmptyState
-            message="No sessions yet"
-            description="Just press start — logged sessions land here. Attaching a goal is optional."
-          />
-        </ScrollView>
-      ) : (
-        <SessionHistory
-          ListHeaderComponent={hero}
-          entries={recentQuery.data}
-          refreshing={recentQuery.isFetching && !recentQuery.isPending}
-          onRefresh={() => void recentQuery.refetch()}
-          onAttachGoal={openAttachPicker}
-          attachingEntryId={attachingEntryId}
-        />
-      )}
+      <ManualEntrySheet ref={manualEntrySheetRef} />
 
       <TrackingPicker
         visible={pickerTarget !== null}
@@ -2088,6 +2159,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  // Everything except the pinned transport footer below — flex: 1 so the
+  // footer (a fixed-height sibling) gets exactly the space it measures and
+  // this area gets the rest. See the pinned-footer comment in the return JSX.
+  contentArea: {
+    flex: 1,
+  },
   header: {
     paddingHorizontal: spacing.xl,
     // Reserves the floating menu button's column, and matches the spacing.md
@@ -2146,16 +2223,64 @@ const styles = StyleSheet.create({
   },
   /**
    * Used by the three no-history branches, which scroll a plain ScrollView
-   * rather than the session list. `paddingBottom` clears the tab bar: its
-   * centre control is a circle lifted out of the row (see
-   * components/voice/VoiceTabButton.tsx), so the bar occludes more than its
-   * own height and content ending flush at the viewport bottom would sit
-   * underneath it.
+   * rather than the session list. `paddingBottom` is supplied at each call
+   * site (`footerClearance`) — it has to reserve the pinned TimerControls
+   * footer's own measured height, which isn't a static value. It used to be
+   * a flat `spacing.huge` here to clear the tab bar's raised voice orb (see
+   * components/voice/VoiceTabButton.tsx's LIFT) — that job now belongs to
+   * `controlsFooter` below instead, which sits at the very bottom of this
+   * screen's content area (where the orb actually pokes into), so this
+   * content only needs to clear the footer itself.
    */
-  scrollContent: {
-    paddingBottom: spacing.huge,
-  },
+  scrollContent: {},
   skeletonArea: {
     paddingHorizontal: spacing.xl,
+  },
+  historyHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.sm,
+  },
+  historyHeaderTitle: {
+    ...typography.label,
+    color: colors.foreground,
+  },
+  manualEntryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xxs,
+    minHeight: minTouchTarget - spacing.md,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm + spacing.xxs,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  manualEntryButtonPressed: {
+    opacity: 0.7,
+  },
+  manualEntryButtonText: {
+    ...typography.bodySmall,
+    fontWeight: "700",
+    color: colors.foreground,
+  },
+  // The pinned transport bar — see Fix 1's return-JSX comment for why this
+  // exists at all. Matches the app tab bar's own top-border-plus-card
+  // treatment (app/(app)/_layout.tsx's tabsScreenOptions.tabBarStyle) since
+  // this sits directly above it and should read as one continuous piece of
+  // chrome, not a second, differently-styled bar. `paddingBottom` reuses the
+  // exact clearance `scrollContent` used to reserve for the tab bar's raised
+  // voice orb (see that style's own comment) — the orb pokes into THIS
+  // area now, not the scrollable content above it.
+  controlsFooter: {
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.huge,
+    backgroundColor: colors.card,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
 });

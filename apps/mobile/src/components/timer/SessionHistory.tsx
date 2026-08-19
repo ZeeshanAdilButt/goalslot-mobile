@@ -79,6 +79,15 @@ import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/toke
 const SWIPE_ACTION_WIDTH = 92;
 
 /**
+ * This list's own baseline bottom breathing room — kept as a named constant
+ * rather than read back off `styles.listContent` (StyleSheet.create's return
+ * value isn't guaranteed to still be a plain object with real numbers at
+ * runtime; RN is free to hand back an opaque registered id instead). `contentBottomInset`
+ * below adds to this rather than replacing it.
+ */
+const LIST_CONTENT_BOTTOM_PADDING = spacing.xxxl;
+
+/**
  * Delete is a custom action rather than the built-in `magicTap`/`escape`
  * vocabulary because it is genuinely app-specific, and it is declared once
  * at module scope so every memoised row shares the same array identity.
@@ -114,6 +123,15 @@ export interface SessionHistoryProps {
    * inside a ScrollView would have broken.
    */
   ListHeaderComponent?: React.ReactElement | null;
+  /**
+   * Extra bottom padding beyond this list's own `spacing.xxxl` breathing
+   * room — timer.tsx's pinned TimerControls footer (see its own header
+   * comment for why Start/Pause/Stop moved out of the hero card into a
+   * fixed bar below the scroll container) sits on top of whatever this list
+   * renders last, and this is what keeps its final row from ending up
+   * underneath it.
+   */
+  contentBottomInset?: number;
 }
 
 export function SessionHistory({
@@ -123,6 +141,7 @@ export function SessionHistory({
   onAttachGoal,
   attachingEntryId,
   ListHeaderComponent,
+  contentBottomInset = 0,
 }: SessionHistoryProps) {
   const items = useMemo(() => buildSessionItems(entries), [entries]);
 
@@ -232,7 +251,7 @@ export function SessionHistory({
         }
         refreshing={refreshing}
         onRefresh={onRefresh}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: LIST_CONTENT_BOTTOM_PADDING + contentBottomInset }]}
       />
 
       <ConfirmDialog
@@ -376,7 +395,7 @@ const SessionRow = memo(function SessionRow({
 const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xxxl,
+    paddingBottom: LIST_CONTENT_BOTTOM_PADDING,
   },
   dayHeader: {
     flexDirection: "row",
