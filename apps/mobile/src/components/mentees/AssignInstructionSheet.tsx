@@ -110,15 +110,24 @@ export const AssignInstructionSheet = forwardRef<BottomSheetModal, AssignInstruc
         // Exempt from the enableDynamicSizing={false} rule, and safe to be:
         // this sheet has exactly ONE content branch and it is a
         // `BottomSheetView` (just below), which reports its height via
-        // onLayout and so always produces detents. It can never hit the
+        // onLayout and so always produces a detent. It can never hit the
         // never-measured / never-opens failure mode that made
         // NewConversationSheet invisible — that one had plain RN Views on
-        // its loading, error and empty branches. Left on dynamic sizing
-        // deliberately rather than pinned to 55%: the form is short, and
-        // opening at its natural height (with 55% as the drag-up detent) is
-        // the current, working behaviour.
-        // eslint-disable-next-line no-restricted-syntax
-        snapPoints={["55%"]}
+        // its loading, error and empty branches.
+        //
+        // NO `snapPoints` — this used to pin a "55%" detent alongside dynamic
+        // sizing, which is exactly the bug QuickAddSheet.tsx's own header
+        // comment documents ("that new time slot is hiding under keyboard"):
+        // "55%" is a fraction of the FULL screen, which under this app's
+        // edge-to-edge Android build is also where the keyboard sits once
+        // `adjustPan` shifts the sheet up. A form with real TextInputs (the
+        // title and note fields below) needs to be sized by its content
+        // alone, exactly like QuickAddSheet and EditTaskSheet already are —
+        // see that file's comment for the full edge-to-edge/adjustPan
+        // mechanism. `BlockDetailSheet` still combines dynamic sizing with a
+        // real snapPoint safely, but it has no TextInput inside it and so
+        // never exercises this failure mode; don't use it as a precedent for
+        // a sheet that does.
         onChange={handleSheetPositionChange}
         onDismiss={reset}
         backdropComponent={renderBackdrop}
