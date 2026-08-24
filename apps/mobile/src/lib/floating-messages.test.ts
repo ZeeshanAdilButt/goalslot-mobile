@@ -4,17 +4,19 @@ const ENABLED = true;
 
 describe("shouldShowFloatingMessagesButton", () => {
   it("shows on the ordinary tab screens that have no competing FAB", () => {
-    for (const pathname of ["/timer", "/voice", "/notes"]) {
+    for (const pathname of ["/voice", "/notes"]) {
       expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(true);
     }
   });
 
-  it("hides on every screen with its own bottom-right create FAB in the identical corner", () => {
+  it("hides on every screen with its own bottom-right control in the identical corner", () => {
     // Today, Goals, Tasks and Schedule each pin their own primary "create"
     // FAB at right:spacing.xl / bottom:spacing.xxl — the exact corner this
     // button docks in. Reported by the user as "the messages icon is hiding
-    // the plus button."
-    for (const pathname of ["/", "/goals", "/tasks", "/schedule"]) {
+    // the plus button." Timer has no FAB there, but its pinned
+    // Start/Pause/Resume/Stop footer docks in the same corner once that
+    // shipped — reported as "time tracker stop and chat is overlapping".
+    for (const pathname of ["/", "/goals", "/tasks", "/schedule", "/timer"]) {
       expect(shouldShowFloatingMessagesButton(pathname, ENABLED)).toBe(false);
     }
   });
@@ -69,17 +71,17 @@ describe("shouldShowFloatingMessagesButton", () => {
 });
 
 describe("shouldShowHeaderMessagesIcon", () => {
-  it("shows on exactly the four screens the floating button gives up to a competing FAB", () => {
-    // Removing the floating button from these four also removed the only
-    // way to reach Messages from them (menu aside) — reported by the user
-    // as "the floating icon from messaging is gone" on Today.
-    for (const pathname of ["/", "/goals", "/tasks", "/schedule"]) {
+  it("shows on exactly the OWNS_THE_CORNER screens the floating button gives up to a competing control", () => {
+    // Removing the floating button from these also removed the only way to
+    // reach Messages from them (menu aside) — reported by the user as "the
+    // floating icon from messaging is gone" on Today.
+    for (const pathname of ["/", "/goals", "/tasks", "/schedule", "/timer"]) {
       expect(shouldShowHeaderMessagesIcon(pathname, ENABLED)).toBe(true);
     }
   });
 
   it("stays off everywhere else — those screens keep their existing, correct substitute", () => {
-    for (const pathname of ["/timer", "/voice", "/notes", "/journal", "/messages", "/notifications", "/mentees"]) {
+    for (const pathname of ["/voice", "/notes", "/journal", "/messages", "/notifications", "/mentees"]) {
       expect(shouldShowHeaderMessagesIcon(pathname, ENABLED)).toBe(false);
     }
   });

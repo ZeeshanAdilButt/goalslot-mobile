@@ -687,15 +687,17 @@ export default function AppLayout() {
               </View>
             ) : null}
           </Pressable>
-          {/* Today/Goals/Tasks/Schedule's own substitute for the floating
-              Messages button, which `shouldShowFloatingMessagesButton` hides
-              on exactly these four screens because it would sit on top of
-              their own create FAB (see floating-messages.ts). Without this,
-              those four screens lost Messages reachability entirely (menu
-              aside) the moment that exclusion shipped — reported by the user
-              as "the floating icon from messaging is gone." See
-              shouldShowHeaderMessagesIcon's own header for why it's scoped to
-              exactly these four and no others. */}
+          {/* OWNS_THE_CORNER screens' own substitute for the floating
+              Messages button (Today/Goals/Tasks/Schedule, and now Timer for
+              its pinned transport footer — see floating-messages.ts),
+              which `shouldShowFloatingMessagesButton` hides on exactly
+              these screens because it would sit on top of their own
+              bottom-right control. Without this, those screens lost
+              Messages reachability entirely (menu aside) the moment that
+              exclusion shipped — reported by the user as "the floating
+              icon from messaging is gone." See shouldShowHeaderMessagesIcon's
+              own header for why it's scoped to exactly OWNS_THE_CORNER and
+              no others. */}
           {shouldShowHeaderMessagesIcon(pathname, messagingEnabled) ? (
             <Pressable
               onPress={openMessages}

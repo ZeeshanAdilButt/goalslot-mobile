@@ -58,8 +58,18 @@ const TAB_BAR_HIDDEN_PREFIXES = ["/note/", "/message/", "/mentee/"] as const;
 /** Screens where a "go to Messages" button is redundant. */
 const REDUNDANT_ON = ["/messages"] as const;
 
-/** Screens whose own bottom-right FAB this button would otherwise sit on top of. */
-const OWNS_THE_CORNER = ["/", "/goals", "/tasks", "/schedule"] as const;
+/**
+ * Screens whose own bottom-right FAB this button would otherwise sit on top
+ * of. `/timer` joined the other four later than they did, and for a
+ * variant of the same shape: it has no traditional FAB, but its pinned
+ * Start/Pause/Resume/Stop footer (app/(app)/timer.tsx's `controlsFooter`)
+ * docks in the identical bottom-right corner once that footer shipped, and
+ * this button's fixed `TAB_BAR_CONTENT_HEIGHT`-relative offset has no way to
+ * know that footer is there and add its height in. Reported by the user as
+ * "time tracker stop and chat is overlapping" — the button was landing
+ * directly on Stop rather than above it.
+ */
+const OWNS_THE_CORNER = ["/", "/goals", "/tasks", "/schedule", "/timer"] as const;
 
 /**
  * Screens whose own bottom-of-scroll CONTENT (not a control) this button's
@@ -94,8 +104,8 @@ export function shouldShowFloatingMessagesButton(pathname: string, messagingEnab
  * a substitute. Reported by the user as "the floating icon from messaging
  * is gone" on Today, after the OWNS_THE_CORNER exclusion above shipped:
  * removing the collision also removed the only way to reach Messages from
- * these four screens (menus aside), which is a real regression the header
- * icon exists to close. Every other excluded screen keeps its existing,
+ * those screens (menus aside), which is a real regression the header icon
+ * exists to close. Every other excluded screen keeps its existing,
  * correct substitute: Messages itself needs no button to itself, the note/
  * message/mentee detail screens have no tab bar to dock a header column
  * above in the first place, and Journal's own content push-down problem has
