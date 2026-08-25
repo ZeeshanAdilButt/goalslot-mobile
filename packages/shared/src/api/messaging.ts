@@ -144,7 +144,7 @@ export function createMessagingServiceClient(config: MessagingServiceConfig) {
   })
 
   async function request<T>(
-    method: 'get' | 'post',
+    method: 'get' | 'post' | 'delete',
     path: string,
     options: { params?: Record<string, unknown>; data?: unknown } = {},
     // Internal: set on the single retry after a 401 so a permanently rejected
@@ -206,6 +206,26 @@ export function createMessagingServiceClient(config: MessagingServiceConfig) {
     /** 204 on success. Swallows the empty body so callers get a clean `void`. */
     markRead: async (id: string): Promise<void> => {
       await request<unknown>('post', `/conversations/${id}/read`)
+    },
+
+    /**
+     * Deletes a message for EVERYONE in the conversation. The service allows
+     * this only for the account that sent it and answers 403 otherwise, so
+     * hiding the control is a courtesy and never the check.
+     *
+     * Resolves with the tombstone - same id, empty body, a `deletedAt` -
+     * which is what replaces the original in the cache.
+     */
+    deleteMessage: (conversationId: string, messageId: string) =>
+      request<MessagingMessage>('delete', `/conversations/${conversationId}/messages/${messageId}`),
+
+    /**
+     * Deletes the conversation for the signed-in user ONLY. Everyone else
+     * keeps theirs, and anything they send afterwards brings this one back
+     * with only the new messages in it. 204 on success.
+     */
+    deleteConversation: async (conversationId: string): Promise<void> => {
+      await request<unknown>('delete', `/conversations/${conversationId}`)
     },
   }
 }

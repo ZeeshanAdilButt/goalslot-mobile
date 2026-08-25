@@ -27,14 +27,19 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   contactsByUserId,
+  DELETED_MESSAGE_TEXT,
   findCounterpart,
   isConversationUnread,
+  isDeletedMessage,
   newestServerMessage,
+  removeConversation,
+  toMessagingError,
   type MessagingConversation,
 } from "@goalslot/shared";
 
 import { Button, EmptyState, ErrorState } from "@/components";
 import { ScreenHeader } from "@/components/lists";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   ConversationListSkeleton,
   ConversationRow,
@@ -44,8 +49,10 @@ import {
 } from "@/components/messaging";
 import { useMessagingConnection } from "@/hooks/useMessagingConnection";
 import { useScreenView } from "@/hooks/useScreenView";
+import { messagingClient } from "@/lib/messaging-client";
 import { messagingEnabled, messagingLiveEnabled } from "@/lib/messaging-config";
 import { messagingQueries } from "@/lib/queries";
+import { queryClient } from "@/lib/query-client";
 import { useAuth } from "@/providers/auth-provider";
 import { colors, spacing } from "@/theme/tokens";
 import { useHiddenTabBackHandler } from "@/components/navigation/HiddenTabBackButton";
@@ -60,6 +67,11 @@ export default function MessagesScreen() {
   const connection = useMessagingConnection();
   const sheetRef = useRef<BottomSheetModal>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // The conversation whose delete is being confirmed, held whole so the
+  // dialog can name the person rather than say "this conversation".
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const conversationsQuery = useQuery({
     ...messagingQueries.conversations(),
@@ -120,6 +132,43 @@ export default function MessagesScreen() {
     sheetRef.current?.present();
   }, []);
 
+  // --- Deleting a conversation -------------------------------------------
+  //
+  // For this user only. The other person keeps theirs along with every
+  // message in it, and anything they send afterwards brings this one back
+  // with only the new messages - which is why the cached thread is dropped
+  // outright rather than kept in sync with history the service will no
+  // longer return to this user.
+  //
+  // Not optimistic: the row stays until the service confirms, so a failure
+  // is a message inside the dialog rather than a row that vanished and came
+  // back.
+
+  const requestDelete = useCallback((conversationId: string, name: string) => {
+    setDeleteError(null);
+    setPendingDelete({ id: conversationId, name });
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    const { id } = pendingDelete;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await messagingClient.deleteConversation(id);
+      queryClient.setQueryData<MessagingConversation[]>(messagingQueries.messagingQueries.conversations(), (existing) =>
+        existing ? removeConversation(existing, id) : existing,
+      );
+      queryClient.removeQueries({ queryKey: messagingQueries.messagingQueries.messages(id) });
+      queryClient.removeQueries({ queryKey: messagingQueries.messagingQueries.conversation(id) });
+      setPendingDelete(null);
+    } catch (error) {
+      setDeleteError(toMessagingError(error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [pendingDelete]);
+
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
@@ -138,10 +187,13 @@ export default function MessagesScreen() {
           currentUserId={currentUserId}
           name={(counterpartId ? contactIndex[counterpartId]?.name : undefined) ?? UNKNOWN_PERSON}
           onPress={openThread}
+          // Deleting needs the service, so offline the row stays press-only
+          // rather than offering a long press that can only fail.
+          onRequestDelete={connection.online ? requestDelete : undefined}
         />
       );
     },
-    [contactIndex, currentUserId, openThread],
+    [connection.online, contactIndex, currentUserId, openThread, requestDelete],
   );
 
   let body: React.ReactNode;
@@ -242,6 +294,26 @@ export default function MessagesScreen() {
         existingConversationsByCounterpartId={existingConversationsByCounterpartId}
         onConversationReady={openThread}
       />
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete this conversation?"
+        description={
+          pendingDelete
+            ? `It leaves your messages along with everything in it so far. ${pendingDelete.name} keeps their copy. If they message you again it comes back with only the new messages.`
+            : undefined
+        }
+        icon="trash"
+        confirmLabel="Delete for me"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          setPendingDelete(null);
+          setDeleteError(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -251,6 +323,8 @@ interface ConversationListItemProps {
   currentUserId: string;
   name: string;
   onPress: (conversationId: string) => void;
+  /** Omitted while offline; see the call site. */
+  onRequestDelete?: (conversationId: string, name: string) => void;
 }
 
 /**
@@ -280,16 +354,25 @@ const ConversationListItem = memo(function ConversationListItem({
   currentUserId,
   name,
   onPress,
+  onRequestDelete,
 }: ConversationListItemProps) {
   const cachedThread = useQuery({ ...messagingQueries.messages(conversation.id), enabled: false });
 
   const lastMessage = conversation.lastMessage ?? newestServerMessage(cachedThread.data) ?? null;
-  const preview = formatMessagePreview(
-    lastMessage?.body,
-    lastMessage?.senderId === currentUserId ? "You: " : undefined,
-  );
+  const preview = isDeletedMessage(lastMessage)
+    ? // A deleted message has an empty body, which formatMessagePreview would
+      // turn into "No messages yet" - reading as if the conversation had
+      // never been used at all.
+      DELETED_MESSAGE_TEXT
+    : formatMessagePreview(lastMessage?.body, lastMessage?.senderId === currentUserId ? "You: " : undefined);
   const conversationId = conversation.id;
   const handlePress = useCallback(() => onPress(conversationId), [onPress, conversationId]);
+  // Stabilised for the same reason handlePress is: a bare inline closure
+  // would defeat this component's own memo on every parent re-render.
+  const handleLongPress = useCallback(
+    () => onRequestDelete?.(conversationId, name),
+    [conversationId, name, onRequestDelete],
+  );
 
   return (
     <ConversationRow
@@ -298,6 +381,7 @@ const ConversationListItem = memo(function ConversationListItem({
       timestamp={lastMessage?.createdAt ?? conversation.updatedAt}
       unread={isConversationUnread(conversation, currentUserId, lastMessage)}
       onPress={handlePress}
+      onLongPress={onRequestDelete ? handleLongPress : undefined}
     />
   );
 });

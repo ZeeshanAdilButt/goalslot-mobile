@@ -86,7 +86,7 @@ export function parseIncomingMessage(raw: unknown): MessagingMessage | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const candidate = parsed as Record<string, unknown>
 
-  const { id, conversationId, senderId, body, createdAt } = candidate
+  const { id, conversationId, senderId, body, createdAt, deletedAt } = candidate
   if (
     typeof id !== 'string' ||
     typeof conversationId !== 'string' ||
@@ -97,7 +97,17 @@ export function parseIncomingMessage(raw: unknown): MessagingMessage | null {
     return null
   }
 
-  return { id, conversationId, senderId, body, createdAt }
+  return {
+    id,
+    conversationId,
+    senderId,
+    body,
+    createdAt,
+    // A deletion arrives on this same socket, as the tombstone itself.
+    // Dropping the field here would turn every pushed deletion into an
+    // ordinary message that happens to have an empty body.
+    deletedAt: typeof deletedAt === 'string' ? deletedAt : null,
+  }
 }
 
 /**

@@ -86,7 +86,23 @@ describe('parseIncomingMessage', () => {
       senderId: 'u2',
       body: 'hi',
       createdAt: '2026-08-12T10:00:00.000Z',
+      // A service that has not shipped the delete endpoints sends no such
+      // field; it has to normalise to null rather than to undefined, or
+      // `isDeletedMessage` starts depending on which service answered.
+      deletedAt: null,
     })
+  })
+
+  it('carries deletedAt through, so a pushed deletion is not read as an empty message', () => {
+    const raw = JSON.stringify({
+      id: 'm1',
+      conversationId: 'c1',
+      senderId: 'u2',
+      body: '',
+      createdAt: '2026-08-12T10:00:00.000Z',
+      deletedAt: '2026-08-12T10:05:00.000Z',
+    })
+    expect(parseIncomingMessage(raw)?.deletedAt).toBe('2026-08-12T10:05:00.000Z')
   })
 
   it('drops anything that is not a complete message rather than caching a partial bubble', () => {

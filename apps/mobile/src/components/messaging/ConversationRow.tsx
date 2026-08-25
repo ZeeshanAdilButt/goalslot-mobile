@@ -31,9 +31,22 @@ export interface ConversationRowProps {
   timestamp?: string | null;
   unread: boolean;
   onPress: () => void;
+  /**
+   * Long-press to delete the conversation for this user only. Omitted where
+   * deleting isn't available (offline), in which case the row is press-only
+   * exactly as before.
+   */
+  onLongPress?: () => void;
 }
 
-function ConversationRowComponent({ name, preview, timestamp, unread, onPress }: ConversationRowProps) {
+function ConversationRowComponent({
+  name,
+  preview,
+  timestamp,
+  unread,
+  onPress,
+  onLongPress,
+}: ConversationRowProps) {
   const time = formatConversationTimestamp(timestamp);
 
   // Reads as one sentence rather than four fragments. "Unread" leads because
@@ -50,10 +63,18 @@ function ConversationRowComponent({ name, preview, timestamp, unread, onPress }:
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint="Opens the conversation"
+      accessibilityHint={
+        onLongPress ? "Opens the conversation. Long press to delete it." : "Opens the conversation"
+      }
+      // A long press is invisible to a screen reader, so the same action is
+      // published as an accessibility action rather than left unreachable.
+      accessibilityActions={onLongPress ? [{ name: "delete", label: "Delete conversation" }] : undefined}
+      onAccessibilityAction={onLongPress}
       accessibilityState={{ selected: false }}
     >
       <Avatar name={name} />

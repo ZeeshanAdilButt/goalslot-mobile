@@ -50,6 +50,25 @@ export interface MessagingMessage {
   body: string
   /** ISO instant. Messages sort oldest-first by this. */
   createdAt: string
+  /**
+   * ISO instant the SENDER deleted this message for everyone, or null while
+   * it still stands. jiffy-messaging keeps the row and empties the body
+   * rather than removing it, so a deleted message holds its place in the
+   * thread and has to render as a tombstone, never as an empty bubble.
+   *
+   * Optional because a service older than the delete endpoints omits the
+   * field entirely. Read it through `isDeletedMessage` rather than checking
+   * it directly, so "field absent" and "explicitly null" stay the same
+   * answer.
+   */
+  deletedAt?: string | null
+}
+
+/** What a deleted message reads as, everywhere one is shown. */
+export const DELETED_MESSAGE_TEXT = 'This message was deleted'
+
+export function isDeletedMessage(message: MessagingMessage | null | undefined): boolean {
+  return !!message?.deletedAt
 }
 
 /**

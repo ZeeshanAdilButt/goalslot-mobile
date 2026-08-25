@@ -21,10 +21,17 @@
 //   3. Read state is not touched here. Marking the thread read is a
 //      deliberate act of the thread screen while it's focused — a message
 //      arriving in a background thread must stay unread.
+//   4. A DELETION arrives on this same socket, as the tombstone itself.
+//      Treating it as new activity would move the conversation to the top of
+//      the list and overwrite its preview with "this message was deleted",
+//      even when a newer message exists — so it takes a separate path that
+//      patches the row in place and never reorders.
 
 import {
+  applyMessageDeletionToConversations,
   applyMessageToConversations,
   createMessagingSocket,
+  isDeletedMessage,
   reconcileIncomingMessage,
   type MessagingConversation,
   type MessagingMessage,
@@ -74,6 +81,13 @@ function applyIncomingMessage(message: MessagingMessage): void {
 
   if (!conversations) {
     // Nothing cached yet — whoever mounts the list next will fetch it.
+    return;
+  }
+
+  // Rule 4: a deletion is not activity. Patch the previewed row if this is
+  // the message it was previewing, and leave the ordering alone either way.
+  if (isDeletedMessage(message)) {
+    queryClient.setQueryData(conversationsKey, applyMessageDeletionToConversations(conversations, message));
     return;
   }
 
