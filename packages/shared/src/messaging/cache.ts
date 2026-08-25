@@ -17,7 +17,7 @@ import type {
   MessagingThreadMessage,
   PendingMessagingMessage,
 } from '../types/messaging'
-import { isPendingMessage } from '../types/messaging'
+import { isDeletedMessage, isPendingMessage } from '../types/messaging'
 
 /** Oldest-first, matching the order the service returns history in. */
 function byCreatedAtAscending(a: MessagingThreadMessage, b: MessagingThreadMessage): number {
@@ -177,6 +177,44 @@ export function applyMessageToConversations(
 }
 
 /**
+ * Folds a message DELETION into the conversation list.
+ *
+ * Deliberately not `applyMessageToConversations`: that one is for new
+ * activity and moves the conversation to the top with a fresh preview. A
+ * deletion is not activity - it must not reorder the list, and it must only
+ * touch the preview when the deleted message IS the previewed one. Deleting
+ * a message from last week should leave today's preview alone.
+ */
+export function applyMessageDeletionToConversations(
+  conversations: MessagingConversation[],
+  message: MessagingMessage,
+): MessagingConversation[] {
+  const index = conversations.findIndex((conversation) => conversation.id === message.conversationId)
+  if (index === -1) return conversations
+
+  const target = conversations[index]
+  if (!target || target.lastMessage?.id !== message.id) return conversations
+
+  const next = [...conversations]
+  next[index] = { ...target, lastMessage: message }
+  return next
+}
+
+/**
+ * Drops a conversation the user deleted for themselves out of the list.
+ *
+ * Only their own copy: the service keeps the conversation and every message
+ * in it for everyone else, and will hand this user a fresh one the moment
+ * somebody sends something new.
+ */
+export function removeConversation(
+  conversations: MessagingConversation[],
+  conversationId: string,
+): MessagingConversation[] {
+  return conversations.filter((conversation) => conversation.id !== conversationId)
+}
+
+/**
  * Writes a local `lastReadAt` for the signed-in user so the unread dot clears
  * the instant the thread opens, rather than after the next list refetch.
  */
@@ -274,4 +312,14 @@ export function newestServerMessage(
     if (message && !isPendingMessage(message)) return message
   }
   return undefined
+}
+
+/**
+ * Whether a thread message should render as a tombstone. Re-exported shape of
+ * `isDeletedMessage` for the pending-message union, so a screen holding
+ * `MessagingThreadMessage[]` does not have to narrow first - an optimistic
+ * message is never deleted, it has not reached the server yet.
+ */
+export function isDeletedThreadMessage(message: MessagingThreadMessage): boolean {
+  return !isPendingMessage(message) && isDeletedMessage(message)
 }

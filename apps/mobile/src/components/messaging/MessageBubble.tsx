@@ -16,7 +16,12 @@
 import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { isPendingMessage, type MessagingThreadMessage } from "@goalslot/shared";
+import {
+  DELETED_MESSAGE_TEXT,
+  isDeletedThreadMessage,
+  isPendingMessage,
+  type MessagingThreadMessage,
+} from "@goalslot/shared";
 
 import { colors, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
@@ -29,6 +34,13 @@ export interface MessageBubbleProps {
   counterpartName: string;
   onRetry?: (clientId: string) => void;
   onDiscard?: (clientId: string) => void;
+  /**
+   * Long-press to delete, offered only on the user's own delivered messages:
+   * the service lets nobody else delete one, so showing it anywhere else
+   * would be a control that always fails. Omitted where deleting isn't
+   * available at all.
+   */
+  onDelete?: (messageId: string) => void;
 }
 
 const STATUS_LABEL = {
@@ -37,14 +49,25 @@ const STATUS_LABEL = {
   failed: "Not sent",
 } as const;
 
-function MessageBubbleComponent({ message, isOwn, counterpartName, onRetry, onDiscard }: MessageBubbleProps) {
+function MessageBubbleComponent({
+  message,
+  isOwn,
+  counterpartName,
+  onRetry,
+  onDiscard,
+  onDelete,
+}: MessageBubbleProps) {
   const pending = isPendingMessage(message) ? message : null;
   const time = formatMessageTime(message.createdAt);
   const statusLabel = pending ? STATUS_LABEL[pending.status] : null;
+  const deleted = isDeletedThreadMessage(message);
+  // Nothing to delete on a message still on its way to the server (it has no
+  // server id yet) or on one already deleted.
+  const canDelete = !!onDelete && isOwn && !deleted && !pending;
 
   const accessibilityLabel = [
     isOwn ? "You said:" : `${counterpartName} said:`,
-    message.body,
+    deleted ? DELETED_MESSAGE_TEXT : message.body,
     time ? `at ${time}.` : "",
     statusLabel ? `${statusLabel}.` : "",
   ]
@@ -53,20 +76,30 @@ function MessageBubbleComponent({ message, isOwn, counterpartName, onRetry, onDi
 
   return (
     <View style={[styles.row, isOwn ? styles.rowOwn : styles.rowOther]}>
-      <View
+      <Pressable
+        onLongPress={canDelete ? () => onDelete?.(message.id) : undefined}
+        delayLongPress={350}
         style={[
           styles.bubble,
-          isOwn ? styles.bubbleOwn : styles.bubbleOther,
+          deleted ? styles.bubbleDeleted : isOwn ? styles.bubbleOwn : styles.bubbleOther,
           pending?.status === "sending" && styles.bubbleSending,
           pending?.status === "failed" && styles.bubbleFailed,
         ]}
         accessible
         accessibilityLabel={accessibilityLabel}
+        // A long press is invisible to a screen reader, so the same action is
+        // published as an accessibility action rather than left unreachable.
+        accessibilityActions={canDelete ? [{ name: "delete", label: "Delete message" }] : undefined}
+        onAccessibilityAction={canDelete ? () => onDelete?.(message.id) : undefined}
+        accessibilityHint={canDelete ? "Long press to delete this message for everyone" : undefined}
       >
-        <Text style={isOwn ? styles.bodyOwn : styles.bodyOther} selectable>
-          {message.body}
+        <Text
+          style={[deleted ? styles.bodyDeleted : isOwn ? styles.bodyOwn : styles.bodyOther]}
+          selectable={!deleted}
+        >
+          {deleted ? DELETED_MESSAGE_TEXT : message.body}
         </Text>
-      </View>
+      </Pressable>
 
       <View style={styles.metaRow}>
         {time ? (
@@ -145,6 +178,12 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderBottomLeftRadius: radii.sm,
   },
+  bubbleDeleted: {
+    backgroundColor: "transparent",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: "dashed",
+    borderColor: colors.border,
+  },
   bubbleSending: {
     opacity: 0.6,
   },
@@ -159,6 +198,11 @@ const styles = StyleSheet.create({
   bodyOther: {
     ...typography.body,
     color: colors.foreground,
+  },
+  bodyDeleted: {
+    ...typography.body,
+    fontStyle: "italic",
+    color: colors.mutedForegroundLight,
   },
   metaRow: {
     flexDirection: "row",

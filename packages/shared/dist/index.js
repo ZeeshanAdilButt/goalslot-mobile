@@ -6,6 +6,10 @@ var GOAL_STATUS_OPTIONS = [
 ];
 
 // src/types/messaging.ts
+var DELETED_MESSAGE_TEXT = "This message was deleted";
+function isDeletedMessage(message) {
+  return !!message?.deletedAt;
+}
 function isPendingMessage(message) {
   return "clientId" in message;
 }
@@ -456,6 +460,18 @@ function applyMessageToConversations(conversations, message) {
   };
   return [updated, ...conversations.filter((_, i) => i !== index)];
 }
+function applyMessageDeletionToConversations(conversations, message) {
+  const index = conversations.findIndex((conversation) => conversation.id === message.conversationId);
+  if (index === -1) return conversations;
+  const target = conversations[index];
+  if (!target || target.lastMessage?.id !== message.id) return conversations;
+  const next = [...conversations];
+  next[index] = { ...target, lastMessage: message };
+  return next;
+}
+function removeConversation(conversations, conversationId) {
+  return conversations.filter((conversation) => conversation.id !== conversationId);
+}
 function applyReadReceipt(conversations, conversationId, userId, readAt) {
   return conversations.map((conversation) => {
     if (conversation.id !== conversationId) return conversation;
@@ -496,6 +512,9 @@ function newestServerMessage(messages) {
     if (message && !isPendingMessage(message)) return message;
   }
   return void 0;
+}
+function isDeletedThreadMessage(message) {
+  return !isPendingMessage(message) && isDeletedMessage(message);
 }
 
 // src/messaging/contacts.ts
@@ -564,11 +583,21 @@ function parseIncomingMessage(raw) {
   }
   if (typeof parsed !== "object" || parsed === null) return null;
   const candidate = parsed;
-  const { id, conversationId, senderId, body, createdAt } = candidate;
+  const { id, conversationId, senderId, body, createdAt, deletedAt } = candidate;
   if (typeof id !== "string" || typeof conversationId !== "string" || typeof senderId !== "string" || typeof body !== "string" || typeof createdAt !== "string") {
     return null;
   }
-  return { id, conversationId, senderId, body, createdAt };
+  return {
+    id,
+    conversationId,
+    senderId,
+    body,
+    createdAt,
+    // A deletion arrives on this same socket, as the tombstone itself.
+    // Dropping the field here would turn every pushed deletion into an
+    // ordinary message that happens to have an empty body.
+    deletedAt: typeof deletedAt === "string" ? deletedAt : null
+  };
 }
 function buildSocketUrl(wsUrl, token) {
   const withoutTrailingSlash = wsUrl.replace(/\/+$/, "");
@@ -1307,6 +1336,23 @@ function createMessagingServiceClient(config) {
     /** 204 on success. Swallows the empty body so callers get a clean `void`. */
     markRead: async (id) => {
       await request("post", `/conversations/${id}/read`);
+    },
+    /**
+     * Deletes a message for EVERYONE in the conversation. The service allows
+     * this only for the account that sent it and answers 403 otherwise, so
+     * hiding the control is a courtesy and never the check.
+     *
+     * Resolves with the tombstone - same id, empty body, a `deletedAt` -
+     * which is what replaces the original in the cache.
+     */
+    deleteMessage: (conversationId, messageId) => request("delete", `/conversations/${conversationId}/messages/${messageId}`),
+    /**
+     * Deletes the conversation for the signed-in user ONLY. Everyone else
+     * keeps theirs, and anything they send afterwards brings this one back
+     * with only the new messages in it. 204 on success.
+     */
+    deleteConversation: async (conversationId) => {
+      await request("delete", `/conversations/${conversationId}`);
     }
   };
 }
@@ -3933,6 +3979,7 @@ export {
   DAY_START_MIN,
   DEFAULT_KIND_WORDS,
   DEFAULT_PAGE_SIZE,
+  DELETED_MESSAGE_TEXT,
   GOAL_STATUS_OPTIONS,
   IDEMPOTENCY_KEY_HEADER,
   INDENTATION_WIDTH,
@@ -3943,6 +3990,7 @@ export {
   SHARED_PACKAGE_NAME,
   TARGET_KINDS,
   VOICE_INTENT_TYPES,
+  applyMessageDeletionToConversations,
   applyMessageToConversations,
   applyReadReceipt,
   buildDayAnalysisBundle,
@@ -4038,6 +4086,8 @@ export {
   isActionableVoiceIntent,
   isCoachBudgetExceededError,
   isConversationUnread,
+  isDeletedMessage,
+  isDeletedThreadMessage,
   isNamedTarget,
   isPendingMessage,
   isRetryable,
@@ -4061,6 +4111,7 @@ export {
   rankTargets,
   reconcileIncomingMessage,
   reconnectDelayMs,
+  removeConversation,
   removeConversationIndexEntry,
   removePendingMessage,
   resetLiveConversationEntry,

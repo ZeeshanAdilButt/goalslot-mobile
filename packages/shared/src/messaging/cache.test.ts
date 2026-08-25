@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { MessagingConversation, MessagingMessage, PendingMessagingMessage } from '../types/messaging'
 import {
+  applyMessageDeletionToConversations,
   applyMessageToConversations,
   applyReadReceipt,
   confirmPendingMessage,
@@ -11,6 +12,7 @@ import {
   newestServerMessage,
   oldestMessageTimestamp,
   reconcileIncomingMessage,
+  removeConversation,
   removePendingMessage,
   sortMessages,
   upsertMessage,
@@ -217,6 +219,76 @@ describe('applyMessageToConversations', () => {
   it('leaves the list untouched for an unknown conversation rather than inventing one', () => {
     const next = applyMessageToConversations(conversations, message('m1', '2026-08-12T10:00:00.000Z', { conversationId: 'unknown' }))
     expect(next).toBe(conversations)
+  })
+})
+
+describe('applyMessageDeletionToConversations', () => {
+  const previewed = message('m1', '2026-08-12T10:00:00.000Z', { conversationId: 'c2' })
+  const conversations: MessagingConversation[] = [
+    { id: 'c1', participants: [{ userId: 'u1', lastReadAt: null }] },
+    { id: 'c2', participants: [{ userId: 'u1', lastReadAt: null }], lastMessage: previewed },
+  ]
+
+  it('replaces the preview when the deleted message is the one being previewed', () => {
+    const tombstone = { ...previewed, body: '', deletedAt: '2026-08-12T11:00:00.000Z' }
+
+    const next = applyMessageDeletionToConversations(conversations, tombstone)
+
+    expect(next[1]?.lastMessage?.deletedAt).toBe('2026-08-12T11:00:00.000Z')
+  })
+
+  it('never reorders the list - a deletion is not new activity', () => {
+    const tombstone = { ...previewed, body: '', deletedAt: '2026-08-12T11:00:00.000Z' }
+
+    const next = applyMessageDeletionToConversations(conversations, tombstone)
+
+    expect(next.map((c) => c.id)).toEqual(['c1', 'c2'])
+  })
+
+  it('leaves a newer preview alone when an older message is deleted', () => {
+    const older = message('m0', '2026-08-11T10:00:00.000Z', { conversationId: 'c2' })
+    const tombstone = { ...older, body: '', deletedAt: '2026-08-12T11:00:00.000Z' }
+
+    const next = applyMessageDeletionToConversations(conversations, tombstone)
+
+    expect(next).toBe(conversations)
+  })
+
+  it('leaves the list untouched for an unknown conversation', () => {
+    const tombstone = message('m1', '2026-08-12T10:00:00.000Z', {
+      conversationId: 'unknown',
+      deletedAt: '2026-08-12T11:00:00.000Z',
+    })
+
+    expect(applyMessageDeletionToConversations(conversations, tombstone)).toBe(conversations)
+  })
+})
+
+describe('removeConversation', () => {
+  const conversations: MessagingConversation[] = [
+    { id: 'c1', participants: [{ userId: 'u1', lastReadAt: null }] },
+    { id: 'c2', participants: [{ userId: 'u1', lastReadAt: null }] },
+  ]
+
+  it('drops only the named conversation', () => {
+    expect(removeConversation(conversations, 'c1').map((c) => c.id)).toEqual(['c2'])
+  })
+
+  it('is a no-op for one that is not there', () => {
+    expect(removeConversation(conversations, 'nope').map((c) => c.id)).toEqual(['c1', 'c2'])
+  })
+})
+
+describe('upsertMessage on a tombstone', () => {
+  it('replaces the message it already holds rather than appending a second copy', () => {
+    const original = message('m1', '2026-08-12T10:00:00.000Z')
+    const tombstone = { ...original, body: '', deletedAt: '2026-08-12T11:00:00.000Z' }
+
+    const next = upsertMessage([original], tombstone)
+
+    expect(next).toHaveLength(1)
+    expect(next[0]?.body).toBe('')
+    expect((next[0] as MessagingMessage).deletedAt).toBe('2026-08-12T11:00:00.000Z')
   })
 })
 

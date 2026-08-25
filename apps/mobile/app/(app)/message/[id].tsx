@@ -43,6 +43,7 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  applyMessageDeletionToConversations,
   contactsByUserId,
   DEFAULT_PAGE_SIZE,
   findCounterpart,
@@ -50,11 +51,14 @@ import {
   mergeOlderMessages,
   applyReadReceipt,
   oldestMessageTimestamp,
+  toMessagingError,
+  upsertMessage,
   type MessagingConversation,
   type MessagingThreadMessage,
 } from "@goalslot/shared";
 
 import { EmptyState, ErrorState } from "@/components";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import {
   Avatar,
@@ -120,6 +124,11 @@ export default function MessageThreadScreen() {
 
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  // Id of the message whose delete is being confirmed, or null when none is.
+  // One dialog for the screen rather than one per bubble.
+  const [messagePendingDelete, setMessagePendingDelete] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const loadingOlderRef = useRef(false);
   const isFocusedRef = useRef(false);
 
@@ -131,6 +140,9 @@ export default function MessageThreadScreen() {
     setHasMoreHistory(true);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
+    setMessagePendingDelete(null);
+    setDeleteBusy(false);
+    setDeleteError(null);
   }, [conversationId]);
 
   // Both go through src/lib/message-thread-query.ts rather than
@@ -365,6 +377,46 @@ export default function MessageThreadScreen() {
     [hasSettled, loadOlder, onScroll],
   );
 
+  // --- Deleting a message -------------------------------------------------
+  //
+  // For EVERYONE, and only the account that sent it may do it. The service
+  // enforces that and answers 403 otherwise, so the long press being offered
+  // on your own bubbles alone is a courtesy, never the check. Deleting a
+  // whole conversation is a different thing with different semantics and
+  // lives on the list screen (long press a row).
+  //
+  // Not optimistic: the server owns both the permission and the tombstone, so
+  // painting one early would have to be unpainted on a refusal. The dialog
+  // holds its busy state until the call resolves and shows the reason inline
+  // if it fails.
+
+  const handleConfirmDeleteMessage = useCallback(async () => {
+    if (!messagePendingDelete) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      const tombstone = await messagingClient.deleteMessage(conversationId, messagePendingDelete);
+
+      // upsertMessage matches on id, so the tombstone lands on top of the
+      // original rather than beside it.
+      queryClient.setQueryData<MessagingThreadMessage[]>(
+        messagingQueries.messagingQueries.messages(conversationId),
+        (existing) => (existing ? upsertMessage(existing, tombstone) : existing),
+      );
+      queryClient.setQueryData<MessagingConversation[]>(
+        messagingQueries.messagingQueries.conversations(),
+        (existing) => (existing ? applyMessageDeletionToConversations(existing, tombstone) : existing),
+      );
+
+      setMessagePendingDelete(null);
+      AccessibilityInfo.announceForAccessibility("Message deleted");
+    } catch (error) {
+      setDeleteError(toMessagingError(error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [conversationId, messagePendingDelete]);
+
   // --- Send ---------------------------------------------------------------
 
   const handleSend = useCallback(() => {
@@ -395,6 +447,11 @@ export default function MessageThreadScreen() {
   // fresh object/function literal prop always does.
   const handleRetry = useCallback((clientId: string) => void retry(clientId), [retry]);
 
+  // Same memoisation reasoning as handleRetry above, and gated on
+  // connectivity: a delete needs the service, and offering one offline only
+  // produces a dialog that fails.
+  const handleDeleteMessage = useCallback((messageId: string) => setMessagePendingDelete(messageId), []);
+
   const renderRow = useCallback(
     ({ item }: { item: ThreadRow }) => {
       if (item.kind === "separator") {
@@ -413,10 +470,11 @@ export default function MessageThreadScreen() {
           counterpartName={counterpartName}
           onRetry={handleRetry}
           onDiscard={discard}
+          onDelete={connection.online ? handleDeleteMessage : undefined}
         />
       );
     },
-    [counterpartName, currentUserId, discard, handleRetry],
+    [connection.online, counterpartName, currentUserId, discard, handleDeleteMessage, handleRetry],
   );
 
   // `isError && !data`, not `isError` alone: this screen refetches on every
@@ -576,6 +634,22 @@ export default function MessageThreadScreen() {
           bottomInset={keyboardVisible ? 0 : insets.bottom}
         />
       </KeyboardAvoidingView>
+
+      <ConfirmDialog
+        visible={messagePendingDelete !== null}
+        title="Delete this message?"
+        description={`It will be removed for everyone in this conversation. ${counterpartName} will see that a message was deleted. This cannot be undone.`}
+        icon="trash"
+        confirmLabel="Delete for everyone"
+        destructive
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void handleConfirmDeleteMessage()}
+        onCancel={() => {
+          setMessagePendingDelete(null);
+          setDeleteError(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
