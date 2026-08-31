@@ -1650,7 +1650,7 @@ declare function createCoachApi(api: AxiosInstance): {
     clearChatHistory: (scopeKey: string) => Promise<axios.AxiosResponse<{
         success: true;
     }, any, {}, any>>;
-    applyProposals: (actions: CoachProposalAction[], sourceMessageId?: string) => Promise<axios.AxiosResponse<{
+    applyProposals: (actions: CoachProposalAction[], sourceMessageId?: string, confirmDeletions?: string[]) => Promise<axios.AxiosResponse<{
         results: CoachProposalResult[];
     }, any, {}, any>>;
     voiceIntent: (transcript: string, context: CoachVoiceIntentContext) => Promise<axios.AxiosResponse<CoachVoiceIntentResponse, any, {}, any>>;
@@ -2424,7 +2424,7 @@ declare function createApiClient(config: ApiClientConfig): {
         clearChatHistory: (scopeKey: string) => Promise<axios.AxiosResponse<{
             success: true;
         }, any, {}, any>>;
-        applyProposals: (actions: CoachProposalAction[], sourceMessageId?: string) => Promise<axios.AxiosResponse<{
+        applyProposals: (actions: CoachProposalAction[], sourceMessageId?: string, confirmDeletions?: string[]) => Promise<axios.AxiosResponse<{
             results: CoachProposalResult[];
         }, any, {}, any>>;
         voiceIntent: (transcript: string, context: CoachVoiceIntentContext) => Promise<axios.AxiosResponse<CoachVoiceIntentResponse, any, {}, any>>;

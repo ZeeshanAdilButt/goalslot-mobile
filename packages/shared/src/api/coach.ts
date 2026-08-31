@@ -247,14 +247,24 @@ export function createCoachApi(api: AxiosInstance) {
       return { ...res, data: messages }
     },
     clearChatHistory: (scopeKey: string) => api.delete<{ success: true }>(`/coach/chat/${scopeKey}`),
-    // Not called from the mobile UI yet — proposal cards render read-only
-    // for this first pass (see apps/mobile's coach screen). Included here
-    // so the API surface matches the backend contract and a future "Apply"
-    // action doesn't need a new endpoint wired up.
-    applyProposals: (actions: CoachProposalAction[], sourceMessageId?: string) =>
+    // `confirmDeletions` lists the target id of every DELETE_* action in the
+    // batch. Sending it tells the API the user was shown those exact rows and
+    // confirmed them, which is what lets a real cleanup ("delete the 15 goals
+    // that aren't linked to anything") past the destructive-batch caps: an
+    // unconfirmed batch is refused above 10 deletes, or 3 goal deletes.
+    //
+    // The API reads it strictly: send the field at all and EVERY delete in the
+    // batch must be listed, so build it from the same array being applied and
+    // omit it entirely unless every delete carries an id.
+    applyProposals: (
+      actions: CoachProposalAction[],
+      sourceMessageId?: string,
+      confirmDeletions?: string[],
+    ) =>
       api.post<{ results: CoachProposalResult[] }>('/coach/proposals/apply', {
         actions,
         ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(confirmDeletions ? { confirmDeletions } : {}),
       }),
     // Tier 2 of the voice routing pipeline — see this file's header comment
     // just above CoachVoiceIntentResponse. Plain request/response, not SSE:

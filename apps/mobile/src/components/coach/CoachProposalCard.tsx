@@ -45,6 +45,7 @@ import type {
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { describeNoteTitlePreflight } from "@/components/coach/note-title-preflight";
+import { confirmedDeleteIds, isDestructiveAction } from "@/components/coach/confirmed-delete-ids";
 import { goalQueries, noteQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 
@@ -77,13 +78,6 @@ const ACTION_LABELS: Record<CoachProposalActionType, string> = {
   APPEND_NOTE_CONTENT: "Add to page",
 };
 
-const DESTRUCTIVE_TYPES = new Set<CoachProposalActionType>([
-  "DELETE_GOAL",
-  "DELETE_SCHEDULE_BLOCK",
-  "DELETE_TIME_ENTRY",
-  "DELETE_TASK",
-]);
-
 /**
  * How many action rows are shown before the list folds. Four is what fits
  * above the fold on the shortest phone this app supports while still leaving
@@ -95,8 +89,9 @@ const COLLAPSED_ACTION_LIMIT = 4;
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 export function isDestructiveProposal(block: CoachProposalBlock): boolean {
-  return block.actions.some((action) => DESTRUCTIVE_TYPES.has(action.type));
+  return block.actions.some((action) => isDestructiveAction(action.type));
 }
+
 
 function readString(payload: Record<string, unknown>, key: string): string | null {
   const value = payload[key];
@@ -360,7 +355,7 @@ function describeProposalAction(
 
 /** One line naming everything a destructive batch will remove. */
 function describeDeletions(block: CoachProposalBlock, lookups: ProposalCacheLookups): string {
-  const deletions = block.actions.filter((action) => DESTRUCTIVE_TYPES.has(action.type));
+  const deletions = block.actions.filter((action) => isDestructiveAction(action.type));
   const named = deletions
     .map((action) => describeProposalAction(action, lookups, block.actions))
     .filter((description): description is string => description !== null);
@@ -376,7 +371,7 @@ export interface CoachProposalCardProps {
    * offline case, and anywhere there is no live conversation to apply
    * against.
    */
-  onApply?: (actions: CoachProposalAction[]) => Promise<string>;
+  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string>;
   /** Dismisses without applying. Omit to hide the dismiss control. */
   onDismiss?: () => void;
 }
@@ -457,7 +452,7 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
     if (onApply === undefined) return;
     setState({ phase: "applying" });
     try {
-      const message = await onApply(block.actions);
+      const message = await onApply(block.actions, confirmedDeleteIds(block.actions));
       setState({ phase: "applied", message });
     } catch (err) {
       setState({
@@ -531,7 +526,7 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
         <ActionRow
           key={`${action.type}-${index}`}
           action={action}
-          destructive={DESTRUCTIVE_TYPES.has(action.type)}
+          destructive={isDestructiveAction(action.type)}
           lookups={lookups}
           allActions={block.actions}
         />
