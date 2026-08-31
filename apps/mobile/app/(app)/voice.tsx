@@ -1124,8 +1124,8 @@ export default function VoiceScreen() {
    * copy alongside the card's ephemeral one.
    */
   const applyForTurn = useCallback(
-    async (turnId: number, actions: CoachProposalAction[]) => {
-      const message = await apply({ actions });
+    async (turnId: number, actions: CoachProposalAction[], confirmDeletions?: string[]) => {
+      const message = await apply({ actions, confirmDeletions });
       setAppliedNotices((current) => new Map(current).set(turnId, message));
       setProposalNotice(message);
       return message;
@@ -1282,7 +1282,9 @@ export default function VoiceScreen() {
           return { block, index, onDismiss };
         });
       const onApply =
-        applyHandlers.get(turn.id) ?? ((actions: CoachProposalAction[]) => applyForTurn(turn.id, actions));
+        applyHandlers.get(turn.id) ??
+        ((actions: CoachProposalAction[], confirmDeletions?: string[]) =>
+          applyForTurn(turn.id, actions, confirmDeletions));
       nextApplyHandlers.set(turn.id, onApply);
       const appliedNotice = appliedNotices.get(turn.id) ?? null;
       // The ONE place the turn's body is decided — see voice-turn-body.ts

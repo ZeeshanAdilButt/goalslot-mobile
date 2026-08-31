@@ -193,7 +193,7 @@ const ChatBubble = memo(function ChatBubble({
 }: {
   message: ChatMessageView;
   /** Omitted while a reply is still streaming — half a proposal isn't a proposal. */
-  onApply?: (actions: CoachProposalAction[]) => Promise<string>;
+  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string>;
   /**
    * The user message this reply answered, so a reply whose proposal couldn't
    * be prepared can offer to re-ask it. A plain string (not a closure) so the
@@ -344,7 +344,7 @@ export default function CoachScreen() {
   const historySheetRef = useRef<CoachHistorySheetRef>(null);
 
   const applyActions = useCallback(
-    (actions: CoachProposalAction[]) => apply({ actions }),
+    (actions: CoachProposalAction[], confirmDeletions?: string[]) => apply({ actions, confirmDeletions }),
     [apply],
   );
 

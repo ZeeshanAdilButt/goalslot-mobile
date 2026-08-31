@@ -32,6 +32,17 @@ export interface ApplyProposalsInput {
   actions: CoachProposalAction[];
   /** The assistant message the proposal came from, when there is one. */
   sourceMessageId?: string;
+  /**
+   * Target id of every DELETE_* action in `actions`, when the user has been
+   * shown those exact rows and confirmed them. Without it the API falls back
+   * to blast-radius caps and refuses a batch above 10 deletes, or 3 goal
+   * deletes, which is what a real "delete everything not linked to anything"
+   * cleanup routinely exceeds.
+   *
+   * Strict on the server: supplying it at all means every delete in the batch
+   * must be named. The caller omits it rather than sending a partial list.
+   */
+  confirmDeletions?: string[];
 }
 
 /**
@@ -100,8 +111,8 @@ export function useApplyCoachProposals(): UseApplyCoachProposalsResult {
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useMutation({
-    mutationFn: async ({ actions, sourceMessageId }: ApplyProposalsInput) => {
-      const response = await apiClient.coach.applyProposals(actions, sourceMessageId);
+    mutationFn: async ({ actions, sourceMessageId, confirmDeletions }: ApplyProposalsInput) => {
+      const response = await apiClient.coach.applyProposals(actions, sourceMessageId, confirmDeletions);
       return response.data.results ?? [];
     },
   });
