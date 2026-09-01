@@ -18,6 +18,7 @@
 
 import { forwardRef, useCallback, useEffect, useMemo, useRef } from "react";
 import { NativeScrollEvent, NativeSyntheticEvent, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import * as Haptics from "expo-haptics";
 
 import { colors, radii, spacing, typography } from "@/theme";
@@ -151,28 +152,57 @@ const Wheel = forwardRef<ScrollView, WheelProps>(function Wheel({ items, selecte
     [items.length, onSettle],
   );
 
+  // Registers this ScrollView with react-native-gesture-handler so the wheel
+  // can hold on to a drag that started on it. Without this, every wheel is
+  // dead on ANDROID whenever the picker sits inside a @gorhom/bottom-sheet
+  // sheet — which today is every call site (ScheduleBlockSheet's start/end
+  // time, ManualEntrySheet's start time). The sheet wraps its content in an
+  // RNGH Pan and its BottomSheetScrollView in an RNGH Native gesture; a plain
+  // RN ScrollView takes part in none of that, so RNGH hands the touch to the
+  // enclosing scrollable and the drag scrolls the form past the picker
+  // instead of turning the wheel — exactly the reported "can't move anything
+  // for time". Reproduced on a Pixel 6 emulator and fixed there.
+  //
+  // `disallowInterruption` is the load-bearing part, not the GestureDetector
+  // on its own (verified by removing it: the form scrolls again). On Android
+  // it makes NativeViewGestureHandler.shouldBeCancelledBy return false, so
+  // once the drag has activated on this wheel nothing above it can take the
+  // touch away for the rest of the gesture. It only ever applies to a real
+  // drag: a touch that never crosses the scroll slop never activates, so taps
+  // still fall through to the sheet, the sheet still drags and dismisses from
+  // anywhere else in the form, and the form still scrolls normally.
+  //
+  // iOS reaches the wheel either way (checked on the simulator before and
+  // after), so this is an Android fix that iOS is simply indifferent to —
+  // there is no platform branch to maintain, and nothing here depends on
+  // being inside a sheet, so a TimePicker dropped into a plain screen keeps
+  // working unchanged.
+  const wheelGesture = useMemo(() => Gesture.Native().disallowInterruption(true), []);
+
   return (
-    <ScrollView
-      ref={ref}
-      style={[styles.wheel, narrow && styles.wheelNarrow]}
-      showsVerticalScrollIndicator={false}
-      snapToInterval={ITEM_HEIGHT}
-      decelerationRate="fast"
-      onMomentumScrollEnd={handleMomentumEnd}
-      // Android doesn't always fire onMomentumScrollEnd for a slow drag that
-      // stops without any fling — onScrollEndDrag covers that case too.
-      onScrollEndDrag={handleMomentumEnd}
-    >
-      {padded.map((label, i) => {
-        const itemIndex = i - PAD_COUNT;
-        const isSelected = itemIndex === selectedIndex;
-        return (
-          <View key={i} style={styles.item}>
-            <Text style={[styles.itemText, isSelected && styles.itemTextSelected]}>{label}</Text>
-          </View>
-        );
-      })}
-    </ScrollView>
+    <GestureDetector gesture={wheelGesture}>
+      <ScrollView
+        ref={ref}
+        style={[styles.wheel, narrow && styles.wheelNarrow]}
+        showsVerticalScrollIndicator={false}
+        snapToInterval={ITEM_HEIGHT}
+        decelerationRate="fast"
+        onMomentumScrollEnd={handleMomentumEnd}
+        // Android doesn't always fire onMomentumScrollEnd for a slow drag that
+        // stops without any fling — onScrollEndDrag covers that case too.
+        onScrollEndDrag={handleMomentumEnd}
+      >
+        {padded.map((label, i) => {
+          const itemIndex = i - PAD_COUNT;
+          const isSelected = itemIndex === selectedIndex;
+          return (
+            <View key={i} style={styles.item}>
+              <Text style={[styles.itemText, isSelected && styles.itemTextSelected]}>{label}</Text>
+            </View>
+          );
+        })}
+      </ScrollView>
+    </GestureDetector>
   );
 });
 
