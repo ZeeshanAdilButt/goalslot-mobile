@@ -136,6 +136,8 @@ interface ProposalCacheLookups {
   scheduleBlockTitle: (id: string) => string | null;
   /** Day and times too, for grouping a proposal into one row per change. */
   scheduleBlock: (id: string) => ScheduleBlock | null;
+  /** Every cached block in one recurring series, for a series-scoped update. */
+  seriesBlocks: (seriesId: string) => ScheduleBlock[];
   timeEntry: (id: string) => TimeEntry | null;
   /**
    * Every page title this app has already fetched. Unlike the id lookups
@@ -187,6 +189,11 @@ function buildProposalCacheLookups(queryClient: QueryClient): ProposalCacheLooku
     taskName: (id) => findInCachedLists(taskLists, (t) => t.id === id)?.title ?? null,
     scheduleBlockTitle: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id)?.title ?? null,
     scheduleBlock: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id),
+    // The first cached list that has the series, not every list: two cached
+    // week queries hold the same blocks, and merging them would double days.
+    seriesBlocks: (seriesId) =>
+      scheduleBlockLists.map((list) => (list ?? []).filter((b) => b.seriesId === seriesId)).find((hits) => hits.length > 0) ??
+      [],
     timeEntry: (id) => findInCachedLists(timeEntryLists, (e) => e.id === id),
   };
 }
@@ -494,7 +501,11 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
   // One row per change, not per action (see proposal-rows.ts): seven
   // per-day renames are one row, a split is one row. Counts and the collapse
   // limit are in rows, which is what the user actually reads.
-  const rows = buildProposalRows(block.actions, (id) => lookups.scheduleBlock(id) ?? undefined);
+  const rows = buildProposalRows(
+    block.actions,
+    (id) => lookups.scheduleBlock(id) ?? undefined,
+    (seriesId) => lookups.seriesBlocks(seriesId),
+  );
   const actionCount = rows.length;
   const hidden = Math.max(0, actionCount - COLLAPSED_ACTION_LIMIT);
   const visibleRows = expanded ? rows : rows.slice(0, COLLAPSED_ACTION_LIMIT);
