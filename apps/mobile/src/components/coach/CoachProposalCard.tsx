@@ -48,6 +48,7 @@ import { describeNoteTitlePreflight } from "@/components/coach/note-title-prefli
 import { confirmedDeleteIds, isDestructiveAction } from "@/components/coach/confirmed-delete-ids";
 import { goalQueries, noteQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
+import type { ApplyFeedback } from "@/hooks/useApplyCoachProposals";
 
 /** Human label per action type. Kept exhaustive by the Record's key type. */
 const ACTION_LABELS: Record<CoachProposalActionType, string> = {
@@ -371,7 +372,7 @@ export interface CoachProposalCardProps {
    * offline case, and anywhere there is no live conversation to apply
    * against.
    */
-  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string>;
+  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string | ApplyFeedback>;
   /** Dismisses without applying. Omit to hide the dismiss control. */
   onDismiss?: () => void;
 }
@@ -379,7 +380,7 @@ export interface CoachProposalCardProps {
 type CardState =
   | { phase: "idle" }
   | { phase: "applying" }
-  | { phase: "applied"; message: string }
+  | { phase: "applied"; message: string; partial: boolean; details: string[] }
   | { phase: "failed"; message: string };
 
 interface ActionRowProps {
@@ -452,8 +453,12 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
     if (onApply === undefined) return;
     setState({ phase: "applying" });
     try {
-      const message = await onApply(block.actions, confirmedDeleteIds(block.actions));
-      setState({ phase: "applied", message });
+      const outcome = await onApply(block.actions, confirmedDeleteIds(block.actions));
+      setState(
+        typeof outcome === "string"
+          ? { phase: "applied", message: outcome, partial: false, details: [] }
+          : { phase: "applied", ...outcome },
+      );
     } catch (err) {
       setState({
         phase: "failed",
@@ -475,6 +480,10 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
 
   const applying = state.phase === "applying";
   const applied = state.phase === "applied";
+  // Something landed but not everything did. Never dressed as a clean
+  // "Applied" with a green check: that is what told the original reporter a
+  // replacement had worked when both new blocks had failed.
+  const partial = state.phase === "applied" && state.partial;
   const actionCount = block.actions.length;
   const hidden = Math.max(0, actionCount - COLLAPSED_ACTION_LIMIT);
   const visibleActions = expanded ? block.actions : block.actions.slice(0, COLLAPSED_ACTION_LIMIT);
@@ -494,9 +503,11 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
       >
         <View style={styles.headerTop}>
           <View style={[styles.eyebrow, applied && styles.eyebrowApplied]}>
-            {applied ? <Icon name="check" size={iconSize.xs} color={colors.success} /> : null}
+            {applied ? (
+              <Icon name={partial ? "alert" : "check"} size={iconSize.xs} color={partial ? colors.warning : colors.success} />
+            ) : null}
             <Text style={[styles.eyebrowText, applied && styles.eyebrowTextApplied]} numberOfLines={1}>
-              {applied ? "Applied" : "Proposed change"}
+              {partial ? "Partly applied" : applied ? "Applied" : "Proposed change"}
             </Text>
           </View>
           {/* flexShrink:0 keeps the count from being squeezed to nothing by a
@@ -550,9 +561,20 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
       ) : null}
 
       {state.phase === "applied" ? (
-        <View style={styles.resultRow} accessibilityLiveRegion="polite">
-          <Icon name="check" size={iconSize.sm} color={colors.success} />
-          <Text style={styles.resultText}>{state.message}</Text>
+        <View accessibilityLiveRegion="polite">
+          <View style={styles.resultRow}>
+            <Icon
+              name={state.partial ? "alert" : "check"}
+              size={iconSize.sm}
+              color={state.partial ? colors.warning : colors.success}
+            />
+            <Text style={styles.resultText}>{state.message}</Text>
+          </View>
+          {state.details.map((line, i) => (
+            <Text key={i} style={[styles.actionWarning, styles.resultDetail]} numberOfLines={4}>
+              {line}
+            </Text>
+          ))}
         </View>
       ) : null}
 
@@ -821,6 +843,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  resultDetail: {
+    marginTop: 0,
+    marginBottom: spacing.xs,
+    marginHorizontal: spacing.md,
   },
   resultText: {
     ...typography.bodySmall,

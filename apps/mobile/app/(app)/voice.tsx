@@ -70,7 +70,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
-import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
+import { useApplyCoachProposals, type ApplyFeedback } from "@/hooks/useApplyCoachProposals";
 import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
@@ -1125,10 +1125,10 @@ export default function VoiceScreen() {
    */
   const applyForTurn = useCallback(
     async (turnId: number, actions: CoachProposalAction[], confirmDeletions?: string[]) => {
-      const message = await apply({ actions, confirmDeletions });
-      setAppliedNotices((current) => new Map(current).set(turnId, message));
-      setProposalNotice(message);
-      return message;
+      const feedback = await apply({ actions, confirmDeletions });
+      setAppliedNotices((current) => new Map(current).set(turnId, feedback.message));
+      setProposalNotice(feedback.message);
+      return feedback;
     },
     [apply],
   );
@@ -1255,7 +1255,7 @@ export default function VoiceScreen() {
   // Same caching rule, one per turn rather than one per card: the apply
   // handler now closes over the turn's id (see `applyForTurn`), so it can no
   // longer be the single shared `applyActions` every card used to get.
-  const applyHandlersRef = useRef(new Map<number, (actions: CoachProposalAction[]) => Promise<string>>());
+  const applyHandlersRef = useRef(new Map<number, (actions: CoachProposalAction[]) => Promise<ApplyFeedback>>());
 
   // Every turn, parsed once per render — each carries its own reply text,
   // so a turn already on screen from an earlier command never re-parses
@@ -1266,7 +1266,7 @@ export default function VoiceScreen() {
     const dismissHandlers = dismissHandlersRef.current;
     const nextDismissHandlers = new Map<string, () => void>();
     const applyHandlers = applyHandlersRef.current;
-    const nextApplyHandlers = new Map<number, (actions: CoachProposalAction[]) => Promise<string>>();
+    const nextApplyHandlers = new Map<number, (actions: CoachProposalAction[]) => Promise<ApplyFeedback>>();
     const result = history.map((turn) => {
       const cached = cache.get(turn.id);
       const parsed = cached && cached.reply === turn.reply ? cached.parsed : extractCoachProposals(turn.reply);
