@@ -49,6 +49,7 @@ import { confirmedDeleteIds, isDestructiveAction } from "@/components/coach/conf
 import { goalQueries, noteQueries, scheduleQueries, taskQueries, timeEntryQueries } from "@/lib/queries";
 import { colors, iconSize, minTouchTarget, radii, spacing, typography } from "@/theme/tokens";
 import type { ApplyFeedback } from "@/hooks/useApplyCoachProposals";
+import { buildProposalRows, type ProposalRow } from "@/components/coach/proposal-rows";
 
 /** Human label per action type. Kept exhaustive by the Record's key type. */
 const ACTION_LABELS: Record<CoachProposalActionType, string> = {
@@ -133,6 +134,8 @@ interface ProposalCacheLookups {
   goalName: (id: string) => string | null;
   taskName: (id: string) => string | null;
   scheduleBlockTitle: (id: string) => string | null;
+  /** Day and times too, for grouping a proposal into one row per change. */
+  scheduleBlock: (id: string) => ScheduleBlock | null;
   timeEntry: (id: string) => TimeEntry | null;
   /**
    * Every page title this app has already fetched. Unlike the id lookups
@@ -183,6 +186,7 @@ function buildProposalCacheLookups(queryClient: QueryClient): ProposalCacheLooku
     goalName: (id) => findInCachedLists(goalLists, (g) => g.id === id)?.title ?? null,
     taskName: (id) => findInCachedLists(taskLists, (t) => t.id === id)?.title ?? null,
     scheduleBlockTitle: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id)?.title ?? null,
+    scheduleBlock: (id) => findInCachedLists(scheduleBlockLists, (b) => b.id === id),
     timeEntry: (id) => findInCachedLists(timeEntryLists, (e) => e.id === id),
   };
 }
@@ -385,13 +389,16 @@ type CardState =
 
 interface ActionRowProps {
   action: CoachProposalAction;
+  /** The grouped row this action leads; its `line` replaces the per-action description. */
+  row?: ProposalRow;
   destructive: boolean;
   lookups: ProposalCacheLookups;
   allActions: readonly CoachProposalAction[];
 }
 
-function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps) {
-  const detail = describeProposalAction(action, lookups, allActions);
+function ActionRow({ action, row, destructive, lookups, allActions }: ActionRowProps) {
+  const detail = row?.line ?? describeProposalAction(action, lookups, allActions);
+  const label = row?.verb === "restructure" ? "Restructure block" : (ACTION_LABELS[action.type] ?? action.type);
   // Only the note append can name a target that doesn't exist — it's the one
   // action whose payload is a guessed title rather than a resolved id.
   const notePreflight =
@@ -409,10 +416,10 @@ function ActionRow({ action, destructive, lookups, allActions }: ActionRowProps)
           style={[styles.actionLabel, destructive && styles.actionLabelDestructive]}
           numberOfLines={1}
         >
-          {ACTION_LABELS[action.type] ?? action.type}
+          {label}
         </Text>
         {detail !== null ? (
-          <Text style={styles.actionDetail} numberOfLines={3} ellipsizeMode="tail">
+          <Text style={styles.actionDetail} numberOfLines={row?.line ? 5 : 3} ellipsizeMode="tail">
             {detail}
           </Text>
         ) : null}
@@ -484,9 +491,13 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
   // "Applied" with a green check: that is what told the original reporter a
   // replacement had worked when both new blocks had failed.
   const partial = state.phase === "applied" && state.partial;
-  const actionCount = block.actions.length;
+  // One row per change, not per action (see proposal-rows.ts): seven
+  // per-day renames are one row, a split is one row. Counts and the collapse
+  // limit are in rows, which is what the user actually reads.
+  const rows = buildProposalRows(block.actions, (id) => lookups.scheduleBlock(id) ?? undefined);
+  const actionCount = rows.length;
   const hidden = Math.max(0, actionCount - COLLAPSED_ACTION_LIMIT);
-  const visibleActions = expanded ? block.actions : block.actions.slice(0, COLLAPSED_ACTION_LIMIT);
+  const visibleRows = expanded ? rows : rows.slice(0, COLLAPSED_ACTION_LIMIT);
   const countLabel = `${actionCount} ${actionCount === 1 ? "change" : "changes"}`;
   const summaryForScreenReader = `Proposed change. ${block.summary ?? ""} ${countLabel}.${
     destructive ? " Includes a deletion." : ""
@@ -533,11 +544,12 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
         ) : null}
       </View>
 
-      {visibleActions.map((action, index) => (
+      {visibleRows.map((row) => (
         <ActionRow
-          key={`${action.type}-${index}`}
-          action={action}
-          destructive={isDestructiveAction(action.type)}
+          key={row.indices.join("-")}
+          action={block.actions[row.indices[0]]}
+          row={row}
+          destructive={row.indices.some((k) => isDestructiveAction(block.actions[k].type))}
           lookups={lookups}
           allActions={block.actions}
         />
