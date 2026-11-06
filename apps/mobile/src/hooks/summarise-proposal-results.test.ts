@@ -1,6 +1,8 @@
 jest.mock("@/lib/api-client", () => ({ apiClient: {} }));
 jest.mock("@/lib/query-client", () => ({ queryClient: { invalidateQueries: jest.fn() } }));
 
+import type { CoachProposalResult } from "@goalslot/shared";
+
 import { summariseProposalResults } from "./useApplyCoachProposals";
 
 describe("summariseProposalResults", () => {
@@ -70,5 +72,32 @@ describe("summariseProposalResults", () => {
       { index: 0, type: "DELETE_SCHEDULE_BLOCK", ok: true, alreadyDone: true, warning: "Already deleted earlier." },
     ]);
     expect(s.partial).toBe(false);
+  });
+});
+
+describe("summariseProposalResults with the card's rows", () => {
+  const rename = (index: number, ok = true): CoachProposalResult => ({ index, type: "UPDATE_SCHEDULE_BLOCK", ok });
+
+  it("counts seven per-day renames shown as one row as one change", () => {
+    const results = [0, 1, 2, 3, 4, 5, 6].map((i) => rename(i));
+    expect(summariseProposalResults(results, [[0, 1, 2, 3, 4, 5, 6]]).message).toBe("Change applied");
+  });
+
+  it("counts rows on a partial apply, a row with any failure counting as failed", () => {
+    const results = [rename(0), rename(1, false), rename(2)];
+    const s = summariseProposalResults(results, [[0, 1], [2]]);
+    expect(s.message).toBe("1 of 2 changes applied. 1 couldn't be.");
+    // Still "something landed": the hook must not report this as nothing applied.
+    expect(s.applied).toBe(2);
+  });
+
+  it("lists a reason once even when every action in a row failed for it", () => {
+    const results = [0, 1, 2].map((i) => ({ ...rename(i, false), label: 'Rename "Community Time"', error: "conflict" }));
+    expect(summariseProposalResults(results, [[0, 1, 2]]).details).toEqual(['Rename "Community Time": conflict']);
+  });
+
+  it("ignores rows the user did not send", () => {
+    const s = summariseProposalResults([rename(0)], [[0], [1, 2]]);
+    expect(s.message).toBe("Change applied");
   });
 });
