@@ -45,29 +45,72 @@ export interface ApplyProposalsInput {
   confirmDeletions?: string[];
 }
 
+/** What the card shows once an apply has landed at least in part. */
+export interface ApplyFeedback {
+  message: string;
+  /** True when something failed or was only partly done: never shown as a clean "Applied". */
+  partial: boolean;
+  /** One line per action that failed or carries a caveat, with the server's reason. */
+  details: string[];
+}
+
+const NOT_ATTEMPTED = /^Not applied, because/;
+
+function describeResult(result: CoachProposalResult): string {
+  const what = result.label ?? "A change";
+  if (result.ok) return `${what}: ${result.warning ?? "done"}`;
+  return `${what}: ${result.error ?? "failed"}`;
+}
+
 /**
- * A batch can succeed in part — the server applies what it can rather than
- * rolling the lot back. Saying "3 of 4 changes applied" is the honest
- * report; a bare "failed" would send the user to undo work that landed.
+ * A batch can succeed in part. Saying exactly which changes did not land,
+ * and why, is the honest report; a bare count (or a green "Applied") sent the
+ * user to the Schedule tab to find out what was missing, and a "Done" card
+ * after failed creates is how the original bug report started.
+ *
+ * A refused batch (the API wrote nothing) and a batch where every action
+ * failed both count as "nothing applied", and the most specific reason is
+ * picked, not the "not attempted because another change failed" filler.
  */
 export function summariseProposalResults(results: readonly CoachProposalResult[]): {
   applied: number;
   failed: CoachProposalResult[];
   message: string;
+  partial: boolean;
+  details: string[];
 } {
   const failed = results.filter((result) => !result.ok);
   const applied = results.length - failed.length;
+  const caveats = results.filter((result) => result.ok && result.warning && !result.alreadyDone);
+  const details = [...failed.filter((r) => !NOT_ATTEMPTED.test(r.error ?? "")), ...caveats].map(describeResult);
 
   if (failed.length === 0) {
-    return { applied, failed, message: applied === 1 ? "Change applied" : `${applied} changes applied` };
+    const base = applied === 1 ? "Change applied" : `${applied} changes applied`;
+    return {
+      applied,
+      failed,
+      partial: caveats.length > 0,
+      details,
+      message: caveats.length > 0 ? `${base}, with ${caveats.length === 1 ? "a caveat" : "caveats"}.` : base,
+    };
   }
   if (applied === 0) {
-    const first = failed[0]?.error;
-    return { applied, failed, message: first ? `Couldn't apply that: ${first}` : "Couldn't apply that change." };
+    const reason = failed.find((r) => r.error && !NOT_ATTEMPTED.test(r.error)) ?? failed[0];
+    const nothing = failed.some((r) => r.skipped) ? "Nothing was changed. " : "";
+    const what = reason?.label ? `${reason.label}: ` : "";
+    return {
+      applied,
+      failed,
+      partial: true,
+      details,
+      message: reason?.error ? `${nothing}${what}${reason.error}` : "Couldn't apply that change.",
+    };
   }
   return {
     applied,
     failed,
+    partial: true,
+    details,
     message: `${applied} of ${results.length} changes applied. ${failed.length} couldn't be.`,
   };
 }
@@ -101,7 +144,7 @@ function invalidateEverythingAProposalCanTouch(): void {
 }
 
 export interface UseApplyCoachProposalsResult {
-  apply: (input: ApplyProposalsInput) => Promise<string>;
+  apply: (input: ApplyProposalsInput) => Promise<ApplyFeedback>;
   isApplying: boolean;
   /** Set when the most recent apply failed outright. Cleared on the next attempt. */
   error: string | null;
@@ -130,7 +173,7 @@ export function useApplyCoachProposals(): UseApplyCoachProposalsResult {
           setError(summary.message);
           throw new Error(summary.message);
         }
-        return summary.message;
+        return { message: summary.message, partial: summary.partial, details: summary.details };
       } catch (err) {
         const message = getErrorMessage(err, "Couldn't apply that change. Please try again.");
         setError(message);

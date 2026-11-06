@@ -82,7 +82,7 @@ import { FormattedText, toPlainText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { MicOrb } from "@/components/voice/MicOrb";
-import { useApplyCoachProposals } from "@/hooks/useApplyCoachProposals";
+import { useApplyCoachProposals, type ApplyFeedback } from "@/hooks/useApplyCoachProposals";
 import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
@@ -193,7 +193,11 @@ const ChatBubble = memo(function ChatBubble({
 }: {
   message: ChatMessageView;
   /** Omitted while a reply is still streaming — half a proposal isn't a proposal. */
-  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string>;
+  onApply?: (
+    actions: CoachProposalAction[],
+    confirmDeletions?: string[],
+    sourceMessageId?: string,
+  ) => Promise<ApplyFeedback>;
   /**
    * The user message this reply answered, so a reply whose proposal couldn't
    * be prepared can offer to re-ask it. A plain string (not a closure) so the
@@ -209,6 +213,18 @@ const ChatBubble = memo(function ChatBubble({
   // this is metadata, present but visually subordinate, not a second line of
   // content competing with the message.
   const time = message.createdAt ? formatMessageTime(message.createdAt) : "";
+  // Tags the apply with this assistant message, so the API can record what
+  // happened against it and the Coach reads that back on its next turn ("it
+  // failed, fix it" then works from the real failure, not a fresh guess).
+  const messageId = message.id;
+  const applyThisMessage = useMemo(
+    () =>
+      onApply
+        ? (actions: CoachProposalAction[], confirmDeletions?: string[]) =>
+            onApply(actions, confirmDeletions, messageId)
+        : undefined,
+    [onApply, messageId],
+  );
 
   if (isUser) {
     return (
@@ -313,7 +329,7 @@ const ChatBubble = memo(function ChatBubble({
       ) : null}
       {proposals.map((block, idx) => (
         <View key={idx} style={styles.proposalSlot}>
-          <CoachProposalCard block={block} onApply={onApply} />
+          <CoachProposalCard block={block} onApply={applyThisMessage} />
         </View>
       ))}
     </View>
@@ -344,7 +360,8 @@ export default function CoachScreen() {
   const historySheetRef = useRef<CoachHistorySheetRef>(null);
 
   const applyActions = useCallback(
-    (actions: CoachProposalAction[], confirmDeletions?: string[]) => apply({ actions, confirmDeletions }),
+    (actions: CoachProposalAction[], confirmDeletions?: string[], sourceMessageId?: string) =>
+      apply({ actions, confirmDeletions, sourceMessageId }),
     [apply],
   );
 
