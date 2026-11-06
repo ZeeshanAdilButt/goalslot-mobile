@@ -197,6 +197,7 @@ const ChatBubble = memo(function ChatBubble({
     actions: CoachProposalAction[],
     confirmDeletions?: string[],
     sourceMessageId?: string,
+    rows?: number[][],
   ) => Promise<ApplyFeedback>;
   /**
    * The user message this reply answered, so a reply whose proposal couldn't
@@ -220,8 +221,8 @@ const ChatBubble = memo(function ChatBubble({
   const applyThisMessage = useMemo(
     () =>
       onApply
-        ? (actions: CoachProposalAction[], confirmDeletions?: string[]) =>
-            onApply(actions, confirmDeletions, messageId)
+        ? (actions: CoachProposalAction[], confirmDeletions?: string[], rows?: number[][]) =>
+            onApply(actions, confirmDeletions, messageId, rows)
         : undefined,
     [onApply, messageId],
   );
@@ -360,8 +361,8 @@ export default function CoachScreen() {
   const historySheetRef = useRef<CoachHistorySheetRef>(null);
 
   const applyActions = useCallback(
-    (actions: CoachProposalAction[], confirmDeletions?: string[], sourceMessageId?: string) =>
-      apply({ actions, confirmDeletions, sourceMessageId }),
+    (actions: CoachProposalAction[], confirmDeletions?: string[], sourceMessageId?: string, rows?: number[][]) =>
+      apply({ actions, confirmDeletions, sourceMessageId, rows }),
     [apply],
   );
 

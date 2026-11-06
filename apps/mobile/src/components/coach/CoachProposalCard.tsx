@@ -383,7 +383,15 @@ export interface CoachProposalCardProps {
    * offline case, and anywhere there is no live conversation to apply
    * against.
    */
-  onApply?: (actions: CoachProposalAction[], confirmDeletions?: string[]) => Promise<string | ApplyFeedback>;
+  /**
+   * `rows` is how the card grouped the actions (action indexes per row), so
+   * the result can be counted in the changes the user actually saw.
+   */
+  onApply?: (
+    actions: CoachProposalAction[],
+    confirmDeletions?: string[],
+    rows?: number[][],
+  ) => Promise<string | ApplyFeedback>;
   /** Dismisses without applying. Omit to hide the dismiss control. */
   onDismiss?: () => void;
 }
@@ -467,7 +475,15 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
     if (onApply === undefined) return;
     setState({ phase: "applying" });
     try {
-      const outcome = await onApply(block.actions, confirmedDeleteIds(block.actions));
+      // Built from the cache at click time, not captured from an earlier
+      // render, so the count matches the rows on screen right now.
+      const fresh = buildProposalCacheLookups(queryClient);
+      const rows = buildProposalRows(
+        block.actions,
+        (id) => fresh.scheduleBlock(id) ?? undefined,
+        (seriesId) => fresh.seriesBlocks(seriesId),
+      ).map((r) => r.indices);
+      const outcome = await onApply(block.actions, confirmedDeleteIds(block.actions), rows);
       setState(
         typeof outcome === "string"
           ? { phase: "applied", message: outcome, partial: false, details: [] }
@@ -479,7 +495,7 @@ export const CoachProposalCard = memo(function CoachProposalCard({ block, onAppl
         message: err instanceof Error ? err.message : "Couldn't apply that change.",
       });
     }
-  }, [block.actions, onApply]);
+  }, [block.actions, onApply, queryClient]);
 
   const handleApply = useCallback(() => {
     if (!destructive) {

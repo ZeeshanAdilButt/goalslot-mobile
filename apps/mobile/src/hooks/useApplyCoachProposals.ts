@@ -43,6 +43,8 @@ export interface ApplyProposalsInput {
    * must be named. The caller omits it rather than sending a partial list.
    */
   confirmDeletions?: string[];
+  /** How the card grouped `actions` into rows, so the summary counts what the user saw. */
+  rows?: number[][];
 }
 
 /** What the card shows once an apply has landed at least in part. */
@@ -72,7 +74,16 @@ function describeResult(result: CoachProposalResult): string {
  * failed both count as "nothing applied", and the most specific reason is
  * picked, not the "not attempted because another change failed" filler.
  */
-export function summariseProposalResults(results: readonly CoachProposalResult[]): {
+export function summariseProposalResults(
+  results: readonly CoachProposalResult[],
+  /**
+   * How the card grouped the actions (action indexes per row). When given,
+   * counts are in rows, matching the card: seven per-day renames shown as one
+   * row are "1 change", not "7 changes". Omitted, every action is its own row.
+   */
+  rows?: readonly (readonly number[])[],
+): {
+  /** Actions that succeeded. Zero means nothing landed at all. */
   applied: number;
   failed: CoachProposalResult[];
   message: string;
@@ -82,16 +93,29 @@ export function summariseProposalResults(results: readonly CoachProposalResult[]
   const failed = results.filter((result) => !result.ok);
   const applied = results.length - failed.length;
   const caveats = results.filter((result) => result.ok && result.warning && !result.alreadyDone);
-  const details = [...failed.filter((r) => !NOT_ATTEMPTED.test(r.error ?? "")), ...caveats].map(describeResult);
+  // De-duplicated: a row of seven renames that all failed for one reason is
+  // one line, not seven identical ones.
+  const details = [
+    ...new Set([...failed.filter((r) => !NOT_ATTEMPTED.test(r.error ?? "")), ...caveats].map(describeResult)),
+  ];
+
+  const units: CoachProposalResult[][] = rows
+    ? rows.map((indices) => results.filter((r) => indices.includes(r.index))).filter((unit) => unit.length > 0)
+    : results.map((r) => [r]);
+  const unitsOk = units.filter((unit) => unit.every((r) => r.ok)).length;
+  const unitsFailed = units.length - unitsOk;
+  const unitsWithCaveat = units.filter(
+    (unit) => unit.every((r) => r.ok) && unit.some((r) => r.warning && !r.alreadyDone),
+  ).length;
 
   if (failed.length === 0) {
-    const base = applied === 1 ? "Change applied" : `${applied} changes applied`;
+    const base = unitsOk === 1 ? "Change applied" : `${unitsOk} changes applied`;
     return {
       applied,
       failed,
-      partial: caveats.length > 0,
+      partial: unitsWithCaveat > 0,
       details,
-      message: caveats.length > 0 ? `${base}, with ${caveats.length === 1 ? "a caveat" : "caveats"}.` : base,
+      message: unitsWithCaveat > 0 ? `${base}, with ${unitsWithCaveat === 1 ? "a caveat" : "caveats"}.` : base,
     };
   }
   if (applied === 0) {
@@ -111,7 +135,7 @@ export function summariseProposalResults(results: readonly CoachProposalResult[]
     failed,
     partial: true,
     details,
-    message: `${applied} of ${results.length} changes applied. ${failed.length} couldn't be.`,
+    message: `${unitsOk} of ${units.length} changes applied. ${unitsFailed} couldn't be.`,
   };
 }
 
@@ -168,7 +192,7 @@ export function useApplyCoachProposals(): UseApplyCoachProposalsResult {
       try {
         const results = await mutateAsync(input);
         invalidateEverythingAProposalCanTouch();
-        const summary = summariseProposalResults(results);
+        const summary = summariseProposalResults(results, input.rows);
         if (summary.applied === 0) {
           setError(summary.message);
           throw new Error(summary.message);

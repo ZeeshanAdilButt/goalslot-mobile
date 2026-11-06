@@ -71,6 +71,12 @@ import { FormattedText } from "@/components/ui/FormattedText";
 import { Icon } from "@/components/ui/Icon";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
 import { useApplyCoachProposals, type ApplyFeedback } from "@/hooks/useApplyCoachProposals";
+
+type ProposalApplyHandler = (
+  actions: CoachProposalAction[],
+  confirmDeletions?: string[],
+  rows?: number[][],
+) => Promise<ApplyFeedback>;
 import { useScreenView } from "@/hooks/useScreenView";
 import { useVoiceCapture, type VoiceCommandOutcome } from "@/hooks/useVoiceCapture";
 import { apiClient } from "@/lib/api-client";
@@ -1124,8 +1130,8 @@ export default function VoiceScreen() {
    * copy alongside the card's ephemeral one.
    */
   const applyForTurn = useCallback(
-    async (turnId: number, actions: CoachProposalAction[], confirmDeletions?: string[]) => {
-      const feedback = await apply({ actions, confirmDeletions });
+    async (turnId: number, actions: CoachProposalAction[], confirmDeletions?: string[], rows?: number[][]) => {
+      const feedback = await apply({ actions, confirmDeletions, rows });
       setAppliedNotices((current) => new Map(current).set(turnId, feedback.message));
       setProposalNotice(feedback.message);
       return feedback;
@@ -1255,7 +1261,7 @@ export default function VoiceScreen() {
   // Same caching rule, one per turn rather than one per card: the apply
   // handler now closes over the turn's id (see `applyForTurn`), so it can no
   // longer be the single shared `applyActions` every card used to get.
-  const applyHandlersRef = useRef(new Map<number, (actions: CoachProposalAction[]) => Promise<ApplyFeedback>>());
+  const applyHandlersRef = useRef(new Map<number, ProposalApplyHandler>());
 
   // Every turn, parsed once per render — each carries its own reply text,
   // so a turn already on screen from an earlier command never re-parses
@@ -1266,7 +1272,7 @@ export default function VoiceScreen() {
     const dismissHandlers = dismissHandlersRef.current;
     const nextDismissHandlers = new Map<string, () => void>();
     const applyHandlers = applyHandlersRef.current;
-    const nextApplyHandlers = new Map<number, (actions: CoachProposalAction[]) => Promise<ApplyFeedback>>();
+    const nextApplyHandlers = new Map<number, ProposalApplyHandler>();
     const result = history.map((turn) => {
       const cached = cache.get(turn.id);
       const parsed = cached && cached.reply === turn.reply ? cached.parsed : extractCoachProposals(turn.reply);
@@ -1283,8 +1289,8 @@ export default function VoiceScreen() {
         });
       const onApply =
         applyHandlers.get(turn.id) ??
-        ((actions: CoachProposalAction[], confirmDeletions?: string[]) =>
-          applyForTurn(turn.id, actions, confirmDeletions));
+        ((actions: CoachProposalAction[], confirmDeletions?: string[], rows?: number[][]) =>
+          applyForTurn(turn.id, actions, confirmDeletions, rows));
       nextApplyHandlers.set(turn.id, onApply);
       const appliedNotice = appliedNotices.get(turn.id) ?? null;
       // The ONE place the turn's body is decided — see voice-turn-body.ts
